@@ -311,7 +311,7 @@ func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyRe
 func (r *ReplyService) keywordMatches(kw db.Keyword, text string) bool {
 	// expressions 保存兼容数据库行转换出的匹配表达式集合。
 	expressions := kw.Expressions
-	if len(expressions) == 0 && strings.TrimSpace(kw.Keyword) != "" {
+	if len(expressions) == 0 && kw.Keyword != "" {
 		expressions = []string{kw.Keyword}
 	}
 	// matched、invalidIndexes、unknownMode 保存纯匹配结果和需要对外记录的稳定诊断。
@@ -350,8 +350,11 @@ func matchKeywordExpressions(expressions []string, matchType, text string) (bool
 	invalidIndexes := make([]int, 0)
 	// expressionIndex、rawExpression 表示当前遍历的表达式位置和原始文本。
 	for expressionIndex, rawExpression := range expressions {
-		// expression 是去除边界空白后的匹配表达式。
-		expression := strings.TrimSpace(rawExpression)
+		// expression 保留正则语法中的空白，普通关键词继续使用历史裁剪语义。
+		expression := rawExpression
+		if normalizedMatchType != "regexp" {
+			expression = strings.TrimSpace(expression)
+		}
 		if expression == "" {
 			continue
 		}

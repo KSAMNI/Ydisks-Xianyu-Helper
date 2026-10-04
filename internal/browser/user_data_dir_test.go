@@ -7,9 +7,11 @@ import (
 	"testing"
 )
 
-// TestResolvePersistentUserDataDirConvertsRelativePathAndCreatesDirectory 封装TestResolvePersistent用户数据DirConvertsRelative路径AndCreatesDirectory业务协调。
+// TestResolvePersistentUserDataDirConvertsRelativePathAndCreatesDirectory 验证相对配置解析为绝对路径并创建目录。
 func TestResolvePersistentUserDataDirConvertsRelativePathAndCreatesDirectory(t *testing.T) {
-	// cwd、err 用于本次流程后续判断的cwd、err
+	// 将测试工作目录放在临时目录所在卷，避免 Windows 跨盘路径无法表示为相对路径；结束时自动恢复。
+	t.Chdir(t.TempDir())
+	// cwd、err 保存临时测试工作目录及读取失败原因。
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)

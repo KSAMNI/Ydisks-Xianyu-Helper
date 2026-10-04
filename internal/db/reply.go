@@ -28,7 +28,8 @@ type Keyword struct {
 }
 
 // decodeKeywordExpressions 从 JSON 文本读取表达式集合；非法或空数据回退兼容首表达式。
-func decodeKeywordExpressions(raw, fallback string) []string {
+// matchType 决定空白是否具有正则语法意义，读取不得改写已保存的正则。
+func decodeKeywordExpressions(raw, fallback, matchType string) []string {
 	// decoded 保存 JSON 中反序列化出的原始表达式集合。
 	var decoded []string
 	if strings.TrimSpace(raw) != "" && json.Unmarshal([]byte(raw), &decoded) == nil {
@@ -38,7 +39,7 @@ func decodeKeywordExpressions(raw, fallback string) []string {
 		seen := make(map[string]struct{}, len(decoded))
 		// expression 表示当前从数据库读取的表达式。
 		for _, expression := range decoded {
-			expression = strings.TrimSpace(expression)
+			expression = normalizeKeywordExpression(expression, matchType)
 			if expression == "" {
 				continue
 			}
@@ -54,22 +55,22 @@ func decodeKeywordExpressions(raw, fallback string) []string {
 		}
 	}
 	// normalizedFallback 保存历史单关键词字段的兼容表达式。
-	normalizedFallback := strings.TrimSpace(fallback)
+	normalizedFallback := normalizeKeywordExpression(fallback, matchType)
 	if normalizedFallback == "" {
 		return nil
 	}
 	return []string{normalizedFallback}
 }
 
-// encodeKeywordExpressions 将表达式集合编码为数据库文本，并为旧调用方提供首表达式回退。
-func encodeKeywordExpressions(expressions []string, fallback string) string {
+// encodeKeywordExpressions 将集合编码为 JSON，缺省时回退 fallback；matchType 为正则时保留原文。
+func encodeKeywordExpressions(expressions []string, fallback, matchType string) string {
 	// normalized 保存可安全写入的表达式集合。
 	normalized := make([]string, 0, len(expressions))
 	// seen 记录已经加入编码集合的表达式。
 	seen := make(map[string]struct{}, len(expressions))
 	// expression 表示当前待编码的表达式。
 	for _, expression := range expressions {
-		expression = strings.TrimSpace(expression)
+		expression = normalizeKeywordExpression(expression, matchType)
 		if expression == "" {
 			continue
 		}
@@ -81,7 +82,7 @@ func encodeKeywordExpressions(expressions []string, fallback string) string {
 		normalized = append(normalized, expression)
 	}
 	if len(normalized) == 0 {
-		normalized = decodeKeywordExpressions("", fallback)
+		normalized = decodeKeywordExpressions("", fallback, matchType)
 	}
 	// encoded 保存 JSON 编码结果；字符串数组不会产生不可编码值。
 	encoded, err := json.Marshal(normalized)
@@ -93,14 +94,22 @@ func encodeKeywordExpressions(expressions []string, fallback string) string {
 
 // keywordPersistenceFields 统一兼容首表达式、表达式 JSON 和匹配模式的写入字段。
 func keywordPersistenceFields(keyword string, expressions []string, matchType string) (string, string, string) {
-	// normalizedExpressions 保存传入表达式的可写副本。
-	normalizedExpressions := decodeKeywordExpressions(encodeKeywordExpressions(expressions, keyword), keyword)
+	// normalizedMatchType 保存缺省匹配模式的兼容值，并决定是否允许裁剪表达式。
+	normalizedMatchType := normalizeKeywordMatchType(matchType)
+	// normalizedExpressions 保存传入表达式的可写副本，不改变正则原文。
+	normalizedExpressions := decodeKeywordExpressions(encodeKeywordExpressions(expressions, keyword, normalizedMatchType), keyword, normalizedMatchType)
 	if len(normalizedExpressions) > 0 {
 		keyword = normalizedExpressions[0]
 	}
-	// normalizedMatchType 保存缺省匹配模式的兼容值。
-	normalizedMatchType := normalizeKeywordMatchType(matchType)
-	return keyword, encodeKeywordExpressions(normalizedExpressions, keyword), normalizedMatchType
+	return keyword, encodeKeywordExpressions(normalizedExpressions, keyword, normalizedMatchType), normalizedMatchType
+}
+
+// normalizeKeywordExpression 仅裁剪普通关键词的边界空白，regexp 模式保留完整语法文本。
+func normalizeKeywordExpression(expression, matchType string) string {
+	if normalizeKeywordMatchType(matchType) == "regexp" {
+		return expression
+	}
+	return strings.TrimSpace(expression)
 }
 
 // normalizeKeywordMatchType 将数据库中的匹配模式规整为大小写统一的值；空值兼容为 contains。
@@ -185,7 +194,7 @@ func (k *Keywords) AllWithType(ctx context.Context, cookieID string) ([]Keyword,
 		err := rows.Scan(&kw.Keyword, &kw.Reply, &kw.ItemID, &kw.Type, &kw.ImageURL, &rawExpressions, &kw.MatchType); err != nil {
 			return nil, err
 		}
-		kw.Expressions = decodeKeywordExpressions(rawExpressions, kw.Keyword)
+		kw.Expressions = decodeKeywordExpressions(rawExpressions, kw.Keyword, kw.MatchType)
 		if len(kw.Expressions) > 0 {
 			kw.Keyword = kw.Expressions[0]
 		}

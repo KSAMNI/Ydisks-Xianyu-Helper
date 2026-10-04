@@ -899,6 +899,93 @@ test('getReplyRules 保留服务端多表达式正则配置', /* 当前回调验
   });
 });
 
+test.each([undefined, '43'])('正则规则创建或更新 %s 经编码、解码、再次编码保留全部空白', /* id 区分新建和已有规则更新请求。 */ async id => {
+  // expressions 包含转义空格、纯空格、制表符、换行和 Unicode 空白，任何 trim 都会改变语义。
+  const expressions = ['foo\\ ', '   ', '\t', '\nfoo\r\n', '　你好 ', '(?m)^foo$', '(?P<code>[0-9]+)'];
+  // fetchMock 隔离规则请求，并在保存后回送同一组服务端字段以验证往返。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await updateReplyRule({ id, keyword: '不应覆盖集合', expressions, match_type: 'regexp', reply_content: '已命中' }, 'acc1');
+  expect(fetchMock).toHaveBeenNthCalledWith(1, id ? '/api/v1/reply-rules/acc1/typed/43' : '/api/v1/reply-rules/acc1/items', expect.objectContaining({ method: id ? 'PUT' : 'POST' }));
+  // payload 是通过真实契约客户端序列化的请求体，不经过测试侧的空白修正。
+  const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(payload).toMatchObject({ keyword: expressions[0], expressions, match_type: 'regexp' });
+
+  fetchMock.mockResolvedValueOnce(jsonResponse([{ ...payload, id: 43 }]));
+  // rules 是同一载荷经读取 adapter 解码后的可编辑规则。
+  const rules = await getReplyRules('acc1');
+  expect(rules[0]).toMatchObject({ keyword: expressions[0], expressions, match_type: 'regexp', reply_content: '已命中' });
+  fetchMock.mockResolvedValueOnce(jsonResponse({ success: true }));
+  await updateReplyRule(rules[0], 'acc1');
+  expect(fetchMock).toHaveBeenCalledTimes(3);
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual(payload);
+});
+
+test.each([
+  { matchType: 'regexp', expressions: undefined, keyword: 'foo\\ ', expected: ['foo\\ '] },
+  { matchType: 'regexp', expressions: null, keyword: '   ', expected: ['   '] },
+  { matchType: 'regexp', expressions: [], keyword: '\t', expected: ['\t'] },
+  { matchType: 'regexp', expressions: [null, 42, '', ' '], keyword: '旧字段', expected: [' '] },
+  { matchType: 'contains', expressions: [' 你好 ', '你好', ' ', '', null, 42, '发货'], keyword: '旧字段', expected: ['你好', '发货'] },
+  { matchType: 'contains', expressions: ['', null, '  '], keyword: ' 旧字段 ', expected: ['旧字段'] },
+  { matchType: undefined, expressions: null, keyword: ' 旧字段 ', expected: ['旧字段'] },
+  { matchType: null, expressions: 42, keyword: ' 旧字段 ', expected: ['旧字段'] },
+  { matchType: 'exact', expressions: [], keyword: ' 旧字段 ', expected: ['旧字段'] },
+  { matchType: 'fuzzy', expressions: [' 你好 ', '你好'], keyword: '旧字段', expected: ['你好'] },
+  { matchType: 'regexp', expressions: [null, '', 42], keyword: '', expected: [''] },
+])('关键词 adapter 按匹配模式处理空白和历史回退 %#', /* matchType 是响应模式；expressions/keyword 是含历史或无效类型的响应字段；expected 是应往返保留的文本。 */ async ({ matchType, expressions, keyword, expected }) => {
+  // fetchMock 返回带边界值的响应，再接收由 UI 模型发出的保存请求。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse([{ id: 43, match_type: matchType, expressions, keyword, reply: '已命中' }]))
+    .mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  // rules 是将旧字段与异常字段限制在 adapter 边界后得到的规则列表。
+  const rules = await getReplyRules('acc1');
+  expect(rules[0]).toMatchObject({ keyword: expected[0], expressions: expected, match_type: matchType === 'regexp' ? 'regexp' : 'contains' });
+  await updateReplyRule(rules[0], 'acc1');
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({ keyword: expected[0], expressions: expected, match_type: matchType === 'regexp' ? 'regexp' : 'contains' });
+});
+
+test.each([undefined, [], ['']])('正则 adapter 编码在集合为空时原样回退旧 keyword %#', /* expressions 分别模拟缺失集合、空集合和默认空输入行。 */ async expressions => {
+  // fetchMock 记录历史草稿的创建载荷。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await updateReplyRule({ keyword: 'foo\\ ', expressions, match_type: 'regexp', reply_content: '已命中' }, 'acc1');
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ keyword: 'foo\\ ', expressions: ['foo\\ '], match_type: 'regexp' });
+});
+
+test('contains adapter 编码仍 trim、去空值和去重，并默认包含匹配', /* 当前回调保护新草稿绕过 Hook 直接保存时的兼容归一行为。 */ async () => {
+  // fetchMock 记录包含模式的创建载荷。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await updateReplyRule({ keyword: '旧字段', expressions: [' 你好 ', '你好', '', '  ', '发货'], reply_content: '已命中' }, 'acc1');
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ keyword: '你好', expressions: ['你好', '发货'], match_type: 'contains' });
+});
+
+test('正则 adapter 处理万条表达式时保留顺序和原始文本', /* 当前回调防止较大集合在编码边界被截断或清理空白。 */ async () => {
+  // expressions 是具有首尾空白的万条不同正则，数量只用于测试 adapter，不声明后端允许的规则上限。
+  const expressions = Array.from({ length: 10001 }, /* index 是当前表达式的稳定序号。 */ (_, index) => ` ^编号${index}$ `);
+  // fetchMock 隔离真实后端，记录大集合的 JSON 请求体。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await updateReplyRule({ expressions, match_type: 'regexp', reply_content: '已命中' }, 'acc1');
+  // payload 是大集合通过契约客户端后实际提交的请求，逐项比较避免只检查首尾而漏掉中间丢失。
+  const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+  expect(payload.expressions).toHaveLength(expressions.length);
+  expect(payload.expressions.every(/* expression/index 是请求中当前文本和对应输入位置。 */ (expression: string, index: number) => expression === expressions[index])).toBe(true);
+  expect(payload.keyword).toBe(expressions[0]);
+  expect(payload.match_type).toBe('regexp');
+});
+
+test('后端拒绝正则时 adapter 透出校验错误而不改写表达式', /* 当前回调验证 HTTP 400 校验响应通过真实契约客户端向保存动作抛出。 */ async () => {
+  // fetchMock 模拟服务端统一错误 envelope，不在浏览器内解析正则语法。
+  const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ code: 'invalid_argument', message: '正则表达式无效：缺少闭合方括号' }), { status: 400, headers: { 'content-type': 'application/json' } }));
+  stubContractFetch(fetchMock);
+  await expect(updateReplyRule({ expressions: ['[ '], match_type: 'regexp', reply_content: '保留回复' }, 'acc1')).rejects.toThrow('正则表达式无效：缺少闭合方括号');
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({ keyword: '[ ', expressions: ['[ '], match_type: 'regexp' });
+});
+
 test('getReplyRules 没有账号时直接返回空列表', /* 当前回调验证关键词规则的账号守卫。 */ async () => {
   await expect(getReplyRules()).resolves.toEqual([]);
 });

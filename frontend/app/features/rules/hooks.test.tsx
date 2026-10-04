@@ -221,7 +221,7 @@ describe('useRulesData', /* 当前回调处理规则页参考数据、分页和�
   });
 });
 
-test('关键词 adapter 保留多表达式并把历史匹配模式归一为 contains', /* 当前回调验证关键词响应归一和请求载荷兼容。 */ async () => {
+test('关键词 adapter 保留正则多表达式原文并把历史匹配模式归一为 contains', /* 当前回调验证正则空白与不同文本不被合并，历史模式仍兼容包含匹配。 */ async () => {
   // actualApi 绕过本文件的 Hook mock，取得真实规则 API adapter 实现。
   const actualApi = await vi.importActual<typeof import('./api')>('./api');
   // fetchMock 是真实规则 API adapter 使用的 HTTP 请求替身。
@@ -234,7 +234,7 @@ test('关键词 adapter 保留多表达式并把历史匹配模式归一为 cont
   ]), { status: 200, headers: { 'content-type': 'application/json' } }));
   // rules 保存 adapter 归一后的关键词规则集合。
   const rules = await actualApi.getReplyRules('account-1');
-  expect(rules[0]).toMatchObject({ keyword: '你好', expressions: ['你好', '再见'], match_type: 'regexp' });
+  expect(rules[0]).toMatchObject({ keyword: ' 你好 ', expressions: [' 你好 ', '你好', '再见 '], match_type: 'regexp' });
   expect(rules[1]).toMatchObject({ keyword: '历史 fuzzy', expressions: ['历史 fuzzy'], match_type: 'contains' });
   expect(rules[2]).toMatchObject({ keyword: '历史 exact', expressions: ['历史 exact'], match_type: 'contains' });
 
@@ -248,6 +248,6 @@ test('关键词 adapter 保留多表达式并把历史匹配模式归一为 cont
   const request = requestInput instanceof Request ? requestInput : new Request(requestInput, requestInit);
   // payload 保存请求体中的兼容单值、多表达式和匹配模式字段。
   const payload = JSON.parse(await request.text()) as Record<string, unknown>;
-  expect(payload).toMatchObject({ keyword: '首项', expressions: ['首项', '第二项'], match_type: 'regexp', item_id: '', item_ids: [], type: 'text', image_url: '' });
+  expect(payload).toMatchObject({ keyword: ' 首项 ', expressions: [' 首项 ', '第二项', '首项'], match_type: 'regexp', item_id: '', item_ids: [], type: 'text', image_url: '' });
   vi.unstubAllGlobals();
 });

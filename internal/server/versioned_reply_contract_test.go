@@ -156,12 +156,12 @@ func TestVersionedReplyKeywordExpressionsContract(t *testing.T) {
 	if decodeErr := json.Unmarshal(listRecorder.Body.Bytes(), &rows); decodeErr != nil {
 		t.Fatalf("解析规则列表失败: %v", decodeErr)
 	}
-	if len(rows) != 1 || rows[0]["match_type"] != "regexp" || rows[0]["keyword"] != "^hello" {
+	if len(rows) != 1 || rows[0]["match_type"] != "regexp" || rows[0]["keyword"] != " ^hello " {
 		t.Fatalf("多表达式规则兼容字段异常: %+v", rows)
 	}
 	// expressions、expressionsOK 保存响应中的表达式数组及类型断言结果。
 	expressions, expressionsOK := rows[0]["expressions"].([]any)
-	if !expressionsOK || len(expressions) != 2 || expressions[0] != "^hello" || expressions[1] != "price[0-9]+" {
+	if !expressionsOK || len(expressions) != 2 || expressions[0] != " ^hello " || expressions[1] != "price[0-9]+" {
 		t.Fatalf("多表达式规则回显异常: %+v", rows[0]["expressions"])
 	}
 

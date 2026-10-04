@@ -81,7 +81,7 @@ const useRuleActionsHarness = () => {
 
 describe('useRuleActions', /* 当前回调验证规则页面动作协调器的核心状态和副作用。 */ () => {
   beforeEach(/* 当前回调重置规则动作 API 替身。 */ () => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     defaultReplyMock.mockResolvedValue(defaultReplyFixture);
     updateDefaultMock.mockResolvedValue({ success: true });
     updateReplyMock.mockResolvedValue({ success: true });
@@ -192,17 +192,112 @@ describe('useRuleActions', /* 当前回调验证规则页面动作协调器的�
     hook.unmount();
   });
 
-  test('正则表达式语法无效时只提示错误且不发请求', /* 当前回调验证客户端正则预检不会触达保存接口。 */ async () => {
-    // hook 是规则动作 Hook 的真实 React 状态实例。
-    const hook = renderHook(() => useRuleActionsHarness());
-    act(/* 当前回调打开关键词新增弹窗。 */ () => hook.result.current.handleAddReplyRule());
-    act(/* 当前回调写入无法由 JavaScript RegExp 解析的表达式。 */ () => hook.result.current.setEditingReplyRule(/* draft 是当前关键词回复表单。 */ draft => ({ ...draft, expressions: ['['], match_type: 'regexp', reply_content: '您好' })));
-    await act(/* 当前回调尝试保存无效正则规则。 */ async () => hook.result.current.handleSaveReplyRule());
-    expect(updateReplyMock).not.toHaveBeenCalled();
-    expect(hook.result.current.toast).toEqual({ type: 'error', text: '正则表达式格式错误，请检查关键词' });
+  test.each(['(?m)^foo$', '(?P<code>[0-9]+)'])('合法 Go/RE2 表达式 %s 不经 JS 预检而直接提交', /* expression 是浏览器不支持但后端支持的 RE2 语法。 */ async expression => {
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立独立的规则动作状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调填写合法的后端正则。 */ () => hook.result.current.setEditingReplyRule(/* draft 是仍未提交的规则草稿。 */ draft => ({ ...draft, expressions: [expression], match_type: 'regexp', reply_content: '已命中' })));
+    await act(/* 当前回调提交只应由后端验证语法的表达式。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ keyword: expression, expressions: [expression], match_type: 'regexp' }), 'account-1');
+    expect(hook.result.current.showReplyModal).toBe(false);
+    expect(hook.result.current.toast).toEqual({ type: 'success', text: '保存成功' });
     hook.unmount();
   });
 
+  test.each([' foo ', 'foo\\ ', '   ', '\t', '　你好 '])('正则保存原样保留空白 %j', /* expression 是空白会影响匹配语义的正则文本。 */ async expression => {
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立独立的规则动作状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调填写带空白的正则，保留一个应被过滤的空行。 */ () => hook.result.current.setEditingReplyRule(/* draft 是仍未提交的规则草稿。 */ draft => ({ ...draft, expressions: ['', expression], match_type: 'regexp', reply_content: '已命中' })));
+    await act(/* 当前回调提交不能 trim 的正则草稿。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ keyword: expression, expressions: [expression], match_type: 'regexp' }), 'account-1');
+    expect(hook.result.current.showReplyModal).toBe(false);
+    hook.unmount();
+  });
+
+  test('正则旧 keyword 回退也保留原始空白', /* 当前回调验证默认空表达式行不会吞掉旧正则字段。 */ async () => {
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立兼容旧关键词的规则状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调只填写历史单关键词字段。 */ () => hook.result.current.setEditingReplyRule(/* draft 是包含默认空表达式行的规则草稿。 */ draft => ({ ...draft, keyword: 'foo\\ ', match_type: 'regexp', reply_content: '已命中' })));
+    await act(/* 当前回调以兼容模式提交历史字段。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ keyword: 'foo\\ ', expressions: ['foo\\ '], match_type: 'regexp' }), 'account-1');
+    hook.unmount();
+  });
+
+  test.each(['contains', 'regexp'] as const)('%s 模式拒绝空字符串但保留草稿', /* matchType 是待验证的关键词匹配模式。 */ async matchType => {
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立空输入的规则状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调只填写回复内容而不填写任何表达式。 */ () => hook.result.current.setEditingReplyRule(/* draft 是包含空字符串表达式的规则草稿。 */ draft => ({ ...draft, match_type: matchType, reply_content: '已命中' })));
+    await act(/* 当前回调尝试提交完全为空的表达式。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).not.toHaveBeenCalled();
+    expect(hook.result.current.showReplyModal).toBe(true);
+    expect(hook.result.current.toast).toEqual({ type: 'error', text: '请填写关键词和回复内容' });
+    hook.unmount();
+  });
+
+  test('后端拒绝无效正则时显示错误、保留草稿并允许修改后重试', /* 当前回调验证后端语法错误由保存失败路径反馈而不关闭编辑器。 */ async () => {
+    updateReplyMock.mockRejectedValueOnce(new Error('正则表达式无效：缺少闭合方括号'));
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立正则失败后重试的规则状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调填写必须交由后端拒绝的无效表达式。 */ () => hook.result.current.setEditingReplyRule(/* draft 是未通过语法校验的原始草稿。 */ draft => ({ ...draft, expressions: ['[', 'foo\\ '], match_type: 'regexp', reply_content: '保留回复', item_ids: ['item-1'] })));
+    // draftBeforeSave 保存提交前完整草稿，用于验证失败没有覆盖任何字段。
+    const draftBeforeSave = hook.result.current.editingReplyRule;
+    await act(/* 当前回调提交无效正则并接收后端错误。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ expressions: ['[', 'foo\\ '], match_type: 'regexp' }), 'account-1');
+    expect(hook.result.current.showReplyModal).toBe(true);
+    expect(hook.result.current.editingReplyRule).toEqual(draftBeforeSave);
+    expect(hook.result.current.toast).toEqual({ type: 'error', text: '保存失败：正则表达式无效：缺少闭合方括号' });
+    expect(hook.result.current.replySubmitState).toEqual({ submitting: false, result: 'failure' });
+
+    act(/* 当前回调只修正出错的表达式，其他草稿字段保持不变。 */ () => hook.result.current.setEditingReplyRule(/* draft 是从上次失败保留下来的规则草稿。 */ draft => ({ ...draft, expressions: ['(?m)^foo$', 'foo\\ '] })));
+    await act(/* 当前回调重新提交修正后的合法 RE2 表达式。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledTimes(2);
+    expect(updateReplyMock).toHaveBeenLastCalledWith(expect.objectContaining({ expressions: ['(?m)^foo$', 'foo\\ '], reply_content: '保留回复', item_ids: ['item-1'] }), 'account-1');
+    expect(hook.result.current.showReplyModal).toBe(false);
+    expect(hook.result.current.replySubmitState).toEqual({ submitting: false, result: 'success' });
+    hook.unmount();
+  });
+
+
+  test('等待后端正则校验期间重复保存不会再次请求，失败保留最新编辑', /* 当前回调验证异步失败不覆盖用户在等待期间修改的草稿。 */ async () => {
+    // rejectSave 由测试控制后端校验返回的时机。
+    let rejectSave: (error: Error) => void = /* 当前回调在请求尚未开始时不产生副作用。 */ () => undefined;
+    updateReplyMock.mockImplementationOnce(/* 当前回调模拟尚未返回的后端保存请求。 */ () => new Promise(/* reject 保存本次请求的失败出口。 */ (_resolve, reject) => { rejectSave = reject; }));
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立可控异步保存的规则状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调填写待后端校验的表达式。 */ () => hook.result.current.setEditingReplyRule(/* draft 是待提交的规则草稿。 */ draft => ({ ...draft, expressions: ['(?m)^foo$'], match_type: 'regexp', reply_content: '已命中' })));
+    // pendingSave 保存首次提交的完成信号，避免遗留未等待的异步操作。
+    let pendingSave: Promise<void> | undefined;
+    act(/* 当前回调开始保存，但不等待后端校验完成。 */ () => { pendingSave = hook.result.current.handleSaveReplyRule(); });
+    expect(hook.result.current.replySubmitState.submitting).toBe(true);
+    await act(/* 当前回调重复点击保存，必须复用已有提交状态而不重复请求。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).toHaveBeenCalledTimes(1);
+    act(/* 当前回调模拟用户在等待后端时继续编辑。 */ () => hook.result.current.setEditingReplyRule(/* draft 是当前尚未被关闭的规则草稿。 */ draft => ({ ...draft, expressions: ['foo\\ '], reply_content: '新的回复' })));
+    await act(/* 当前回调让旧请求失败，并等待保存状态完整收口。 */ async () => {
+      rejectSave(new Error('后端校验失败'));
+      await pendingSave;
+    });
+    expect(hook.result.current.editingReplyRule).toMatchObject({ expressions: ['foo\\ '], reply_content: '新的回复' });
+    expect(hook.result.current.showReplyModal).toBe(true);
+    expect(hook.result.current.toast).toEqual({ type: 'error', text: '保存失败：后端校验失败' });
+    expect(hook.result.current.replySubmitState.submitting).toBe(false);
+    hook.unmount();
+  });
+
+  test('contains 模式仍拒绝纯空白表达式', /* 当前回调保护包含匹配的空白输入校验，不沿用正则的保留策略。 */ async () => {
+    // hook 拥有本用例独立的规则草稿和提交状态。
+    const hook = renderHook(/* 当前回调建立包含匹配的空白输入状态。 */ () => useRuleActionsHarness());
+    act(/* 当前回调打开关键词回复编辑器。 */ () => hook.result.current.handleAddReplyRule());
+    act(/* 当前回调填写没有有效关键词的草稿。 */ () => hook.result.current.setEditingReplyRule(/* draft 是当前包含匹配草稿。 */ draft => ({ ...draft, expressions: [' ', '\t'], reply_content: '已命中' })));
+    await act(/* 当前回调提交仍应视为空输入的包含匹配草稿。 */ async () => hook.result.current.handleSaveReplyRule());
+    expect(updateReplyMock).not.toHaveBeenCalled();
+    expect(hook.result.current.toast).toEqual({ type: 'error', text: '请填写关键词和回复内容' });
+    hook.unmount();
+  });
 
   test('规则编辑、异常恢复和删除动作均通过统一协调器', /* 当前回调覆盖规则动作 Hook 的剩余公开方法。 */ async () => {
     // hook 是规则动作 Hook 的真实 React 状态实例。

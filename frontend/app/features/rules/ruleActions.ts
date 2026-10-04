@@ -476,32 +476,24 @@ export const useRuleActions = ({
     setShowReplyModal(true);
   }, [selectedAccountId, showReplyToast]);
 
-  // handleSaveReplyRule 清理表达式、校验回复内容和客户端正则语法后保存规则。
+  // handleSaveReplyRule 按匹配模式整理表达式并校验回复内容；正则原文交由后端 Go/RE2 校验，失败保留草稿并提示错误。
   const handleSaveReplyRule = useCallback(/* saveReplyAction 保存关键词回复。 */ async () => {
     if (!editingReplyRule || !selectedAccountId || replySubmitState.submitting) return;
+    // matchType 将历史 fuzzy/exact/空值归一为 contains，并决定是否保留表达式空白。
+    const matchType = editingReplyRule.match_type === 'regexp' ? 'regexp' : 'contains';
     // rawExpressions 保存新多表达式字段或旧 keyword 字段提供的输入。
     const rawExpressions = Array.isArray(editingReplyRule.expressions) ? editingReplyRule.expressions : [editingReplyRule.keyword || ''];
-    // cleanedExpressions 保存去除首尾空白、空值和重复项后的表达式。
+    // cleanedExpressions 过滤空字符串；包含匹配去除首尾空白，正则保留全部语义空白。
     const cleanedExpressions = rawExpressions
-      .map(/* expression 是当前待清理的关键词或正则表达式。 */ expression => typeof expression === 'string' ? expression.trim() : '')
-      .filter(/* expression 是清理后仍可提交的表达式。 */ expression => Boolean(expression));
-    // legacyKeyword 保存旧草稿在默认空行场景下仍可提交的单关键词。
-    const legacyKeyword = typeof editingReplyRule.keyword === 'string' ? editingReplyRule.keyword.trim() : '';
+      .map(/* expression 是当前待整理的关键词或正则，只有包含匹配允许 trim。 */ expression => typeof expression === 'string' ? (matchType === 'regexp' ? expression : expression.trim()) : '')
+      .filter(/* expression 是整理后非空、可以提交后端校验的表达式。 */ expression => Boolean(expression));
+    // legacyKeyword 保存默认空行场景下的旧字段回退，正则空白同样必须原样保留。
+    const legacyKeyword = typeof editingReplyRule.keyword === 'string' ? (matchType === 'regexp' ? editingReplyRule.keyword : editingReplyRule.keyword.trim()) : '';
     // expressions 保存按输入顺序去重后的最终表达式集合。
     const expressions = Array.from(new Set(cleanedExpressions.length ? cleanedExpressions : (legacyKeyword ? [legacyKeyword] : [])));
-    // matchType 将历史 fuzzy/exact/空值归一为当前 UI 支持的模式。
-    const matchType = editingReplyRule.match_type === 'regexp' ? 'regexp' : 'contains';
     // hasReplyContent 表示当前回复是否填写了文字或图片。
     const hasReplyContent = editingReplyRule.type === 'image' ? Boolean(editingReplyRule.image_url?.trim()) : Boolean(editingReplyRule.reply_content?.trim());
     if (!expressions.length || !hasReplyContent) return showReplyToast('error', '请填写关键词和回复内容');
-    if (matchType === 'regexp') {
-      try {
-        // expression 是当前待由浏览器 JavaScript RegExp 语法预检的表达式。
-        expressions.forEach(/* expression 是当前待校验的正则表达式。 */ expression => { new RegExp(expression); });
-      } catch {
-        return showReplyToast('error', '正则表达式格式错误，请检查关键词');
-      }
-    }
     setReplySubmitState(startRuleSubmission(replySubmitState));
     // succeeded 记录保存是否成功。
     let succeeded = false;

@@ -56,6 +56,7 @@ const ReplyRuleEditor: React.FC<ReplyRuleEditorProps> = ({ rule,setRule,items,on
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2">匹配模式</label>
               <select
+                aria-label="匹配模式"
                 value={rule.match_type === 'regexp' ? 'regexp' : 'contains'}
                 onChange={/* 当前回调处理用户切换关键词匹配模式。 */ event => {
                   // matchType 保存用户选择的当前匹配模式。
@@ -107,6 +108,7 @@ const ReplyRuleEditor: React.FC<ReplyRuleEditorProps> = ({ rule,setRule,items,on
                 <div key={expressionIndex} className="flex items-center gap-2">
                   <input
                     type="text"
+                    aria-label={`第 ${expressionIndex + 1} 个关键词表达式`}
                     value={expression}
                     onChange={/* 当前回调更新用户正在编辑的表达式行。 */ event => {
                       // nextExpressions 保存更新当前行后的完整表达式集合。
@@ -135,7 +137,7 @@ const ReplyRuleEditor: React.FC<ReplyRuleEditorProps> = ({ rule,setRule,items,on
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-xs text-gray-400">多个表达式按“或”（OR）匹配：任一表达式命中即触发回复；正则语法会先在浏览器校验，后端仍会按 Go/RE2 最终校验。</p>
+            <p className="mt-2 text-xs text-gray-400">多个表达式按“或”（OR）匹配：任一表达式命中即触发回复；匹配默认忽略大小写；正则语法由后端 Go/RE2 校验。</p>
           </div>
 
           {rule.type === 'image' ? (

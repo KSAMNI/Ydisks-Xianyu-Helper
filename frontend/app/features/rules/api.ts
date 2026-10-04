@@ -444,20 +444,22 @@ type KeywordRowPayload = {
     image_url: string;
 };
 
-// normalizeKeywordExpressions 归一化服务端关键词表达式，并为历史单关键词响应提供回退值。
+// normalizeKeywordExpressions 将服务端表达式归一为 UI 集合；正则原样保留空白，包含匹配去除首尾空白，均兼容旧 keyword。
 const normalizeKeywordExpressions = (item: any): string[] => {
+    // preserveWhitespace 表示当前规则使用正则，空白属于表达式语法而不是表单噪声。
+    const preserveWhitespace = item?.match_type === 'regexp';
     // rawExpressions 保存新接口集合或由旧 keyword 构成的兼容集合。
     const rawExpressions = Array.isArray(item?.expressions) ? item.expressions : [item?.keyword];
-    // expressions 保存去除空白、去重后的可编辑表达式。
+    // expressions 保存按模式清理空字符串并去重后的可编辑表达式。
     const expressions: string[] = [];
     for (const /* rawExpression 是当前待归一化的服务端表达式。 */ rawExpression of rawExpressions) {
-        // expression 保存去除首尾空白后的表达式文本。
-        const expression = typeof rawExpression === 'string' ? rawExpression.trim() : '';
+        // expression 仅在包含匹配时去除首尾空白，正则文本必须保持服务端原值。
+        const expression = typeof rawExpression === 'string' ? (preserveWhitespace ? rawExpression : rawExpression.trim()) : '';
         if (expression && !expressions.includes(expression)) expressions.push(expression);
     }
     if (expressions.length > 0) return expressions;
-    // legacyKeyword 保存历史响应中仍可编辑的单关键词。
-    const legacyKeyword = typeof item?.keyword === 'string' ? item.keyword.trim() : '';
+    // legacyKeyword 保存历史单关键词，正则回退同样不能 trim。
+    const legacyKeyword = typeof item?.keyword === 'string' ? (preserveWhitespace ? item.keyword : item.keyword.trim()) : '';
     return legacyKeyword ? [legacyKeyword] : [''];
 };
 
@@ -528,20 +530,22 @@ export const getReplyRules = async (cookieId?: string): Promise<ReplyRule[]> => 
     }));
 };
 
-// resolveReplyRuleExpressions 解析规则草稿中的表达式集合并回退兼容单关键词。
+// resolveReplyRuleExpressions 解析草稿的表达式集合并兼容旧 keyword；正则空白原样编码，包含匹配保留 trim 语义。
 const resolveReplyRuleExpressions = (rule: Partial<ReplyRule>): string[] => {
+    // preserveWhitespace 表示正则编码必须保留空白，避免转义空格或纯空白表达式被改变。
+    const preserveWhitespace = rule.match_type === 'regexp';
     // rawExpressions 保存新字段或旧 keyword 构成的表达式输入。
     const rawExpressions = Array.isArray(rule.expressions) ? rule.expressions : [rule.keyword || ''];
-    // result 保存去除空白和重复项后的请求表达式。
+    // result 保存按模式清理空字符串并去重后的请求表达式。
     const result: string[] = [];
     for (const /* candidate 是当前待提交的表达式草稿。 */ candidate of rawExpressions) {
-        // expression 是当前表达式的规范化文本。
-        const expression = typeof candidate === 'string' ? candidate.trim() : '';
+        // expression 仅在包含匹配时去除首尾空白，正则保留输入原值。
+        const expression = typeof candidate === 'string' ? (preserveWhitespace ? candidate : candidate.trim()) : '';
         if (expression && !result.includes(expression)) result.push(expression);
     }
     if (result.length === 0) {
-        // legacyKeyword 保存空表达式集合时的兼容单关键词。
-        const legacyKeyword = typeof rule.keyword === 'string' ? rule.keyword.trim() : '';
+        // legacyKeyword 保存空集合时的单关键词回退，正则文本不能 trim。
+        const legacyKeyword = typeof rule.keyword === 'string' ? (preserveWhitespace ? rule.keyword : rule.keyword.trim()) : '';
         if (legacyKeyword) result.push(legacyKeyword);
     }
     return result.length ? result : [''];

@@ -56,7 +56,7 @@ func TestKeywordRepositoryExpressionFields(t *testing.T) {
 	}
 
 	// updateErr 保存多表达式规则更新为新表达式集合的结果。
-	if updateErr := repository.Update(ctx, owner.ID, "cid", multiID, keywordsapp.Draft{
+	if updateErr := keywordsapp.NewService(repository).Update(ctx, owner.ID, "cid", multiID, keywordsapp.Draft{
 		Keyword: "旧首值", Expressions: []string{"更新首", "更新次"}, MatchType: "regexp", Reply: "更新回复", Type: "text",
 	}); updateErr != nil {
 		t.Fatalf("adapter Update: %v", updateErr)
@@ -79,8 +79,8 @@ func TestKeywordRepositoryExpressionFields(t *testing.T) {
 	}
 
 	// replaceErr 保存替换旧 Keyword-only 规则和多表达式规则的结果。
-	if replaceErr := repository.Replace(ctx, owner.ID, "cid", []keywordsapp.Draft{
-		{Keyword: "替换兼容", Reply: "兼容回复", Type: "text"},
+	if replaceErr := keywordsapp.NewService(repository).Replace(ctx, owner.ID, "cid", []keywordsapp.Draft{
+		{Keyword: "替换兼容", Expressions: []string{"替换兼容"}, MatchType: "contains", Reply: "兼容回复", Type: "text"},
 		{Expressions: []string{"替换首", "替换次"}, MatchType: "regexp", Reply: "替换回复", Type: "text"},
 	}); replaceErr != nil {
 		t.Fatalf("adapter Replace: %v", replaceErr)

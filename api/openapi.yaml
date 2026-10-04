@@ -7553,9 +7553,9 @@ components:
       type: object
       required: [keyword, reply, item_id, item_ids, type, image_url]
       properties:
-        keyword: {type: string, description: 兼容旧单值调用方；新调用方可同时传 expressions}
-        expressions: {type: array, items: {type: string}, description: 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复}
-        match_type: {type: string, enum: [contains, regexp], default: contains, description: 匹配模式；regexp 使用大小写不敏感 Go/RE2}
+        keyword: {type: string, description: 兼容旧单值调用方；更新且未提供 expressions 时仅替换首表达式并保留其余项}
+        expressions: {type: array, items: {type: string}, description: 多表达式按 OR 匹配；regexp 保留原文空白，contains 去除首尾空白；更新时缺省继承现有集合}
+        match_type: {type: string, enum: [contains, regexp], description: 创建时缺省 contains，更新时缺省保留现有模式；regexp 使用大小写不敏感 Go/RE2}
         reply: {type: string}
         item_id: {type: string, description: 兼容旧单值调用方；多选时由 item_ids 合并而来}
         item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；一条规则可关联多个商品，空集合表示账号级回复}

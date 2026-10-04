@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 )
 
@@ -43,8 +44,8 @@ func TestPublishImageAndSheetHelpersCoverPathAndHeaderBranches(t *testing.T) {
 	if !isHTTPURL(" HTTPS://example.test/image.png ") || isHTTPURL("ftp://example.test/image.png") {
 		t.Fatal("图片 URL 协议识别异常")
 	}
-	// rel、relErr 保存安全图片路径的归一化结果和错误。
-	if rel, relErr := safeZipPath("folder/image.png"); relErr != nil || rel != "folder/image.png" {
+	// rel、relErr 保存安全图片路径的本机路径形式和错误；不能把 POSIX 分隔符当作跨平台契约。
+	if rel, relErr := safeZipPath("folder/image.png"); relErr != nil || rel != filepath.Join("folder", "image.png") {
 		t.Fatalf("安全图片路径=%q err=%v", rel, relErr)
 	}
 	// unsafeErr 保存路径逃逸校验错误。

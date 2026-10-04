@@ -42,6 +42,9 @@ func TestMatchKeywordExpressionsTable(t *testing.T) {
 		{name: "regexp inline disable case", expressions: []string{`(?-i:foo)`}, matchType: "regexp", text: "FOO", wantMatched: false},
 		{name: "invalid regexp does not block later expression", expressions: []string{"[private", "可用"}, matchType: "regexp", text: "可用", wantMatched: true, wantInvalidIndexes: []int{0}},
 		{name: "invalid regexp alone", expressions: []string{"[private"}, matchType: "regexp", text: "可用", wantMatched: false, wantInvalidIndexes: []int{0}},
+		{name: "regexp trailing space required", expressions: []string{"foo "}, matchType: "regexp", text: "foo", wantMatched: false},
+		{name: "regexp escaped space", expressions: []string{`foo\ `}, matchType: "regexp", text: "foo ", wantMatched: true},
+		{name: "regexp whitespace only", expressions: []string{" "}, matchType: "regexp", text: "a b", wantMatched: true},
 		{name: "unknown mode", expressions: []string{"可用"}, matchType: "regex", text: "可用", wantMatched: false, wantUnknown: true},
 	}
 	// testCase 表示当前待执行的纯匹配场景。

@@ -106,7 +106,7 @@ type Draft struct {
 	Keyword string
 	// Expressions 是同一条规则的匹配表达式集合，保存后共享同一条回复。
 	Expressions []string
-	// MatchType 是 contains 或 regexp，历史调用方缺省时使用 contains。
+	// MatchType 是 contains 或 regexp；创建缺省为 contains，更新缺省继承当前模式。
 	MatchType string
 	// Reply 是文字回复内容。
 	Reply string
@@ -137,10 +137,10 @@ type Repository interface {
 	List(ctx context.Context, userID int64, cookieID string) ([]Keyword, error)
 	// Add 创建一条已规范化的关键词规则。
 	Add(ctx context.Context, userID int64, cookieID string, draft Draft) (int64, error)
-	// Replace 删除并重建指定用户账号的全部关键词规则。
-	Replace(ctx context.Context, userID int64, cookieID string, drafts []Draft) error
-	// Update 更新指定用户账号中的关键词规则。
-	Update(ctx context.Context, userID int64, cookieID string, id int64, draft Draft) error
+	// Replace 在账号事务内读取当前规则，调用 build 完成整批校验后再删除重建；回调失败不得写入。
+	Replace(ctx context.Context, userID int64, cookieID string, build func([]Keyword) ([]Draft, error)) error
+	// Update 在账号事务内把当前规则交给 build 合并和校验，原子写回结果；回调不得执行外部 I/O。
+	Update(ctx context.Context, userID int64, cookieID string, id int64, build func(Keyword) (Draft, error)) error
 	// DeleteByID 按持久化标识删除指定用户账号中的关键词规则。
 	DeleteByID(ctx context.Context, userID int64, cookieID string, id int64) error
 	// DeleteByIndex 按稳定 ID 顺序的零基索引删除规则。
@@ -197,8 +197,11 @@ func (s *Service) Replace(ctx context.Context, userID int64, cookieID string, dr
 	}
 	// normalized 保存全部通过校验的批量规则输入。
 	normalized := make([]Draft, 0, len(drafts))
+	// missingMatchFields 表示批次仍使用不能完整表达高级规则的旧格式。
+	missingMatchFields := false
 	// draft 表示当前待规范化的批量规则输入。
 	for _, draft := range drafts {
+		missingMatchFields = missingMatchFields || draft.Expressions == nil || strings.TrimSpace(draft.MatchType) == ""
 		// item、err 保存规范化规则及校验结果。
 		item, err := normalizeDraft(draft)
 		if err != nil {
@@ -206,7 +209,15 @@ func (s *Service) Replace(ctx context.Context, userID int64, cookieID string, dr
 		}
 		normalized = append(normalized, item)
 	}
-	return s.repository.Replace(ctx, userID, cookieID, normalized)
+	return s.repository.Replace(ctx, userID, cookieID, func(current []Keyword) ([]Draft, error) {
+		// rule 是事务内读取的现有规则；缺少稳定 ID 的旧批次不能猜测如何保留它。
+		for _, rule := range current {
+			if missingMatchFields && (len(rule.Expressions) > 1 || (rule.MatchType != "" && rule.MatchType != KeywordMatchTypeContains)) {
+				return nil, &ValidationError{Message: "账号含多表达式或正则规则，批量替换必须明确提供 expressions 和 match_type"}
+			}
+		}
+		return normalized, nil
+	})
 }
 
 // Update 校验并更新指定 ID 的关键词规则。
@@ -218,12 +229,27 @@ func (s *Service) Update(ctx context.Context, userID int64, cookieID string, id 
 	if id <= 0 {
 		return &ValidationError{Message: "无效关键词ID"}
 	}
-	// normalized、err 保存规范化后的规则输入及校验结果。
-	normalized, err := normalizeDraft(draft)
-	if err != nil {
-		return err
+	return s.repository.Update(ctx, userID, cookieID, id, func(current Keyword) (Draft, error) {
+		return normalizeUpdateDraft(draft, current)
+	})
+}
+
+// normalizeUpdateDraft 将请求 draft 中未提供的匹配字段从事务快照 current 继承，再完整校验。
+// 旧 Keyword 只能修改首表达式；复制集合避免修改仓储快照，空字符串表示未提供兼容字段。
+func normalizeUpdateDraft(draft Draft, current Keyword) (Draft, error) {
+	if strings.TrimSpace(draft.MatchType) == "" {
+		draft.MatchType = current.MatchType
 	}
-	return s.repository.Update(ctx, userID, cookieID, id, normalized)
+	if draft.Expressions == nil {
+		draft.Expressions = append([]string(nil), current.Expressions...)
+		if len(draft.Expressions) == 0 && current.Keyword != "" {
+			draft.Expressions = []string{current.Keyword}
+		}
+		if draft.Keyword != "" && len(draft.Expressions) > 0 {
+			draft.Expressions[0] = draft.Keyword
+		}
+	}
+	return normalizeDraft(draft)
 }
 
 // DeleteByID 删除指定 ID 的关键词规则。
@@ -322,8 +348,13 @@ func (s *Service) validateUser(userID int64) error {
 // 商品范围同时接受兼容的单值 ItemID 与多值 ItemIDs，去重后合并写回 ItemID，
 // 使一条规则可以关联多个商品，同时保持历史单值数据的原样可读。
 func normalizeDraft(draft Draft) (Draft, error) {
-	// normalizedExpressions 保存去空白、去重后的规则表达式集合。
-	normalizedExpressions, err := normalizeExpressions(draft.Keyword, draft.Expressions)
+	// matchType 先确定空白的处理方式，此时只校验模式，不编译表达式。
+	matchType, err := normalizeMatchType(draft.MatchType, nil)
+	if err != nil {
+		return Draft{}, err
+	}
+	// normalizedExpressions 保存去重后的表达式，正则原文不能被首尾空白裁剪改写。
+	normalizedExpressions, err := normalizeExpressions(draft.Keyword, draft.Expressions, matchType)
 	if err != nil {
 		return Draft{}, err
 	}
@@ -360,12 +391,13 @@ func normalizeDraft(draft Draft) (Draft, error) {
 	return draft, nil
 }
 
-// normalizeExpressions 规范化兼容单值字段和多表达式字段，并拒绝空表达式；keyword 是历史单值输入，expressions 是优先采用的新集合。
-func normalizeExpressions(keyword string, expressions []string) ([]string, error) {
+// normalizeExpressions 优先采用 expressions，缺省时回退 keyword；matchType 决定是否保留语法空白。
+// 返回按首次出现顺序去重的非空集合；regexp 仅拒绝空字符串，contains 继续裁剪边界空白。
+func normalizeExpressions(keyword string, expressions []string, matchType string) ([]string, error) {
 	// source 是优先使用的新多表达式输入；只有字段缺省为 nil 时才回退历史 keyword 字段。
 	source := expressions
 	if source == nil {
-		if strings.TrimSpace(keyword) == "" {
+		if keyword == "" || (matchType != KeywordMatchTypeRegexp && strings.TrimSpace(keyword) == "") {
 			return nil, &ValidationError{Message: "至少填写一个表达式"}
 		}
 		source = []string{keyword}
@@ -379,8 +411,11 @@ func normalizeExpressions(keyword string, expressions []string) ([]string, error
 	seen := make(map[string]struct{}, len(source))
 	// expressionIndex、rawExpression 表示当前待校验的表达式位置和原始值。
 	for expressionIndex, rawExpression := range source {
-		// expression 是去除首尾空白后的匹配文本。
-		expression := strings.TrimSpace(rawExpression)
+		// expression 保留正则原文；普通包含匹配兼容历史的边界空白裁剪。
+		expression := rawExpression
+		if matchType != KeywordMatchTypeRegexp {
+			expression = strings.TrimSpace(expression)
+		}
 		if expression == "" {
 			return nil, &ValidationError{Message: fmt.Sprintf("第 %d 个表达式不能为空", expressionIndex+1)}
 		}

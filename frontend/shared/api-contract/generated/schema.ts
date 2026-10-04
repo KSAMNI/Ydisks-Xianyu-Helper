@@ -2243,16 +2243,15 @@ export interface components {
         };
         KeywordTypedListResponse: components["schemas"]["KeywordTypedResponse"][];
         KeywordCreateRequest: {
-            /** @description 兼容旧单值调用方；新调用方可同时传 expressions */
+            /** @description 兼容旧单值调用方；更新且未提供 expressions 时仅替换首表达式并保留其余项 */
             keyword: string;
-            /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
+            /** @description 多表达式按 OR 匹配；regexp 保留原文空白，contains 去除首尾空白；更新时缺省继承现有集合 */
             expressions?: string[];
             /**
-             * @description 匹配模式；regexp 使用大小写不敏感 Go/RE2
-             * @default contains
+             * @description 创建时缺省 contains，更新时缺省保留现有模式；regexp 使用大小写不敏感 Go/RE2
              * @enum {string}
              */
-            match_type: "contains" | "regexp";
+            match_type?: "contains" | "regexp";
             reply: string;
             /** @description 兼容旧单值调用方；多选时由 item_ids 合并而来 */
             item_id: string;

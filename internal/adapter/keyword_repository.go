@@ -53,45 +53,59 @@ func (r *KeywordRepository) Add(ctx context.Context, userID int64, cookieID stri
 	return r.store.Keywords.AddWithExpressions(ctx, cookieID, expressions, draft.Reply, draft.ItemID, draft.Type, draft.MatchType, draft.ImageURL)
 }
 
-// Replace 原子覆盖指定用户账号的全部关键词规则。
-func (r *KeywordRepository) Replace(ctx context.Context, userID int64, cookieID string, drafts []keywordsapp.Draft) error {
+// Replace 在数据库事务内转换现有规则并运行应用层 build，成功后才整体覆盖。
+func (r *KeywordRepository) Replace(ctx context.Context, userID int64, cookieID string, build func([]keywordsapp.Keyword) ([]keywordsapp.Draft, error)) error {
 	// err 表示账号归属校验失败。
 	if err := r.authorize(ctx, userID, cookieID); err != nil {
 		return err
 	}
-	// rows 保存转换后的数据库关键词写入行。
-	rows := make([]db.KeywordRow, 0, len(drafts))
-	// draft 表示当前待转换的应用层关键词草稿。
-	for _, draft := range drafts {
-		rows = append(rows, db.KeywordRow{
-			CookieID:    cookieID,
-			Keyword:     draft.Keyword,
-			Expressions: draft.Expressions,
-			MatchType:   draft.MatchType,
-			Reply:       draft.Reply,
-			ItemID:      draft.ItemID,
-			Type:        draft.Type,
-			ImageURL:    draft.ImageURL,
-		})
-	}
-	return r.store.Keywords.ReplaceForCookie(ctx, cookieID, rows)
+	return r.store.Keywords.ReplaceWithCurrent(ctx, cookieID, func(current []db.KeywordRow) ([]db.KeywordRow, error) {
+		// models 是事务快照对应的非敏感应用模型。
+		models := make([]keywordsapp.Keyword, 0, len(current))
+		// row 是当前待转换的持久化快照。
+		for _, row := range current {
+			models = append(models, keywordModel(row))
+		}
+		// drafts、err 保存应用层决定的完整替换批次或兼容校验错误。
+		drafts, err := build(models)
+		if err != nil {
+			return nil, err
+		}
+		// rows 是已验证批次的持久化字段集合，账号由事务边界统一指定。
+		rows := make([]db.KeywordRow, 0, len(drafts))
+		// draft 是当前应用层确认可替换的规则。
+		for _, draft := range drafts {
+			rows = append(rows, keywordDraftRow(draft))
+		}
+		return rows, nil
+	})
 }
 
-// Update 更新指定用户账号的一条关键词规则。
-func (r *KeywordRepository) Update(ctx context.Context, userID int64, cookieID string, id int64, draft keywordsapp.Draft) error {
+// Update 在同一数据库事务内读取现有规则，运行 build 合并缺省字段并写回。
+func (r *KeywordRepository) Update(ctx context.Context, userID int64, cookieID string, id int64, build func(keywordsapp.Keyword) (keywordsapp.Draft, error)) error {
 	// err 表示账号归属校验失败。
 	if err := r.authorize(ctx, userID, cookieID); err != nil {
 		return err
 	}
-	// err 表示数据库更新错误或目标规则不存在。
-	err := r.store.Keywords.UpdateByID(ctx, db.KeywordRow{
-		ID: id, CookieID: cookieID, Keyword: draft.Keyword, Expressions: draft.Expressions, MatchType: draft.MatchType,
-		Reply: draft.Reply, ItemID: draft.ItemID, Type: draft.Type, ImageURL: draft.ImageURL,
+	// err 保存原子更新或应用回调的错误，不把语法拒绝变为基础设施故障。
+	err := r.store.Keywords.UpdateWithCurrent(ctx, cookieID, id, func(current db.KeywordRow) (db.KeywordRow, error) {
+		// draft、buildErr 保存继承缺省匹配字段后通过校验的规则。
+		draft, buildErr := build(keywordModel(current))
+		if buildErr != nil {
+			return db.KeywordRow{}, buildErr
+		}
+		return keywordDraftRow(draft), nil
 	})
 	if errors.Is(err, db.ErrNotFound) {
 		return keywordsapp.ErrNotFound
 	}
 	return err
+}
+
+// keywordDraftRow 将已通过应用校验的 draft 转为写入字段，不接受调用方覆盖账号或主键。
+func keywordDraftRow(draft keywordsapp.Draft) db.KeywordRow {
+	return db.KeywordRow{Keyword: draft.Keyword, Expressions: draft.Expressions, MatchType: draft.MatchType,
+		Reply: draft.Reply, ItemID: draft.ItemID, Type: draft.Type, ImageURL: draft.ImageURL}
 }
 
 // DeleteByID 按 ID 删除指定用户账号的一条关键词规则。

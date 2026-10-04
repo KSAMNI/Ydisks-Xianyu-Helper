@@ -33,12 +33,12 @@ func TestKeywordRepositoryCRUDMapping(t *testing.T) {
 		t.Fatalf("关键词列表异常 rows=%+v err=%v", rows, listErr)
 	}
 	// updateErr 保存关键词更新结果。
-	updateErr := repository.Update(ctx, owner.ID, "cid", keywordID, keywordsapp.Draft{Keyword: "新价格", Reply: "60元", Type: "text"})
+	updateErr := keywordsapp.NewService(repository).Update(ctx, owner.ID, "cid", keywordID, keywordsapp.Draft{Keyword: "新价格", Reply: "60元", Type: "text"})
 	if updateErr != nil {
 		t.Fatal(updateErr)
 	}
 	// replaceErr 保存批量替换结果。
-	replaceErr := repository.Replace(ctx, owner.ID, "cid", []keywordsapp.Draft{{Keyword: "图片", Type: "image", ImageURL: "https://example.invalid/a.png"}})
+	replaceErr := keywordsapp.NewService(repository).Replace(ctx, owner.ID, "cid", []keywordsapp.Draft{{Keyword: "图片", Type: "image", ImageURL: "https://example.invalid/a.png"}})
 	if replaceErr != nil {
 		t.Fatal(replaceErr)
 	}
@@ -162,8 +162,8 @@ func TestKeywordRepositoryCoversClosedDatabaseOperations(t *testing.T) {
 			_, err := repository.Add(ctx, 1, "cid", keywordsapp.Draft{})
 			return err
 		}()},
-		{name: "替换", err: repository.Replace(ctx, 1, "cid", nil)},
-		{name: "更新", err: repository.Update(ctx, 1, "cid", 1, keywordsapp.Draft{})},
+		{name: "替换", err: keywordsapp.NewService(repository).Replace(ctx, 1, "cid", nil)},
+		{name: "更新", err: keywordsapp.NewService(repository).Update(ctx, 1, "cid", 1, keywordsapp.Draft{})},
 		{name: "按 ID 删除", err: repository.DeleteByID(ctx, 1, "cid", 1)},
 		{name: "按索引删除", err: repository.DeleteByIndex(ctx, 1, "cid", 0)},
 		{name: "商品回复列表", err: func() error {

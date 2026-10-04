@@ -76,7 +76,7 @@ func exerciseKeywordExpressionCRUD(t *testing.T, store *Store, userID int64, coo
 			break
 		}
 	}
-	if !multiFound || multiRow.Keyword != "首表达式" || multiRow.MatchType != "regexp" || !reflect.DeepEqual(multiRow.Expressions, []string{"首表达式", "次表达式"}) {
+	if !multiFound || multiRow.Keyword != " 首表达式 " || multiRow.MatchType != "regexp" || !reflect.DeepEqual(multiRow.Expressions, []string{" 首表达式 ", "次表达式"}) {
 		t.Fatalf("multi-expression row=%+v found=%v", multiRow, multiFound)
 	}
 

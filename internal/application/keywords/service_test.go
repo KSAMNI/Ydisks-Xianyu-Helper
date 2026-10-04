@@ -55,15 +55,34 @@ func (f *keywordRepositoryFake) Add(_ context.Context, _ int64, _ string, draft 
 	return 9, f.addErr
 }
 
-// Replace 实现测试仓储的关键词批量替换端口。
-func (f *keywordRepositoryFake) Replace(_ context.Context, _ int64, _ string, drafts []Draft) error {
+// Replace 在替身的当前规则上运行应用校验，仅成功时记录实际写入。
+func (f *keywordRepositoryFake) Replace(_ context.Context, _ int64, _ string, build func([]Keyword) ([]Draft, error)) error {
+	// drafts、err 保存应用回调生成的批次或校验错误。
+	drafts, err := build(f.listRows)
+	if err != nil {
+		return err
+	}
 	f.replaceCalls++
 	f.replacedDrafts = append([]Draft(nil), drafts...)
 	return f.replaceErr
 }
 
-// Update 实现测试仓储的关键词更新端口。
-func (f *keywordRepositoryFake) Update(_ context.Context, _ int64, _ string, _ int64, draft Draft) error {
+// Update 用当前规则执行更新回调，失败不记录写入，模拟事务回滚边界。
+func (f *keywordRepositoryFake) Update(_ context.Context, _ int64, _ string, id int64, build func(Keyword) (Draft, error)) error {
+	// current 保存目标规则快照；旧测试未预置规则时使用最小兼容快照。
+	current := Keyword{ID: id}
+	// row 是替身持有的当前规则，用于恢复未提供的匹配字段。
+	for _, row := range f.listRows {
+		if row.ID == id {
+			current = row
+			break
+		}
+	}
+	// draft、err 保存合并并校验后的更新或错误。
+	draft, err := build(current)
+	if err != nil {
+		return err
+	}
 	f.updateCalls++
 	f.updatedDraft = draft
 	return f.updateErr
@@ -532,7 +551,7 @@ func TestServiceRejectsInvalidItemScopeInput(t *testing.T) {
 
 var _ Repository = (*keywordRepositoryFake)(nil)
 
-// TestServiceNormalizesKeywordExpressions 验证新表达式字段优先、去空白去重及匹配模式别名归一。
+// TestServiceNormalizesKeywordExpressions 验证新字段优先、正则按原文去重及匹配模式别名归一。
 func TestServiceNormalizesKeywordExpressions(t *testing.T) {
 	// repository 记录应用服务最终交给持久化端口的规则草稿。
 	repository := &keywordRepositoryFake{}
@@ -541,7 +560,7 @@ func TestServiceNormalizesKeywordExpressions(t *testing.T) {
 	// _, err 保存包含重复表达式的创建结果。
 	_, err := service.Add(context.Background(), 7, "account-1", Draft{
 		Keyword:     "历史表达式",
-		Expressions: []string{" 新表达式 ", "新表达式", "English", " English "},
+		Expressions: []string{" 新表达式 ", "新表达式", "English", " English ", "English"},
 		MatchType:   "regex",
 		Reply:       "回复",
 	})
@@ -550,10 +569,10 @@ func TestServiceNormalizesKeywordExpressions(t *testing.T) {
 	}
 	// got 保存仓储收到的规范化表达式集合。
 	got := repository.addedDraft
-	if got.Keyword != "新表达式" || got.MatchType != KeywordMatchTypeRegexp {
+	if got.Keyword != " 新表达式 " || got.MatchType != KeywordMatchTypeRegexp {
 		t.Fatalf("新字段未优先或别名未归一: %+v", got)
 	}
-	if len(got.Expressions) != 2 || got.Expressions[0] != "新表达式" || got.Expressions[1] != "English" {
+	if len(got.Expressions) != 4 || got.Expressions[0] != " 新表达式 " || got.Expressions[1] != "新表达式" || got.Expressions[2] != "English" || got.Expressions[3] != " English " {
 		t.Fatalf("表达式未按首次出现顺序去重: %+v", got.Expressions)
 	}
 }
