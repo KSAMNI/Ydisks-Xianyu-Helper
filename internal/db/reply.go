@@ -124,10 +124,16 @@ func normalizeKeywordMatchType(raw string) string {
 
 // DefaultReply 对应 default_replies 表。
 type DefaultReply struct {
-	Enabled       bool
-	ReplyContent  string
+	// Enabled 控制账号默认回复，不影响商品专属配置。
+	Enabled bool
+	// ReplyContent 是默认回复正文。
+	ReplyContent string
+	// ReplyImageURL 是兼容网络图片来源。
 	ReplyImageURL string
-	ReplyOnce     bool
+	// ReplyImagePath 是账号专用图片目录内的相对文件引用。
+	ReplyImagePath string
+	// ReplyOnce 保持账号加会话的一次性投递语义。
+	ReplyOnce bool
 }
 
 // DefaultReplySummary 是按账号查询默认回复列表时使用的带账号标识视图。
@@ -140,6 +146,8 @@ type DefaultReplySummary struct {
 	ReplyContent string
 	// ReplyImageURL 是默认回复图片地址。
 	ReplyImageURL string
+	// ReplyImagePath 是账号专用图片目录内的相对文件引用。
+	ReplyImagePath string
 	// ReplyOnce 表示同一聊天是否只发送一次。
 	ReplyOnce bool
 }
@@ -160,9 +168,16 @@ const defaultReplyStatusSending = "sending"
 
 // ItemReply 对应 item_replay 表（指定商品回复）。
 type ItemReply struct {
-	ItemID       string
-	CookieID     string
+	// ItemID 是配置所属商品标识。
+	ItemID string
+	// CookieID 是配置所属账号标识。
+	CookieID string
+	// ReplyContent 是商品默认回复正文。
 	ReplyContent string
+	// ReplyImageURL 是商品默认回复的网络图片来源。
+	ReplyImageURL string
+	// ReplyImagePath 是账号专用目录内的本地图片相对路径。
+	ReplyImagePath string
 }
 
 // Keywords 关键字操作。
@@ -210,45 +225,16 @@ type DefaultReplies struct {
 	Dialect Dialect
 }
 
-// Get 取某账号默认回复设置。不存在返回 ErrNotFound。
+// Get 读取 cookieID 的默认回复配置；未配置时返回 ErrNotFound。
 func (d *DefaultReplies) Get(ctx context.Context, cookieID string) (*DefaultReply, error) {
-	// dr 用于本次流程后续判断的dr
-	var dr DefaultReply
-	// enabled、replyOnce 用于本次流程后续判断的enabled、replyOnce
-	var enabled, replyOnce int
-	// content、imageURL 用于本次流程后续判断的content、imageURL
-	var content, imageURL sql.NullString
-	// err 用于本次流程后续判断的err
-	err := d.DB.QueryRowContext(ctx,
-		`SELECT enabled, reply_content, reply_image_url, reply_once FROM default_replies WHERE cookie_id=?`,
-		cookieID).Scan(&enabled, &content, &imageURL, &replyOnce)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	dr.Enabled = enabled != 0
-	dr.ReplyContent = content.String
-	dr.ReplyImageURL = imageURL.String
-	dr.ReplyOnce = replyOnce != 0
-	return &dr, nil
+	return readDefaultReply(ctx, d.DB, cookieID)
 }
 
-// Upsert 保存或覆盖指定账号的默认回复配置。
+// Upsert 完整覆盖 cookieID 的默认回复配置 reply，与兼容补丁共享账号行锁。
 func (d *DefaultReplies) Upsert(ctx context.Context, cookieID string, reply DefaultReply) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx,
-		`INSERT INTO default_replies (cookie_id, enabled, reply_content, reply_image_url, reply_once, updated_at)
-		 VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`+dialectUpsert(d.Dialect, []string{"cookie_id"}, map[string]string{
-			"enabled":         "EXCLUDED.enabled",
-			"reply_content":   "EXCLUDED.reply_content",
-			"reply_image_url": "EXCLUDED.reply_image_url",
-			"reply_once":      "EXCLUDED.reply_once",
-			"updated_at":      "CURRENT_TIMESTAMP",
-		}),
-		cookieID, boolToInt(reply.Enabled), reply.ReplyContent, defaultReplyNullableString(reply.ReplyImageURL), boolToInt(reply.ReplyOnce))
-	return err
+	return d.UpdateWithCurrent(ctx, cookieID, func(DefaultReply) (DefaultReply, error) {
+		return reply, nil
+	})
 }
 
 // defaultReplyNullableString 将空图片地址转换为数据库 NULL，保持历史存储语义。
@@ -263,7 +249,7 @@ func defaultReplyNullableString(value string) any {
 func (d *DefaultReplies) ListForUser(ctx context.Context, userID int64) ([]DefaultReplySummary, error) {
 	// rows、err 用于本次流程后续判断的rows、err
 	rows, err := d.DB.QueryContext(ctx, `
-		SELECT dr.cookie_id, dr.enabled, COALESCE(dr.reply_content,''), dr.reply_once, COALESCE(dr.reply_image_url,'')
+		SELECT dr.cookie_id, dr.enabled, COALESCE(dr.reply_content,''), dr.reply_once, COALESCE(dr.reply_image_url,''), COALESCE(dr.reply_image_path,'')
 		  FROM default_replies dr JOIN cookies c ON c.id=dr.cookie_id WHERE c.user_id=?`, userID)
 	if err != nil {
 		return nil, err
@@ -277,7 +263,7 @@ func (d *DefaultReplies) ListForUser(ctx context.Context, userID int64) ([]Defau
 		// enabled、replyOnce 用于本次流程后续判断的enabled、replyOnce
 		var enabled, replyOnce int
 		if // err 用于本次流程后续判断的err
-		err := rows.Scan(&item.CookieID, &enabled, &item.ReplyContent, &replyOnce, &item.ReplyImageURL); err != nil {
+		err := rows.Scan(&item.CookieID, &enabled, &item.ReplyContent, &replyOnce, &item.ReplyImageURL, &item.ReplyImagePath); err != nil {
 			return nil, err
 		}
 		item.Enabled = enabled != 0
@@ -441,22 +427,7 @@ type ItemReplies struct {
 	Dialect Dialect
 }
 
-// Get 取某账号某商品的指定回复。
+// Get 读取 cookieID 下 itemID 的商品图文默认回复，未配置返回 ErrNotFound。
 func (i *ItemReplies) Get(ctx context.Context, cookieID, itemID string) (*ItemReply, error) {
-	// ir 用于本次流程后续判断的ir
-	var ir ItemReply
-	// content 用于本次流程后续判断的内容
-	var content sql.NullString
-	// err 用于本次流程后续判断的err
-	err := i.DB.QueryRowContext(ctx,
-		`SELECT item_id, cookie_id, reply_content FROM item_replay WHERE cookie_id=? AND item_id=?`,
-		cookieID, itemID).Scan(&ir.ItemID, &ir.CookieID, &content)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	ir.ReplyContent = content.String
-	return &ir, nil
+	return readItemReply(ctx, i.DB, cookieID, itemID)
 }

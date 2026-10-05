@@ -382,6 +382,10 @@ type itemReplyResponse struct {
 	CookieID string `json:"cookie_id,omitempty"`
 	// ReplyContent 是指定商品的回复内容。
 	ReplyContent string `json:"reply_content"`
+	// ReplyImageURL 是商品默认回复的网络图片来源。
+	ReplyImageURL string `json:"reply_image_url,omitempty"`
+	// ReplyImagePath 是账号图片目录内的本地图片相对路径。
+	ReplyImagePath string `json:"reply_image_path,omitempty"`
 }
 
 // defaultReplyResponse 是默认回复接口的具名 DTO。
@@ -394,6 +398,8 @@ type defaultReplyResponse struct {
 	ReplyContent string `json:"reply_content"`
 	// ReplyImageURL 是默认图片回复地址。
 	ReplyImageURL string `json:"reply_image_url,omitempty"`
+	// ReplyImagePath 是账号专用图片目录内的相对文件引用。
+	ReplyImagePath string `json:"reply_image_path,omitempty"`
 	// ReplyOnce 表示是否只回复一次。
 	ReplyOnce bool `json:"reply_once"`
 }
@@ -402,7 +408,7 @@ type defaultReplyResponse struct {
 func newDefaultReplyResponse(cookieID string, reply defaultreplyapp.Reply) defaultReplyResponse {
 	return defaultReplyResponse{
 		CookieID: cookieID, Enabled: reply.Enabled, ReplyContent: reply.ReplyContent,
-		ReplyImageURL: reply.ReplyImageURL, ReplyOnce: reply.ReplyOnce,
+		ReplyImageURL: reply.ReplyImageURL, ReplyImagePath: reply.ReplyImagePath, ReplyOnce: reply.ReplyOnce,
 	}
 }
 

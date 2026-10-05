@@ -89,6 +89,10 @@ type keywordUpdateRequest struct {
 type itemReplyRequest struct {
 	// ReplyContent 是商品命中后的回复正文。
 	ReplyContent string `json:"reply_content"`
+	// ReplyImageURL 缺省保留现有网络图片，显式空串清除。
+	ReplyImageURL *string `json:"reply_image_url"`
+	// ReplyImagePath 缺省保留现有本地图，显式空串清除。
+	ReplyImagePath *string `json:"reply_image_path"`
 }
 
 // mountKeywordsReal 注册关键词回复兼容路由。
@@ -382,7 +386,7 @@ func (s *Server) listItemReplies(w http.ResponseWriter, r *http.Request) {
 	result := make([]itemReplyResponse, 0, len(rows))
 	// row 是当前待映射的商品回复。
 	for _, row := range rows {
-		result = append(result, itemReplyResponse{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent})
+		result = append(result, itemReplyResponse{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent, ReplyImageURL: row.ReplyImageURL, ReplyImagePath: row.ReplyImagePath})
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -408,7 +412,7 @@ func (s *Server) getItemReply(w http.ResponseWriter, r *http.Request) {
 		writeKeywordError(w, err, "查询失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, itemReplyResponse{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent})
+	writeJSON(w, http.StatusOK, itemReplyResponse{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent, ReplyImageURL: row.ReplyImageURL, ReplyImagePath: row.ReplyImagePath})
 }
 
 // setItemReply 覆盖指定商品回复。
@@ -430,7 +434,7 @@ func (s *Server) setItemReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// err 表示应用层写入结果。
-	if err := s.keywordApplication().SetItemReply(r.Context(), userID, cookieID, itemID, request.ReplyContent); err != nil {
+	if err := s.keywordApplication().SetItemReplyDraft(r.Context(), userID, cookieID, itemID, keywords.ItemReplyDraft{ReplyContent: request.ReplyContent, ReplyImageURL: request.ReplyImageURL, ReplyImagePath: request.ReplyImagePath}); err != nil {
 		writeKeywordError(w, err, "保存失败")
 		return
 	}

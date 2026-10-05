@@ -21,8 +21,10 @@ import (
 
 // ReplyResult 回复结果。
 type ReplyResult struct {
-	Text      string // 文本回复（可空）
-	ImageURL  string // 图片回复（可空）
+	Text     string // 文本回复（可空）
+	ImageURL string // 图片回复（可空）
+	// ImagePath 是默认回复账号目录中的可选图片相对路径，与 ImageURL 互斥。
+	ImagePath string
 	Source    string // 回复来源：API/关键词/AI/默认
 	Skip      bool   // true 表示匹配到空回复，不发送任何内容
 	ReplyOnce bool   // 仅默认回复使用，发送状态由 Handle 持久化
@@ -64,6 +66,8 @@ type ReplyMessage struct {
 	Text string
 	// ImageURL 是可选的来源图片地址；上传和尺寸处理由聊天应用完成。
 	ImageURL string
+	// ImagePath 是账号专用素材目录中的相对路径，仅默认回复使用，聊天应用负责受限加载。
+	ImagePath string
 }
 
 // ReplySendResult 是聊天应用投递完整回复后的分段确认结果。
@@ -137,7 +141,7 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 		var claimed bool
 		// err 用于本次流程后续判断的err
 		var err error
-		record, claimed, err = r.store.DefaultReps.ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.ImageURL != "")
+		record, claimed, err = r.store.DefaultReps.ClaimRecord(ctx, r.cookieID, m.ChatID, res.Text != "", res.ImageURL != "" || res.ImagePath != "")
 		if err != nil {
 			return fmt.Errorf("领取默认回复发送任务: %w", err)
 		}
@@ -151,14 +155,15 @@ func (r *ReplyService) Handle(ctx context.Context, m ChatMessage) error {
 // handleWithDelivery 把完整回复交给聊天应用，并把其分段结果同步到 reply_once 状态。
 func (r *ReplyService) handleWithDelivery(ctx context.Context, m ChatMessage, res *ReplyResult, record db.DefaultReplyRecord) error {
 	// message 保存本次仍需发送的完整回复；已成功的 reply_once 分段会被剔除。
-	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL}
+	message := ReplyMessage{AccountID: r.cookieID, ChatID: m.ChatID, ToUserID: m.SenderUserID, Text: res.Text, ImageURL: res.ImageURL, ImagePath: res.ImagePath}
 	if record.ImageSent {
 		message.ImageURL = ""
+		message.ImagePath = ""
 	}
 	if record.TextSent {
 		message.Text = ""
 	}
-	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" {
+	if strings.TrimSpace(message.Text) == "" && strings.TrimSpace(message.ImageURL) == "" && strings.TrimSpace(message.ImagePath) == "" {
 		return nil
 	}
 	// sent、sendErr 保存消息页面完整发送入口返回的分段确认和错误。
@@ -403,35 +408,30 @@ func (r *ReplyService) keywordResult(kw db.Keyword, m ChatMessage) *ReplyResult 
 	return &ReplyResult{Text: formatReply(kw.Reply, m), Source: "关键词"}
 }
 
-// defaultReply 默认回复。移植自 get_default_reply：
-// 指定商品回复优先 → 账号默认回复（reply_once 防重复 + 变量替换）。
-// defaultReply 封装default回复业务协调。
+// defaultReply 对消息 m 优先使用商品专属图文，未配置有效商品内容时回退账号默认。
+// 商品回复保留独立生效且每次触发的历史语义；账号分支仍使用原有 reply_once 与变量替换。
 func (r *ReplyService) defaultReply(ctx context.Context, m ChatMessage) *ReplyResult {
-	// 1. 指定商品回复。
 	if m.ItemID != "" {
-		if // ir、err 用于本次流程后续判断的ir、err
-		ir, err := r.store.ItemReps.Get(ctx, r.cookieID, m.ItemID); err == nil && ir != nil && strings.TrimSpace(ir.ReplyContent) != "" {
-			return &ReplyResult{Text: formatReplyWithItem(ir.ReplyContent, m), Source: "默认"}
+		// item 与 itemErr 保存当前账号商品的独立回复；不存在或读取失败保持历史兜底行为。
+		item, itemErr := r.store.ItemReps.Get(ctx, r.cookieID, m.ItemID)
+		if itemErr == nil && item != nil && (strings.TrimSpace(item.ReplyContent) != "" || strings.TrimSpace(item.ReplyImageURL) != "" || strings.TrimSpace(item.ReplyImagePath) != "") {
+			return &ReplyResult{Text: formatReplyWithItem(item.ReplyContent, m), ImageURL: item.ReplyImageURL, ImagePath: item.ReplyImagePath, Source: "默认"}
 		}
 	}
-	// 2. 账号默认回复。
-	dr, err := r.store.DefaultReps.Get(ctx, r.cookieID)
-	if err != nil || dr == nil || !dr.Enabled {
+	// reply 与 getErr 保存账号默认配置及其读取错误，不会把账号图片拼接到商品回复。
+	reply, getErr := r.store.DefaultReps.Get(ctx, r.cookieID)
+	if getErr != nil || reply == nil || !reply.Enabled {
 		return nil
 	}
-	// 文字和图片都为空 → 空回复标记。
-	if strings.TrimSpace(dr.ReplyContent) == "" && strings.TrimSpace(dr.ReplyImageURL) == "" {
+	if strings.TrimSpace(reply.ReplyContent) == "" && strings.TrimSpace(reply.ReplyImageURL) == "" && strings.TrimSpace(reply.ReplyImagePath) == "" {
 		return &ReplyResult{Skip: true, Source: "默认"}
 	}
-	// res 用于本次流程后续判断的响应
-	res := &ReplyResult{Source: "默认", ReplyOnce: dr.ReplyOnce}
-	if strings.TrimSpace(dr.ReplyContent) != "" {
-		res.Text = formatReply(dr.ReplyContent, m)
+	// result 保留账号 once 标记与完整图片来源，发送入口会验证来源互斥。
+	result := &ReplyResult{Source: "默认", ReplyOnce: reply.ReplyOnce, ImageURL: reply.ReplyImageURL, ImagePath: reply.ReplyImagePath}
+	if strings.TrimSpace(reply.ReplyContent) != "" {
+		result.Text = formatReply(reply.ReplyContent, m)
 	}
-	if strings.TrimSpace(dr.ReplyImageURL) != "" {
-		res.ImageURL = dr.ReplyImageURL
-	}
-	return res
+	return result
 }
 
 // formatReply 变量替换：{send_user_name} {send_user_id} {send_message}。
