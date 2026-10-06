@@ -5,6 +5,12 @@ on:
     branches:
       - dev
   workflow_dispatch:
+    inputs:
+      publish_latest:
+        description: 验证通过后将本次 main 镜像发布为 latest
+        required: false
+        default: false
+        type: boolean
   workflow_call:
     inputs:
       app_version:
@@ -28,6 +34,16 @@ jobs:
       app_version: ${{ steps.version.outputs.app_version }}
       build_time: ${{ steps.version.outputs.build_time }}
     steps:
+      - name: 校验 latest 发布来源
+        if: inputs.publish_latest
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ] || [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo 'latest 仅允许从 main 分支手动发布。' >&2
+            exit 1
+          fi
+
       - name: 准备构建版本
         id: version
         shell: bash
@@ -328,3 +344,55 @@ jobs:
           first_tag="$(printf '%s\n' "$IMAGE_TAGS" | sed -n '/./{p;q;}')"
           test -n "$first_tag"
           docker buildx imagetools inspect "$first_tag"
+
+  publish-latest:
+    name: 发布本次 main 镜像为 latest
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_latest && github.ref == 'refs/heads/main'
+    needs: publish
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: production-release-publish
+      cancel-in-progress: false
+    environment:
+      name: production-release
+    steps:
+      - name: 配置 Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 下载本次运行的镜像摘要
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ydisks-docker-digest-*
+          path: dist/digests
+          merge-multiple: true
+
+      - name: 登录 GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 校验 main 并发布 latest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          current_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$current_sha" != "$GITHUB_SHA" ]; then
+            echo 'main 已更新，拒绝使用旧构建覆盖 latest，请重新构建当前 main。' >&2
+            exit 1
+          fi
+          image_name="ghcr.io/${GITHUB_REPOSITORY,,}"
+          mapfile -t digest_files < <(find dist/digests -maxdepth 1 -type f -print | sort)
+          if [ "${#digest_files[@]}" -ne 2 ]; then
+            echo "预期 2 个镜像摘要，实际 ${#digest_files[@]} 个。" >&2
+            exit 1
+          fi
+          digest_args=()
+          for digest_file in "${digest_files[@]}"; do
+            digest_args+=("$image_name@sha256:$(basename "$digest_file")")
+          done
+          docker buildx imagetools create --tag "$image_name:latest" "${digest_args[@]}"
+          docker buildx imagetools inspect "$image_name:latest"

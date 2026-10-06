@@ -57,6 +57,7 @@ const cardPayload = (data: CardMutation) => ({
   text_content: data.text_content,
   data_content: data.data_content,
   image_url: data.image_url,
+  image_path: data.image_path,
   description: data.description,
   enabled: data.enabled,
   delay_seconds: data.delay_seconds,

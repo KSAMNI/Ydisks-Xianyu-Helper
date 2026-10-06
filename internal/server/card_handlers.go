@@ -25,8 +25,10 @@ type cardMutationRequest struct {
 	TextContent string `json:"text_content"`
 	// DataContent 是 data 类型尚未消费的逐行卡密库存；指针用于区分省略和显式空库存。
 	DataContent *string `json:"data_content"`
-	// ImageURL 是 image 类型自动发货时发送的图片地址。
-	ImageURL string `json:"image_url"`
+	// ImageURL 省略时更新保留旧来源，显式空串用于来源切换。
+	ImageURL *string `json:"image_url"`
+	// ImagePath 是执行账号素材目录内的相对路径；省略保留，显式空串清空。
+	ImagePath *string `json:"image_path"`
 	// Description 是用户维护的卡券组说明。
 	Description string `json:"description"`
 	// Enabled 表示保存后是否允许自动化规则使用该卡券组。
@@ -266,9 +268,18 @@ func decodeCardDraft(r *http.Request) (cardsapp.Draft, error) {
 	if request.SpecValue != nil {
 		specValue = *request.SpecValue
 	}
+	// imageURL、imagePath 保存指针字段值；字段存在性独立传入以保证来源切换不能静默清空。
+	imageURL, imagePath := "", ""
+	if request.ImageURL != nil {
+		imageURL = *request.ImageURL
+	}
+	if request.ImagePath != nil {
+		imagePath = *request.ImagePath
+	}
 	return cardsapp.Draft{
 		Name: request.Name, Type: request.Type, APIConfig: apiConfig,
-		TextContent: request.TextContent, DataContent: dataContent, DataContentSet: dataContentSet, ImageURL: request.ImageURL,
+		TextContent: request.TextContent, DataContent: dataContent, DataContentSet: dataContentSet,
+		ImageURL: imageURL, ImageURLSet: request.ImageURL != nil, ImagePath: imagePath, ImagePathSet: request.ImagePath != nil,
 		Description: request.Description, Enabled: request.Enabled, DelaySeconds: request.DelaySeconds,
 		IsMultiSpec: isMultiSpec, IsMultiSpecSet: isMultiSpecSet,
 		SpecName: specName, SpecNameSet: specNameSet,

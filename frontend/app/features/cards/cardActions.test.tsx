@@ -61,6 +61,40 @@ describe('useCardActions 卡密动作协调器', /* 当前回调验证卡密筛�
     vi.restoreAllMocks();
   });
 
+  test('图片编辑拒绝非法来源并显式提交 URL 与路径清空值', /* 当前回调验证读取本地路径和修改来源的提交语义。 */ async () => {
+    // hook 是图片卡密编辑动作及刷新替身。
+    const { hook } = createCardHook();
+    act(/* 当前回调打开本地图片卡密草稿。 */ () => hook.result.current.handleEdit({ ...cardFixture, type: 'image', image_path: 'goods/a.png' }));
+    expect(hook.result.current.editForm.image_source).toBe('local');
+    act(/* 当前回调模拟空本地路径输入。 */ () => hook.result.current.setEditForm(current => ({ ...current, image_path: '' })));
+    await act(/* 当前回调验证空本地路径不会调用服务端。 */ async () => hook.result.current.handleSaveEdit());
+    expect(cardActionMocks.updateCard).not.toHaveBeenCalled();
+    act(/* 当前回调显式选择 URL，隐藏路径不应残留到提交。 */ () => hook.result.current.setEditForm(/* current 是切换图片来源前的草稿。 */ current => ({ ...current, image_source: 'url', image_url: ' https://example.com/a.png ', image_path: 'old.png' })));
+    await act(/* 当前回调保存新的 URL 来源。 */ async () => hook.result.current.handleSaveEdit());
+    expect(cardActionMocks.updateCard).toHaveBeenCalledWith(1, expect.objectContaining({ image_url: 'https://example.com/a.png', image_path: '' }));
+  });
+
+  test.each(['成功', '失败'])('取消卡密保存后旧请求%s不关闭后续草稿', /* 当前回调验证卡密编辑代次覆盖迟到成功和错误。 */ async outcome => {
+    // finish 控制旧卡密保存返回的时机。
+    let finish!: () => void;
+    cardActionMocks.updateCard.mockImplementationOnce(/* 当前替身模拟不能撤回的后台变更。 */ () => new Promise<void>(/* resolve 和 reject 分别模拟后台迟到结果。 */ (resolve, reject) => { finish = /* 当前完成器在取消后模拟成功或失败。 */ () => outcome === '成功' ? resolve() : reject(new Error('旧保存失败')); }));
+    // hook 和 loadCards 用于确认旧请求不修改新 UI 或刷新列表。
+    const { hook, loadCards } = createCardHook();
+    act(/* 当前回调编辑本地图片卡密。 */ () => hook.result.current.handleEdit({ ...cardFixture, type: 'image', image_path: 'a.png' }));
+    // pending 是旧草稿的保存过程。
+    let pending!: Promise<void>;
+    act(/* 当前回调发起尚未完成的保存。 */ () => { pending = hook.result.current.handleSaveEdit(); });
+    act(/* 当前回调关闭旧草稿并打开新的编辑目标。 */ () => {
+      hook.result.current.setShowEditModal(false);
+      hook.result.current.handleEdit(textCardFixture);
+    });
+    await act(/* 当前回调完成旧请求并等待其后续逻辑。 */ async () => { finish(); await pending; });
+    expect(hook.result.current.showEditModal).toBe(true);
+    expect(hook.result.current.editForm.name).toBe('文案二');
+    expect(window.alert).not.toHaveBeenCalled();
+    expect(loadCards).not.toHaveBeenCalled();
+  });
+
   test('按类型和名称筛选卡密并保存编辑草稿', /* 当前回调验证卡密筛选和编辑提交。 */ async () => {
     // actionContext 保存卡密编辑 Hook 和库存刷新替身。
     const { hook, loadCards } = createCardHook();

@@ -1,4 +1,5 @@
-import { useCallback,useMemo,useState,type Dispatch,type SetStateAction } from 'react';
+import { useCallback,useEffect,useMemo,useRef,useState,type Dispatch,type SetStateAction } from 'react';
+import { imageSourceFields, validateImageSource } from '../../../shared/imageSource';
 import type { Card,CardMutation } from './api';
 import { createCard,deleteCard,updateCard } from './api';
 import { filterCards } from './batchState';
@@ -9,6 +10,9 @@ export const emptyAddForm = (): AddCardForm => ({
   name: '',
   type: 'data',
   content: '',
+  image_source: 'url',
+  image_url: '',
+  image_path: '',
   description: '',
   enabled: true,
   delay_seconds: 0,
@@ -84,15 +88,31 @@ const cardErrorMessage = (error: unknown, fallback = '状态失败'): string => 
 // useCardActions 集中管理卡密新增、编辑、删除、筛选和展示动作。
 export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardActionsState => {
   // showEditModal 表示编辑卡密弹窗是否打开。
-  const [showEditModal, setShowEditModal] = useState(false);
+  const [showEditModal, setEditModalOpen] = useState(false);
   // showAddModal 表示新增卡密弹窗是否打开。
-  const [showAddModal, setShowAddModal] = useState(false);
+  const [showAddModal, setAddModalOpen] = useState(false);
   // selectedCard 保存当前正在编辑的卡密组。
   const [selectedCard, setSelectedCard] = useState<Card | null>(null);
   // editForm 保存当前卡密编辑草稿。
   const [editForm, setEditForm] = useState<EditCardForm>({});
   // addForm 保存当前新增卡密表单。
   const [addForm, setAddForm] = useState<AddCardForm>(emptyAddForm);
+  // editorGenerationRef 隔离取消、重新打开和卸载后的在途保存回调。
+  const editorGenerationRef = useRef(0);
+  // pendingGenerationRef 同一份草稿只允许提交一次，不阻止取消后打开另一份草稿。
+  const pendingGenerationRef = useRef<number | null>(null);
+  useEffect(/* 当前副作用在卸载时使所有旧编辑回调失效。 */ () => /* 清理函数使未完成的保存回调失去草稿写入权。 */ () => { ++editorGenerationRef.current; }, []);
+  // setShowAddModal 每次切换弹窗都建立新代次，取消时丢弃整个图片草稿。
+  const setShowAddModal: Dispatch<SetStateAction<boolean>> = useCallback(/* next 是目标弹窗状态或状态更新器。 */ next => {
+    ++editorGenerationRef.current;
+    setAddModalOpen(typeof next === 'function' ? next(showAddModal) : next);
+    setAddForm(emptyAddForm());
+  }, [showAddModal]);
+  // setShowEditModal 使旧保存不能关闭下一份编辑器。
+  const setShowEditModal: Dispatch<SetStateAction<boolean>> = useCallback(/* next 是目标编辑弹窗状态。 */ next => {
+    ++editorGenerationRef.current;
+    setEditModalOpen(typeof next === 'function' ? next(showEditModal) : next);
+  }, [showEditModal]);
   // typeFilter 保存当前卡密类型筛选条件。
   const [typeFilter, setTypeFilter] = useState<Card['type'] | ''>('');
   // nameSearch 保存当前卡密名称搜索文本。
@@ -126,11 +146,14 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       text_content: card.text_content || '',
       data_content: card.data_content || '',
       image_url: card.image_url || '',
+      image_path: card.image_path || '',
+      image_source: card.image_path ? 'local' : 'url',
       delay_seconds: card.delay_seconds || 0,
       description: card.description || '',
       enabled: card.enabled,
     });
-    setShowEditModal(true);
+    ++editorGenerationRef.current;
+    setEditModalOpen(true);
   }, []);
 
   // handleSaveEdit 保存当前卡密编辑草稿并刷新库存。
@@ -144,6 +167,15 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       alert('请选择卡密类型');
       return;
     }
+    if (editForm.type === 'image') {
+      // imageError 与模板及自动回复共享相同的来源校验语义。
+      const imageError = validateImageSource(editForm);
+      if (imageError) { alert(imageError); return; }
+    }
+    // generation 标记本次保存所属草稿，取消后不再写入 UI。
+    const generation = editorGenerationRef.current;
+    if (pendingGenerationRef.current === generation) return;
+    pendingGenerationRef.current = generation;
     try {
       // updateData 保存映射到卡密更新接口的字段。
       const updateData: CardMutation = {
@@ -173,14 +205,18 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
         // 仅在用户实际修改库存编辑框时提交，避免旧库存快照覆盖自动发货结果。
         if (editForm.data_content !== selectedCard.data_content) updateData.data_content = editForm.data_content?.trim() || '';
       } else if (editForm.type === 'image') {
-        updateData.image_url = editForm.image_url?.trim() || '';
+        Object.assign(updateData, imageSourceFields(editForm));
       }
       await updateCard(selectedCard.id, updateData);
-      setShowEditModal(false);
+      if (generation !== editorGenerationRef.current) return;
+      setEditModalOpen(false);
       await loadCards();
     } catch (/* error 表示卡密编辑请求异常。 */ error: unknown) {
+      if (generation !== editorGenerationRef.current) return;
       console.error('更新卡密失败:', error);
       alert(cardErrorMessage(error, '更新失败，请重试'));
+    } finally {
+      if (pendingGenerationRef.current === generation) pendingGenerationRef.current = null;
     }
   }, [editForm, loadCards, selectedCard]);
 
@@ -202,10 +238,18 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       alert('请输入卡密名称');
       return;
     }
-    if (!addForm.content.trim()) {
+    if (addForm.type === 'image') {
+      // imageError 保留选中但尚未填写的本地来源校验。
+      const imageError = validateImageSource(addForm);
+      if (imageError) { alert(imageError); return; }
+    } else if (!addForm.content.trim()) {
       alert(addForm.type === 'api' ? '请输入 API 地址' : '请输入卡密内容');
       return;
     }
+    // generation 将新增结果绑定到当前弹窗草稿。
+    const generation = editorGenerationRef.current;
+    if (pendingGenerationRef.current === generation) return;
+    pendingGenerationRef.current = generation;
     try {
       // payload 保存新增卡密组的接口载荷。
       const payload: CardMutation = {
@@ -217,7 +261,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       };
       if (addForm.type === 'text') payload.text_content = addForm.content.trim();
       if (addForm.type === 'data') payload.data_content = addForm.content.trim();
-      if (addForm.type === 'image') payload.image_url = addForm.content.trim();
+      if (addForm.type === 'image') Object.assign(payload, imageSourceFields(addForm));
       if (addForm.type === 'api') {
         payload.api_config = {
           url: addForm.content.trim(),
@@ -232,12 +276,16 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
         };
       }
       await createCard(payload);
-      setShowAddModal(false);
+      if (generation !== editorGenerationRef.current) return;
+      setAddModalOpen(false);
       setAddForm(emptyAddForm());
       await loadCards();
     } catch (/* error 表示卡密创建请求异常。 */ error: unknown) {
+      if (generation !== editorGenerationRef.current) return;
       console.error('添加卡密失败:', error);
       alert(cardErrorMessage(error, '添加失败，请重试'));
+    } finally {
+      if (pendingGenerationRef.current === generation) pendingGenerationRef.current = null;
     }
   }, [addForm, loadCards]);
 

@@ -1976,8 +1976,18 @@ export interface components {
         ApiResponse: {
             success: boolean;
         };
+        /** @description 独立文本或图片消息。缺省 type 为 text 并兼容旧 content 对象；图片 content 为空且恰好提供一个固定来源，不支持模板插值。更新含图片的模板必须明确提供消息 type 或图片来源字段，旧格式更新返回 409 防止静默丢图。 */
         DeliveryTemplateMessageRequest: {
-            content: string;
+            /**
+             * @description 可省略；服务端按 text 处理以兼容旧客户端。
+             * @enum {string}
+             */
+            type?: "text" | "image";
+            content?: string;
+            /** @description 固定 HTTP(S) 图片地址，与 image_path 互斥。 */
+            image_url?: string;
+            /** @description 实际执行账号的 XIANYU_UPLOAD_DIR/reply-images/<账号>/ 内相对路径，无浏览器上传；不能含绝对路径或目录穿越。 */
+            image_path?: string;
         };
         DeliveryTemplateRequest: {
             name: string;
@@ -1988,6 +1998,10 @@ export interface components {
             id: number;
             sort_order: number;
             content: string;
+            /** @enum {string} */
+            type: "text" | "image";
+            image_url: string;
+            image_path: string;
         };
         DeliveryTemplate: {
             id: number;
@@ -2488,7 +2502,10 @@ export interface components {
             api_config?: components["schemas"]["APICardConfigMutation"] | string;
             text_content?: string;
             data_content?: string;
+            /** @description image 类型的固定 HTTP(S) 来源；更新省略保留，显式空串清空，切换来源必须清空旧来源。 */
             image_url?: string;
+            /** @description 实际执行账号 reply-images 目录内的相对路径；与 image_url 恰好一个来源，省略保留、空串清空，无浏览器上传。 */
+            image_path?: string;
             description?: string;
             enabled?: boolean;
             delay_seconds?: number;
@@ -2530,7 +2547,10 @@ export interface components {
             api_config?: components["schemas"]["APICardConfigResponse"] | null;
             text_content: string;
             data_content: string;
+            /** @description image 类型的固定 HTTP(S) 来源；更新省略保留，显式空串清空，切换来源必须清空旧来源。 */
             image_url: string;
+            /** @description 实际执行账号 reply-images 目录内的相对路径；与 image_url 恰好一个来源，省略保留、空串清空，无浏览器上传。 */
+            image_path: string;
             description: string;
             enabled: boolean;
             delay_seconds: number;

@@ -5,8 +5,9 @@ package cards
 import (
 	"context"
 	"errors"
-	"net/url"
 	"strings"
+
+	"xianyu-go/internal/deliverytemplate"
 )
 
 // ErrInvalidUser 表示调用方未提供有效的用户身份。
@@ -56,6 +57,8 @@ type Card struct {
 	DataContent string
 	// ImageURL 是 image 类型自动发货时发送的图片地址。
 	ImageURL string
+	// ImagePath 是实际执行账号图片目录内的相对路径，与 ImageURL 互斥。
+	ImagePath string
 	// Description 是用户维护的卡券组说明。
 	Description string
 	// Enabled 表示自动化规则是否可以使用该卡券组。
@@ -86,8 +89,14 @@ type Draft struct {
 	DataContent string
 	// DataContentSet 表示请求是否明确提交了库存正文；省略时 data 元数据更新保留现有库存。
 	DataContentSet bool
-	// ImageURL 是 image 类型必须提供的非空图片地址。
+	// ImageURL 是 image 类型的远程图片地址，与 ImagePath 互斥。
 	ImageURL string
+	// ImageURLSet 区分省略保留与显式清空；非空值兼容旧应用调用方。
+	ImageURLSet bool
+	// ImagePath 是实际执行账号图片目录内的相对路径。
+	ImagePath string
+	// ImagePathSet 区分省略保留与显式清空，来源切换必须清除旧来源。
+	ImagePathSet bool
 	// Description 是用户维护的卡券组说明。
 	Description string
 	// Enabled 表示保存后是否允许自动化规则使用该卡券组。
@@ -212,6 +221,14 @@ func (s *Service) Update(ctx context.Context, userID, cardID int64, draft Draft)
 			return &ValidationError{Message: normalizeErr.Error()}
 		}
 		draft.APIConfig = normalized
+	}
+	if draft.Type == "image" && existing.Type == "image" {
+		if !draft.ImageURLSet && draft.ImageURL == "" {
+			draft.ImageURL = existing.ImageURL
+		}
+		if !draft.ImagePathSet && draft.ImagePath == "" {
+			draft.ImagePath = existing.ImagePath
+		}
 	}
 	if draft.Type == existing.Type {
 		// 未明确提交的多规格字段沿用现有值，避免普通编辑把匹配条件清空。
@@ -352,13 +369,14 @@ func validateDraft(draft Draft) error {
 			return &ValidationError{Message: "数据卡密内容不能为空"}
 		}
 	case "image":
-		// imageURL、err 分别保存规范化后的远程图片地址和 URL 解析错误。
-		imageURL, err := url.Parse(strings.TrimSpace(draft.ImageURL))
-		if strings.TrimSpace(draft.ImageURL) == "" {
-			return &ValidationError{Message: "图片卡密 URL 不能为空"}
+		// imageURL 仅在未配置本地图时兼容历史首尾空白，不能用去空白掩盖双来源冲突。
+		imageURL := draft.ImageURL
+		if draft.ImagePath == "" {
+			imageURL = strings.TrimSpace(imageURL)
 		}
-		if err != nil || imageURL.Hostname() == "" || imageURL.User != nil || (imageURL.Scheme != "http" && imageURL.Scheme != "https") {
-			return &ValidationError{Message: "图片卡密 URL 必须是 HTTP(S) 地址"}
+		// err 保存互斥静态来源与受限相对路径的纯校验错误，持久化继续保留历史 URL 原文。
+		if err := deliverytemplate.ValidateImageSource(imageURL, draft.ImagePath); err != nil {
+			return &ValidationError{Message: err.Error()}
 		}
 	case "api":
 		if strings.TrimSpace(draft.APIConfig) == "" {
@@ -370,9 +388,12 @@ func validateDraft(draft Draft) error {
 
 // cardFromDraft 把已校验输入与不可由请求覆盖的标识、所有者组合为持久化模型。
 func cardFromDraft(cardID, userID int64, draft Draft) Card {
+	if draft.Type != "image" {
+		draft.ImageURL, draft.ImagePath = "", ""
+	}
 	return Card{
 		ID: cardID, Name: draft.Name, Type: draft.Type, APIConfig: draft.APIConfig,
-		TextContent: draft.TextContent, DataContent: draft.DataContent, ImageURL: draft.ImageURL,
+		TextContent: draft.TextContent, DataContent: draft.DataContent, ImageURL: draft.ImageURL, ImagePath: draft.ImagePath,
 		Description: draft.Description, Enabled: draft.Enabled, DelaySeconds: draft.DelaySeconds,
 		IsMultiSpec: draft.IsMultiSpec, SpecName: draft.SpecName, SpecValue: draft.SpecValue, UserID: userID,
 	}
