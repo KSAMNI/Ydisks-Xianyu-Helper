@@ -50,7 +50,7 @@ beforeEach(/* 当前回调重置成功基线，错误用例再局部覆盖。 */
 afterEach(/* 当前回调清理确认弹窗替身，不污染其他 Hook 测试。 */ () => vi.unstubAllGlobals());
 
 describe('默认回复动作与异步隔离', /* 当前回调覆盖图文配置、失败、切换、取消及去重。 */ () => {
-  test('账号旧 URL 可编辑并切换本地，商品保存不携带账号开关或 once', /* 当前回调验证两类保存载荷及刷新目标。 */ async () => {
+  test('账号旧 URL 可编辑并切换本地，商品保存携带独立once但不携带账号启用开关', /* 当前回调验证两类保存载荷及刷新目标。 */ async () => {
     /** hook 拥有本用例的草稿及请求代次。 */
     const hook = setup();
     await act(/* 当前回调读取账号配置。 */ async () => hook.result.current.openDefaultReplyModal());
@@ -61,7 +61,7 @@ describe('默认回复动作与异步隔离', /* 当前回调覆盖图文配置�
     expect(refreshAccounts).toHaveBeenCalledOnce();
     await act(/* 当前回调打开具体商品。 */ async () => hook.result.current.openItemDefaultReplyModal('a', 'item-1'));
     await act(/* 当前回调保存商品配置。 */ async () => hook.result.current.handleSaveDefaultReply());
-    expect(updateItemDefaultReply).toHaveBeenCalledExactlyOnceWith('a', 'item-1', { reply_content: '商品欢迎', reply_image_url: '', reply_image_path: '商品/欢迎.png' });
+    expect(updateItemDefaultReply).toHaveBeenCalledExactlyOnceWith('a', 'item-1', { reply_content: '商品欢迎', reply_image_url: '', reply_image_path: '商品/欢迎.png', reply_once: false });
     expect(getItemDefaultReplies).toHaveBeenCalledOnce();
     expect(hook.result.current.showDefaultModal).toBe(false);
     hook.unmount();
@@ -95,8 +95,10 @@ describe('默认回复动作与异步隔离', /* 当前回调覆盖图文配置�
     act(/* 当前回调发起旧商品读取。 */ () => { oldRequest = hook.result.current.openItemDefaultReplyModal('a', 'old'); });
     await act(/* 当前回调选择新商品但先不选具体项目。 */ async () => hook.result.current.openItemDefaultReplyModal('a'));
     expect(hook.result.current.defaultForm.item_id).toBe('');
-    await act(/* 当前回调让旧详情迟到。 */ async () => { first.resolve(itemReply); await oldRequest; });
+    expect(hook.result.current.defaultForm.reply_once).toBe(false);
+    await act(/* 当前回调让旧详情迟到。 */ async () => { first.resolve({ ...itemReply, reply_once: true }); await oldRequest; });
     expect(hook.result.current.defaultForm.item_id).toBe('');
+    expect(hook.result.current.defaultForm.reply_once).toBe(false);
     vi.mocked(getDefaultReply).mockReturnValueOnce(second.promise);
     /** closedRequest 是随后会被关闭撤销的读取。 */
     let closedRequest!: Promise<void>;

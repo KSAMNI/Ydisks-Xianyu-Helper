@@ -518,7 +518,7 @@ body {
   z-index: 10;
 }
 
-/* 发货模板编辑器：显式三段式布局，修复多消息时无法滚动的问题。 */
+/* 发货模板编辑器：普通块滚动正文，头尾固定；fieldset 只负责整组禁用，不能承担滚动。 */
 .delivery-template-editor {
   max-width: 72rem;
   max-height: 88vh;
@@ -538,6 +538,13 @@ body {
   overflow-y: auto;
   overflow-x: hidden;
   padding: 1.5rem 1.75rem;
+  border: 0;
+  margin: 0;
+}
+
+.delivery-template-editor__fields {
+  min-width: 0;
+  padding: 0;
   border: 0;
   margin: 0;
 }
@@ -566,8 +573,20 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 0.75rem;
   padding: 1.25rem 1.75rem 1.5rem;
+}
+
+.delivery-template-editor__add {
+  margin-right: auto;
+}
+
+/* 窄屏让添加入口独占一行，取消和保存不被三按钮挤出视口。 */
+@media (max-width: 480px) {
+  .delivery-template-editor__add {
+    width: 100%;
+  }
 }
 
 @media (max-width: 900px) {

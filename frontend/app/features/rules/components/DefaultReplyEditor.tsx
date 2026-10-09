@@ -91,7 +91,7 @@ export default function DefaultReplyEditor({ actions,accounts,items }: DefaultRe
                 {accountItems.map(/* item 是当前账号已同步的商品候选。 */ item => <option key={item.item_id} value={item.item_id}>{item.item_title || item.item_id} · {item.item_id}</option>)}
               </select>
             </label>
-            <p className="text-xs leading-5 text-blue-700 bg-blue-50 rounded-xl p-3">商品配置独立生效，每次进入默认回复阶段都会回复，不继承账号开关或“只回复一次”。正文和图片都留空，或删除配置，即恢复账号兜底；不会附加账号的图片。</p>
+            <p className="text-xs leading-5 text-blue-700 bg-blue-50 rounded-xl p-3">商品配置独立生效，不继承账号启用或去重开关。可勾选“单个会话只回复一次”，同一商品在同一会话只回复一次。正文和图片都留空，或删除配置，即恢复账号兜底；不会附加账号的图片。</p>
           </>}
           {actions.defaultReplyLoading && <p role="status" className="text-sm text-gray-500">正在读取默认回复…</p>}
           {actions.defaultReplyError && <div role="alert" className="text-sm text-red-700 bg-red-50 p-3 rounded-xl">
@@ -101,7 +101,7 @@ export default function DefaultReplyEditor({ actions,accounts,items }: DefaultRe
           <fieldset disabled={locked || (isItem && !form.item_id)} className="space-y-5 disabled:opacity-60">
             {!isItem && <label className="flex items-center justify-between p-4 bg-gray-50 rounded-xl text-sm font-bold text-gray-800">
               启用账号默认回复
-              <input type="checkbox" checked={form.enabled} onChange={/* event 是用户对账号兜底开关的选择。 */ event => actions.setDefaultForm(/* current 是当前账号草稿。 */ current => ({ ...current, enabled: event.target.checked }))} className="w-4 h-4" />
+              <input type="checkbox" checked={form.enabled} onChange={/* event 是用户对账号兜底开关的选择。 */ event => actions.setDefaultForm(/* current 是当前作用域草稿，不修改其他商品或账号设置。 */ current => ({ ...current, enabled: event.target.checked }))} className="w-4 h-4" />
             </label>}
             <label className="block text-sm font-bold text-gray-700">
               回复内容
@@ -124,10 +124,10 @@ export default function DefaultReplyEditor({ actions,accounts,items }: DefaultRe
               </label>
               <p id="default-reply-image-help" className="text-xs leading-5 text-gray-500 break-all">把图片放到运行程序机器的 <code>XIANYU_UPLOAD_DIR/reply-images/{form.cookie_id}/</code> 内；未设置上传目录时使用 <code>data/uploads</code>。这里只填相对路径，使用 / 分隔。Docker 需挂载该目录；不是选择浏览器电脑的文件。每次实际发送时读取一张 PNG、JPEG 或 GIF 图片，最大 10 MiB，读取失败不会只发文字。</p>
             </div>}
-            {!isItem && <label className="flex items-center justify-between p-4 bg-gray-50 rounded-xl text-sm font-bold text-gray-800">
-              <span>只回复一次<span className="block text-xs text-gray-500 font-medium mt-1">同一账号、同一会话只发送一次账号兜底；修改内容不会自动清空记录。</span></span>
-              <input type="checkbox" checked={form.reply_once} onChange={/* event 是用户对账号会话去重的选择。 */ event => actions.setDefaultForm(/* current 是当前账号草稿。 */ current => ({ ...current, reply_once: event.target.checked }))} className="w-4 h-4" />
-            </label>}
+            <label className="flex items-center justify-between p-4 bg-gray-50 rounded-xl text-sm font-bold text-gray-800">
+              <span>{isItem ? '单个会话只回复一次' : '只回复一次'}<span className="block text-xs text-gray-500 font-medium mt-1">{isItem ? '同一账号、商品、会话独立去重，不影响账号兜底或其他商品；修改内容、关闭再开启均不会重置已发送记录。' : '同一账号、同一会话只发送一次账号兜底；修改内容不会自动清空记录。'}</span></span>
+              <input type="checkbox" checked={form.reply_once} onChange={/* event 是用户对当前商品或账号会话去重的独立选择。 */ event => actions.setDefaultForm(/* current 是当前作用域草稿，不修改其他商品或账号设置。 */ current => ({ ...current, reply_once: event.target.checked }))} className="w-4 h-4" />
+            </label>
           </fieldset>
           <div className="flex gap-3 pt-4">
             <button type="button" onClick={/* 当前回调取消编辑，不触发保存。 */ () => actions.setShowDefaultModal(false)} className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200">取消</button>

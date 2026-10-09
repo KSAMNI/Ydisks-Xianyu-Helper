@@ -96,13 +96,13 @@ func (d *DefaultReplies) UpdateWithCurrent(ctx context.Context, cookieID string,
 	return transaction.Commit()
 }
 
-// readItemReply 从 queryer 读取 cookieID 和 itemID 的完整图文配置；身份始终来自查询条件。
+// readItemReply 从 queryer 读取 cookieID/itemID 的图文及单会话开关，身份始终来自查询条件。
 func readItemReply(ctx context.Context, queryer replyQueryer, cookieID, itemID string) (*ItemReply, error) {
 	// reply 保存正文和两种互斥图片来源，历史 NULL 被归一为空串。
 	reply := ItemReply{CookieID: cookieID, ItemID: itemID}
 	// err 是单条商品配置读取错误。
-	err := queryer.QueryRowContext(ctx, `SELECT COALESCE(reply_content,''), COALESCE(reply_image_url,''), COALESCE(reply_image_path,'') FROM item_replay WHERE cookie_id=? AND item_id=?`, cookieID, itemID).
-		Scan(&reply.ReplyContent, &reply.ReplyImageURL, &reply.ReplyImagePath)
+	err := queryer.QueryRowContext(ctx, `SELECT COALESCE(reply_content,''), COALESCE(reply_image_url,''), COALESCE(reply_image_path,''), reply_once FROM item_replay WHERE cookie_id=? AND item_id=?`, cookieID, itemID).
+		Scan(&reply.ReplyContent, &reply.ReplyImageURL, &reply.ReplyImagePath, &reply.ReplyOnce)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -137,8 +137,8 @@ func (i *ItemReplies) UpdateWithCurrent(ctx context.Context, cookieID, itemID st
 	if _, deleteErr := transaction.ExecContext(ctx, `DELETE FROM item_replay WHERE cookie_id=? AND item_id=?`, cookieID, itemID); deleteErr != nil {
 		return deleteErr
 	}
-	// insertErr 是最终图文配置写入错误，失败时回滚旧记录删除。
-	if _, insertErr := transaction.ExecContext(ctx, `INSERT INTO item_replay (item_id,cookie_id,reply_content,reply_image_url,reply_image_path,updated_at) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP)`, itemID, cookieID, reply.ReplyContent, defaultReplyNullableString(reply.ReplyImageURL), defaultReplyNullableString(reply.ReplyImagePath)); insertErr != nil {
+	// insertErr 是图文与去重开关的整体写入错误，失败时回滚旧配置删除。
+	if _, insertErr := transaction.ExecContext(ctx, `INSERT INTO item_replay (item_id,cookie_id,reply_content,reply_image_url,reply_image_path,reply_once,updated_at) VALUES (?,?,?,?,?,?,CURRENT_TIMESTAMP)`, itemID, cookieID, reply.ReplyContent, defaultReplyNullableString(reply.ReplyImageURL), defaultReplyNullableString(reply.ReplyImagePath), boolToInt(reply.ReplyOnce)); insertErr != nil {
 		return insertErr
 	}
 	return transaction.Commit()

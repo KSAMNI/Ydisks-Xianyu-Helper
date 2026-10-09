@@ -378,6 +378,8 @@ type itemPublishBatchListResponse struct {
 
 // itemReplyResponse 是指定商品回复接口的具名 DTO。
 type itemReplyResponse struct {
+	// ReplyOnce 是商品独立的单会话去重开关，不代表账号兜底设置。
+	ReplyOnce bool `json:"reply_once"`
 	// ItemID 是商品平台标识。
 	ItemID string `json:"item_id,omitempty"`
 	// CookieID 是账号稳定标识。

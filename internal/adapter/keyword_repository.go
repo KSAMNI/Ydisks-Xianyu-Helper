@@ -191,7 +191,7 @@ func (r *KeywordRepository) SetItemReply(ctx context.Context, userID int64, cook
 	return r.store.ItemReps.Set(ctx, cookieID, itemID, content)
 }
 
-// UpdateItemReply 在 cookieID 的数据库事务中把 itemID 最新配置交给纯计算 build，保证缺省图片字段不会丢失。
+// UpdateItemReply 在 cookieID 的数据库事务中把 itemID 最新配置交给纯计算 build，保证缺省图片与商品去重字段不会丢失。
 func (r *KeywordRepository) UpdateItemReply(ctx context.Context, userID int64, cookieID, itemID string, build func(keywordsapp.ItemReply) (keywordsapp.ItemReply, error)) error {
 	if err := r.authorize(ctx, userID, cookieID); err != nil { // err 是非敏感账号归属校验错误。
 		return err
@@ -203,7 +203,7 @@ func (r *KeywordRepository) UpdateItemReply(ctx context.Context, userID int64, c
 		if buildErr != nil {
 			return db.ItemReply{}, buildErr
 		}
-		return db.ItemReply{ReplyContent: reply.ReplyContent, ReplyImageURL: reply.ReplyImageURL, ReplyImagePath: reply.ReplyImagePath}, nil
+		return db.ItemReply{ReplyOnce: reply.ReplyOnce, ReplyContent: reply.ReplyContent, ReplyImageURL: reply.ReplyImageURL, ReplyImagePath: reply.ReplyImagePath}, nil
 	})
 	if errors.Is(err, db.ErrNotFound) {
 		return keywordsapp.ErrNotFound
@@ -269,7 +269,7 @@ func keywordModel(row db.KeywordRow) keywordsapp.Keyword {
 
 // itemReplyModel 将数据库商品回复行转换为应用模型。
 func itemReplyModel(row db.ItemReply) keywordsapp.ItemReply {
-	return keywordsapp.ItemReply{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent, ReplyImageURL: row.ReplyImageURL, ReplyImagePath: row.ReplyImagePath}
+	return keywordsapp.ItemReply{ItemID: row.ItemID, CookieID: row.CookieID, ReplyContent: row.ReplyContent, ReplyImageURL: row.ReplyImageURL, ReplyImagePath: row.ReplyImagePath, ReplyOnce: row.ReplyOnce}
 }
 
 var _ keywordsapp.Repository = (*KeywordRepository)(nil)

@@ -57,18 +57,43 @@ describe('默认回复列表和编辑器', /* 当前回调验证可访问控件�
   });
 
   test('商品选择按账号隔离，商品独立语义清晰，只有图片也能保存', /* 当前回调覆盖新增商品、范围切换和无文字图片回复。 */ async () => {
+    vi.mocked(getItemDefaultReplies).mockResolvedValue([{ cookie_id: 'a', item_id: 'one', reply_content: '', reply_image_url: '', reply_image_path: 'one.png', reply_once: true }]);
     render(<Harness />);
     fireEvent.click(screen.getByRole('button', { name: '新增商品默认回复' }));
     expect(screen.getByRole('option', { name: '甲的商品 · one' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: '乙的商品 · one' })).toBeNull();
-    expect(screen.queryByRole('checkbox', { name: /只回复一次/ })).toBeNull();
-    expect(screen.getByText(/商品配置独立生效，每次进入默认回复阶段都会回复/)).toBeTruthy();
+    expect((screen.getByRole('checkbox', { name: /单个会话只回复一次/ }) as HTMLInputElement).checked).toBe(false);
+    expect(screen.queryByRole('checkbox', { name: '启用账号默认回复' })).toBeNull();
+    expect(screen.getByText(/商品配置独立生效，不继承账号启用或去重开关/)).toBeTruthy();
     fireEvent.change(screen.getByRole('combobox', { name: '关联商品' }), { target: { value: 'one' } });
     await waitFor(/* 当前回调等待商品配置读取完成后解锁来源选择器。 */ () => expect((screen.getByRole('combobox', { name: '图片来源' }) as HTMLSelectElement).closest('fieldset')?.disabled).toBe(false));
     fireEvent.change(screen.getByRole('combobox', { name: '图片来源' }), { target: { value: 'local' } });
     fireEvent.change(screen.getByRole('textbox', { name: '本地图片相对路径' }), { target: { value: 'one.png' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: /单个会话只回复一次/ }));
     fireEvent.click(screen.getByRole('button', { name: '保存默认回复' }));
-    await waitFor(/* 当前回调确认只向当前账号商品发送图文，不发送账号控制字段。 */ () => expect(updateItemDefaultReply).toHaveBeenCalledExactlyOnceWith('a', 'one', { reply_content: '', reply_image_url: '', reply_image_path: 'one.png' }));
+    await waitFor(/* 当前回调确认只向当前账号商品发送图文及独立去重，不发送账号启用字段。 */ () => expect(updateItemDefaultReply).toHaveBeenCalledExactlyOnceWith('a', 'one', { reply_content: '', reply_image_url: '', reply_image_path: 'one.png', reply_once: true }));
+    expect(await screen.findByText(/商品专属 · 单个会话只回复一次/)).toBeTruthy();
+  });
+
+  test('商品已勾选可关闭，失败保留选择，取消重开恢复服务端值', /* 当前回调覆盖独立开关的回显、失败保护、取消和显式关闭。 */ async () => {
+    vi.mocked(getItemDefaultReply).mockResolvedValue({ cookie_id: 'a', item_id: 'one', reply_content: '商品正文', reply_image_url: '', reply_image_path: '', reply_once: true });
+    vi.mocked(updateItemDefaultReply).mockRejectedValueOnce(new Error('写入失败'));
+    render(<Harness />);
+    fireEvent.click(screen.getByRole('button', { name: '新增商品默认回复' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '关联商品' }), { target: { value: 'one' } });
+    await waitFor(/* 当前断言确保开关值已从商品详情加载，而非来自账号兜底。 */ () => expect((screen.getByRole('checkbox', { name: /单个会话只回复一次/ }) as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(screen.getByRole('checkbox', { name: /单个会话只回复一次/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存默认回复' }));
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect((screen.getByRole('checkbox', { name: /单个会话只回复一次/ }) as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: '新增商品默认回复' }));
+    fireEvent.change(screen.getByRole('combobox', { name: '关联商品' }), { target: { value: 'one' } });
+    await waitFor(/* 当前断言确认取消未把未保存false写回服务端配置。 */ () => expect((screen.getByRole('checkbox', { name: /单个会话只回复一次/ }) as HTMLInputElement).checked).toBe(true));
+    fireEvent.click(screen.getByRole('checkbox', { name: /单个会话只回复一次/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存默认回复' }));
+    await waitFor(/* 当前断言确认显式关闭值和图文字段一起提交。 */ () => expect(updateItemDefaultReply).toHaveBeenLastCalledWith('a', 'one', { reply_content: '商品正文', reply_image_url: '', reply_image_path: '', reply_once: false }));
+    await waitFor(/* 当前断言等待有效保存结束，不遗留后台刷新。 */ () => expect(screen.queryByRole('dialog')).toBeNull());
   });
 
   test('键盘焦点留在弹窗，Escape 关闭后恢复触发按钮', /* 当前回调验证编辑器可用的键盘生命周期。 */ async () => {

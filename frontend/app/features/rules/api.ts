@@ -643,8 +643,9 @@ export const clearDefaultReplyRecords = async (cookieId: string): Promise<Operat
 	return runContractRequest(/* signal 控制默认回复记录清理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/default-replies/{cid}/clear-records', { params: { path: { cid: cookieId } }, body: {} as never, signal }));
 };
 
-/** normalizeItemDefaultReply 将历史纯文字商品回复补齐为当前图片表单模型。 */
+/** normalizeItemDefaultReply 将历史纯文字商品回复补齐为图文表单，缺少商品去重字段时独立回退为false。 */
 const normalizeItemDefaultReply = (reply: Partial<ItemDefaultReply>, cookieID = '', itemID = ''): ItemDefaultReply => ({
+  reply_once: reply.reply_once ?? false,
   cookie_id: reply.cookie_id || cookieID,
   item_id: reply.item_id || itemID,
   reply_content: reply.reply_content || '',
@@ -666,10 +667,11 @@ export const getItemDefaultReply = async (cookieID: string, itemID: string): Pro
   return normalizeItemDefaultReply(response, cookieID, itemID);
 };
 
-/** updateItemDefaultReply 保存商品图文配置，不发送账号开关或只回复一次字段。 */
-export const updateItemDefaultReply = async (cookieID: string, itemID: string, reply: Pick<ItemDefaultReply, 'reply_content' | 'reply_image_url' | 'reply_image_path'>): Promise<OperationResponse> =>
+/** updateItemDefaultReply 保存商品图文及独立会话去重，不发送账号启用开关；缺省 once 留给服务端兼容保留。 */
+export const updateItemDefaultReply = async (cookieID: string, itemID: string, reply: Pick<ItemDefaultReply, 'reply_content' | 'reply_image_url' | 'reply_image_path' | 'reply_once'>): Promise<OperationResponse> =>
   runContractRequest(/* signal 控制商品默认回复保存。 */ signal => contractClient.PUT('/api/v1/reply-rules/items/{cookie_id}/{item_id}', { params: { path: { cookie_id: cookieID, item_id: itemID } }, body: {
     reply_content: reply.reply_content,
+    reply_once: reply.reply_once,
     reply_image_url: reply.reply_image_url,
     reply_image_path: reply.reply_image_path,
   }, signal }));

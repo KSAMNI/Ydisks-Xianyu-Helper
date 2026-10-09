@@ -7598,9 +7598,10 @@ components:
       items: {$ref: '#/components/schemas/DefaultReplyResponse'}
     ItemReplyMutationRequest:
       type: object
-      description: 商品默认图文配置；图片字段缺省保留，显式空串清除；正文与两种图片都为空时使用账号默认回复。
+      description: 商品默认图文配置；图片字段缺省保留，显式空串清除；reply_once 缺省保留，新建默认关闭；正文与两种图片都为空时使用账号默认回复。
       properties:
         reply_content: {type: string}
+        reply_once: {type: boolean, description: 同一账号同一商品同一会话只回复一次，独立于账号兜底；编辑内容不重置记录}
         reply_image_url: {type: string}
         reply_image_path: {type: string, maxLength: 1024, description: 账号专用图片目录内的相对文件路径；与非空 reply_image_url 互斥}
     ItemReplyResponse:
@@ -7610,6 +7611,7 @@ components:
         item_id: {type: string}
         cookie_id: {type: string}
         reply_content: {type: string}
+        reply_once: {type: boolean, description: 同一账号同一商品同一会话只回复一次，独立于账号兜底；编辑内容不重置记录}
         reply_image_url: {type: string}
         reply_image_path: {type: string}
     ItemReplyListResponse:

@@ -122,6 +122,8 @@ type Draft struct {
 
 // ItemReply 是指定商品回复的应用层模型。
 type ItemReply struct {
+	// ReplyOnce 仅对同一账号、商品、会话去重，默认关闭且不继承账号兜底开关。
+	ReplyOnce bool
 	// ItemID 是指定商品标识。
 	ItemID string
 	// CookieID 是回复所属账号标识。

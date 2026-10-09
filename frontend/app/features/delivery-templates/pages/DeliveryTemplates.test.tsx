@@ -18,14 +18,19 @@ const listDeliveryTemplatesMock = vi.mocked(listDeliveryTemplates);
 // emptyTemplateFixture 是空模板列表请求返回的稳定测试数据。
 const emptyTemplateFixture: DeliveryTemplate[] = [];
 
+// originalScrollIntoView 保留环境原方法；jsdom 替身只验证调用，不冒充真实滚动布局。
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
+
 describe('DeliveryTemplates 页面组合行为', /* 当前回调验证模板编辑器的打开状态和空白新建流程。 */ () => {
   beforeEach(/* 当前回调重置模板接口替身。 */ () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
     listDeliveryTemplatesMock.mockResolvedValue(emptyTemplateFixture);
     vi.spyOn(window, 'alert').mockImplementation(/* 当前替身记录表单校验提示。 */ () => undefined);
   });
 
   afterEach(/* 当前回调清理模板页面 DOM 和接口替身。 */ () => {
     cleanup();
+    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
     vi.clearAllMocks();
     vi.restoreAllMocks();
   });
@@ -117,12 +122,59 @@ describe('DeliveryTemplates 页面组合行为', /* 当前回调验证模板编�
     fireEvent.click(screen.getByRole('button', { name: '保存模板' }));
     await act(/* 当前回调令旧请求迟到，不能重置新编辑器。 */ async () => finishOld());
     expect((screen.getByRole('button', { name: '保存模板' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: '添加消息' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByLabelText('模板名称') as HTMLInputElement).value).toBe('新图片草稿');
     expect(window.alert).not.toHaveBeenCalled();
     expect(listDeliveryTemplatesMock).toHaveBeenCalledTimes(1);
     await act(/* 当前回调完成唯一有效的新保存。 */ async () => finishNew());
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(listDeliveryTemplatesMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('固定添加入口可连续追加并聚焦新消息，取消后重开不保留待聚焦草稿', /* 当前回调验证新增节点的焦点归属和关闭清理，不以 jsdom 代替布局验证。 */ async () => {
+    render(<DeliveryTemplates />);
+    fireEvent.click(screen.getByRole('button', { name: '新建模板' }));
+    // addButton 始终使用同一个底部入口，追加十次也不依赖消息列表末尾的元素。
+    const addButton = screen.getByRole('button', { name: '添加消息' });
+    for (let /* number 是本次追加后应出现的消息序号。 */ number = 2; number <= 11; number += 1) {
+      fireEvent.click(addButton);
+      expect(document.activeElement).toBe(screen.getByLabelText(`第 ${number} 条消息正文`));
+      fireEvent.change(document.activeElement!, { target: { value: `消息 ${number}` } });
+    }
+    expect(screen.getAllByRole('textbox')).toHaveLength(12);
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledTimes(10);
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenLastCalledWith({ block: 'nearest' });
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建模板' }));
+    expect(document.activeElement).toBe(screen.getByLabelText('模板名称'));
+    expect(screen.queryByLabelText('第 2 条消息正文')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '添加消息' }));
+    expect(document.activeElement).toBe(screen.getByLabelText('第 2 条消息正文'));
+    await waitFor(/* 当前断言收口首屏独立列表请求。 */ () => expect(listDeliveryTemplatesMock).toHaveBeenCalledTimes(1));
+  });
+
+  test('保存失败后恢复固定添加入口，保存中不允许改变消息或表单', /* 当前回调验证添加按钮移出 fieldset 后仍保持禁用边界。 */ async () => {
+    // rejectSave 由测试触发写入失败，失败前保持整个表单锁定。
+    let rejectSave!: (error: Error) => void;
+    vi.mocked(createDeliveryTemplate).mockImplementationOnce(/* 当前替身保留正在保存状态。 */ () => new Promise<void>(/* reject 用于模拟真实写入失败；resolve 不在此场景使用。 */ (_resolve, reject) => { rejectSave = reject; }));
+    render(<DeliveryTemplates />);
+    fireEvent.click(screen.getByRole('button', { name: '新建模板' }));
+    fireEvent.change(screen.getByLabelText('模板名称'), { target: { value: '失败重试模板' } });
+    fireEvent.change(screen.getByLabelText('第 1 条消息正文'), { target: { value: '已填写消息' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存模板' }));
+    // addButton 是固定区的入口；保存中显式 disabled，而正文仍由 fieldset 继承禁用。
+    const addButton = screen.getByRole('button', { name: '添加消息' }) as HTMLButtonElement;
+    expect(addButton.disabled).toBe(true);
+    expect(screen.getByLabelText('模板名称').matches(':disabled')).toBe(true);
+    fireEvent.click(addButton);
+    expect(screen.queryByLabelText('第 2 条消息正文')).toBeNull();
+    await act(/* 当前回调释放失败响应，验证草稿保留并解锁。 */ async () => rejectSave(new Error('测试写入失败')));
+    expect(window.alert).toHaveBeenCalledWith('保存发货模板失败：测试写入失败');
+    expect(addButton.disabled).toBe(false);
+    expect(screen.getByLabelText('模板名称').matches(':disabled')).toBe(false);
+    fireEvent.click(addButton);
+    expect(document.activeElement).toBe(screen.getByLabelText('第 2 条消息正文'));
+    expect((screen.getByLabelText('第 1 条消息正文') as HTMLTextAreaElement).value).toBe('已填写消息');
   });
 
   test('连续排序时键盘焦点跟随同一条消息', /* 当前回调验证移动后 DOM 身份不因消息位置改变而复用到另一行。 */ async () => {

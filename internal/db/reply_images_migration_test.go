@@ -43,6 +43,13 @@ func TestMultiDB_ReplyImageMigration(t *testing.T) {
 			if readErr != nil || reply.ReplyImageURL != "https://example.test/old.png" || reply.ReplyImagePath != "" || reply.ReplyContent != "历史正文" || !reply.ReplyOnce {
 				t.Fatalf("历史账号配置=%+v err=%v", reply, readErr)
 			}
+			if !columnExistsForDialect(t, target.store.DB, target.dialect, "item_replay", "reply_image_path") {
+				t.Fatal("00053 必须单独建立商品图片列")
+			}
+			// 当前仓储还需要后续商品去重字段，先完成后续迁移；不改变上面对00053本身的断言。
+			if err := goose.Up(target.store.DB, "migrations/"+subdir); err != nil { // err 是历史结构升级到当前仓储契约的错误。
+				t.Fatal(err)
+			}
 			if err := target.store.ItemReps.UpdateWithCurrent(ctx, cookieID, "old-item", func(current ItemReply) (ItemReply, error) { // current 是升级后的旧商品正文快照。
 				current.ReplyImagePath = "商品/图.png"
 				return current, nil

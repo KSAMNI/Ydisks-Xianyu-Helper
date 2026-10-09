@@ -72,9 +72,9 @@ api-check:
 cover:
 	$(GO) test -coverprofile=cover.out ./... && $(GO) tool cover -func=cover.out | tail -1
 
-## cover-browser: 在本地 Chromium 可用时补齐浏览器页面与 CDP 集成覆盖率
+## cover-browser: 在本地 Chromium 可用时补齐浏览器页面、CDP 与嵌入前端布局回归
 cover-browser:
-	RUN_BROWSER_INTEGRATION=1 $(GO) test -coverprofile=cover-browser.out ./internal/browser && $(GO) tool cover -func=cover-browser.out | tail -1
+	RUN_BROWSER_INTEGRATION=1 $(GO) test -p 1 -coverprofile=cover-browser.out ./internal/browser ./internal/webui && $(GO) tool cover -func=cover-browser.out | tail -1
 
 ## cover-frontend: 生成前端 V8 覆盖率报告（文本、JSON 摘要和 HTML）
 cover-frontend:

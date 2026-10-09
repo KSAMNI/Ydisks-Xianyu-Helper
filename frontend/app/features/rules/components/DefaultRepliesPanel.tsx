@@ -53,7 +53,7 @@ export default function DefaultRepliesPanel({ selectedAccountId,accounts,replies
         return <div key={`${reply.cookie_id}:${reply.item_id}`} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-2xl border border-gray-100 bg-surface-subtle gap-3">
           <div className="min-w-0 space-y-1">
             <h4 className="font-bold text-gray-900 break-words">{item?.item_title || reply.item_id}</h4>
-            <p className="text-xs text-gray-500">{account ? accountLabel(account) : reply.cookie_id} · {reply.item_id} · {hasContent ? '商品专属' : '继承账号兜底'}</p>
+            <p className="text-xs text-gray-500">{account ? accountLabel(account) : reply.cookie_id} · {reply.item_id} · {hasContent ? '商品专属' : '继承账号兜底'}{hasContent && reply.reply_once ? ' · 单个会话只回复一次' : ''}</p>
             <p className="text-sm text-gray-600 line-clamp-2">{reply.reply_content || '无文字回复'}</p>
             {(reply.reply_image_path || reply.reply_image_url) && <p className="text-xs text-gray-500 break-all">{reply.reply_image_path ? `本地图片：${reply.reply_image_path}` : `图片 URL：${reply.reply_image_url}`}</p>}
           </div>

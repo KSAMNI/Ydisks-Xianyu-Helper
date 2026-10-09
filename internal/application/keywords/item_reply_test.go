@@ -63,3 +63,44 @@ func TestItemReplyDraftPreservesImages(t *testing.T) {
 		t.Fatal("空商品被接受")
 	}
 }
+
+// TestItemReplyOncePatch 保证商品开关默认关闭、显式开关生效、旧客户端省略时保留，失败不污染配置。
+func TestItemReplyOncePatch(t *testing.T) {
+	// repository 是单个商品的内存事务替身；service 使用真实应用合并逻辑。
+	repository := &keywordRepositoryFake{}
+	// service 不依赖HTTP或数据库模型。
+	service := NewService(repository)
+	// ctx 用于本次确定性用例调用。
+	ctx := context.Background()
+	if err := service.SetItemReplyDraft(ctx, 1, "account", "item", ItemReplyDraft{ReplyContent: "初始"}); err != nil { // err 是新配置创建失败。
+		t.Fatal(err)
+	}
+	if repository.itemRows[0].ReplyOnce {
+		t.Fatal("旧客户端新建必须默认关闭")
+	}
+	// enabled、disabled 表示显式启用及关闭，nil仍表示保留。
+	enabled, disabled := true, false
+	if err := service.SetItemReplyDraft(ctx, 1, "account", "item", ItemReplyDraft{ReplyContent: "开启", ReplyOnce: &enabled}); err != nil { // err 是开启写入失败。
+		t.Fatal(err)
+	}
+	if err := service.SetItemReplyDraft(ctx, 1, "account", "item", ItemReplyDraft{ReplyContent: "旧客户端"}); err != nil { // err 是缺省开关更新失败。
+		t.Fatal(err)
+	}
+	if !repository.itemRows[0].ReplyOnce {
+		t.Fatal("缺省不能清空已开启的开关")
+	}
+	// invalid 是不会访问文件系统的越界路径输入。
+	invalid := "../bad.png"
+	if err := service.SetItemReplyDraft(ctx, 1, "account", "item", ItemReplyDraft{ReplyOnce: &disabled, ReplyImagePath: &invalid}); err == nil { // err 必须拒绝非法配置而不是部分更新开关。
+		t.Fatal("非法配置未被拒绝")
+	}
+	if !repository.itemRows[0].ReplyOnce {
+		t.Fatal("失败更新不得关闭去重")
+	}
+	if err := service.SetItemReplyDraft(ctx, 1, "account", "item", ItemReplyDraft{ReplyContent: "关闭", ReplyOnce: &disabled}); err != nil { // err 是显式关闭写入失败。
+		t.Fatal(err)
+	}
+	if repository.itemRows[0].ReplyOnce {
+		t.Fatal("显式false必须覆盖已开启值")
+	}
+}

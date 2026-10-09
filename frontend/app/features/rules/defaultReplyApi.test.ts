@@ -34,9 +34,20 @@ describe('默认回复 API adapter', /* 当前回调验证具名契约与 UI 归
 
   test('商品列表和单项兼容历史纯文字以及未配置空正文', /* 当前回调覆盖列表和单项的账号商品字段回填。 */ async () => {
     replyFetch([{ cookie_id: 'a', item_id: 'one', reply_content: '商品' }]);
-    expect(await getItemDefaultReplies()).toEqual([{ cookie_id: 'a', item_id: 'one', reply_content: '商品', reply_image_url: '', reply_image_path: '' }]);
+    expect(await getItemDefaultReplies()).toEqual([{ cookie_id: 'a', item_id: 'one', reply_content: '商品', reply_image_url: '', reply_image_path: '', reply_once: false }]);
     replyFetch({ reply_content: '' });
-    expect(await getItemDefaultReply('b', 'two')).toEqual({ cookie_id: 'b', item_id: 'two', reply_content: '', reply_image_url: '', reply_image_path: '' });
+    expect(await getItemDefaultReply('b', 'two')).toEqual({ cookie_id: 'b', item_id: 'two', reply_content: '', reply_image_url: '', reply_image_path: '', reply_once: false });
+  });
+
+  test('商品独立只回复一次可读写，显式关闭不会被缺省保留吞掉', /* 当前回调检查开关来自商品DTO而非账号配置，并验证请求布尔值。 */ async () => {
+    replyFetch({ reply_content: '商品', reply_once: true });
+    expect((await getItemDefaultReply('a', 'one')).reply_once).toBe(true);
+    // requests 收集开启与关闭商品去重的两个独立写入请求。
+    const requests = replyFetch({ success: true });
+    await updateItemDefaultReply('a', 'one', { reply_content: '商品', reply_image_url: '', reply_image_path: '', reply_once: true });
+    await updateItemDefaultReply('a', 'one', { reply_content: '商品', reply_image_url: '', reply_image_path: '', reply_once: false });
+    expect(await requests[0].json()).toEqual({ reply_content: '商品', reply_image_url: '', reply_image_path: '', reply_once: true });
+    expect(await requests[1].json()).toEqual({ reply_content: '商品', reply_image_url: '', reply_image_path: '', reply_once: false });
   });
 
   test('商品保存只发送图文字段，删除使用同账号同商品路由', /* 当前回调验证不会把账号开关误发到商品配置。 */ async () => {

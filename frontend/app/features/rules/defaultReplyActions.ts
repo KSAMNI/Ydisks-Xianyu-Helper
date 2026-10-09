@@ -143,7 +143,7 @@ export const useDefaultReplyActions = ({ selectedAccountId,loadDefaultReplies,no
     setDefaultReplySubmitState({ submitting: true, result: 'idle' });
     try {
       if (defaultForm.scope === 'item') {
-        await updateItemDefaultReply(defaultForm.cookie_id, defaultForm.item_id || '', { reply_content: defaultForm.reply_content, ...images });
+        await updateItemDefaultReply(defaultForm.cookie_id, defaultForm.item_id || '', { reply_content: defaultForm.reply_content, reply_once: defaultForm.reply_once, ...images });
       } else {
         await updateDefaultReply(defaultForm.cookie_id, { enabled: defaultForm.enabled, reply_once: defaultForm.reply_once, reply_content: defaultForm.reply_content, ...images });
       }

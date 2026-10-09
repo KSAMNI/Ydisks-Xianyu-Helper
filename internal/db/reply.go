@@ -4,9 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"strings"
-	"time"
 )
 
 // Keyword 对应 keywords 表，并把兼容的首表达式和完整表达式集合一起提供给运行时。
@@ -154,8 +152,11 @@ type DefaultReplySummary struct {
 
 // DefaultReplyRecord 记录 reply_once 消息各部分的投递状态。
 type DefaultReplyRecord struct {
-	Status    string
-	TextSent  bool
+	// Status 表示领取、失败、未知或已完成状态，控制是否允许自动重放。
+	Status string
+	// TextSent 表示文字已确认发送，失败恢复时不能再发。
+	TextSent bool
+	// ImageSent 表示图片已确认发送，失败恢复时不能再发。
 	ImageSent bool
 }
 
@@ -168,6 +169,8 @@ const defaultReplyStatusSending = "sending"
 
 // ItemReply 对应 item_replay 表（指定商品回复）。
 type ItemReply struct {
+	// ReplyOnce 仅对同一账号、商品、会话去重，默认关闭且不继承账号兜底开关。
+	ReplyOnce bool
 	// ItemID 是配置所属商品标识。
 	ItemID string
 	// CookieID 是配置所属账号标识。
@@ -280,145 +283,49 @@ func (d *DefaultReplies) Delete(ctx context.Context, cookieID string) error {
 	return err
 }
 
-// ClearRecords 清空指定账号的默认回复投递记录。
+// ClearRecords 在 ctx 下只清空 cookieID 的账号兜底记录，商品作用域不受影响；返回数据库错误。
 func (d *DefaultReplies) ClearRecords(ctx context.Context, cookieID string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `DELETE FROM default_reply_records WHERE cookie_id=?`, cookieID)
-	return err
+	return d.RecordsForItem("").ClearRecords(ctx, cookieID)
 }
 
-// HasRecord 是否已对该 chat_id 回复过（reply_once 用）。
+// HasRecord 查询 ctx 下 cookieID/chatID 的账号兜底是否完成；保持旧接口读取失败返回 false 的兼容行为。
 func (d *DefaultReplies) HasRecord(ctx context.Context, cookieID, chatID string) bool {
-	// n 用于本次流程后续判断的n
-	var n int
-	// err 用于本次流程后续判断的err
-	err := d.DB.QueryRowContext(ctx,
-		`SELECT 1 FROM default_reply_records WHERE cookie_id=? AND chat_id=? AND status='sent' LIMIT 1`,
-		cookieID, chatID).Scan(&n)
-	return err == nil
+	return d.RecordsForItem("").HasRecord(ctx, cookieID, chatID)
 }
 
-// ClaimRecord 原子领取一次默认回复投递。新记录初始化为 sending；失败记录允许继续
-// 投递尚未成功的部分；sending/pending/sent 记录会阻止并发重复发送。
-// ClaimRecord 封装ClaimRecord业务协调。
+// ClaimRecord 为 ctx 下 cookieID/chatID 领取账号兜底；needsText/needsImage 定义待发分段，返回快照、领取权和错误。
 func (d *DefaultReplies) ClaimRecord(ctx context.Context, cookieID, chatID string, needsText, needsImage bool) (DefaultReplyRecord, bool, error) {
-	// now 用于本次流程后续判断的now
-	now := time.Now().UTC().Unix()
-	// leaseExpiresAt 用于本次流程后续判断的leaseExpiresAt
-	leaseExpiresAt := now + int64((5*time.Minute)/time.Second)
-	// query 用于本次流程后续判断的查询
-	query := dialectInsertIgnorePrefix(d.Dialect) + ` INTO default_reply_records
-		(cookie_id,chat_id,status,text_sent,image_sent,last_error,lease_expires_at,updated_at)
-		VALUES (?,?, 'sending', ?, ?, '', ?, CURRENT_TIMESTAMP)` + dialectInsertIgnore(d.Dialect, []string{"cookie_id", "chat_id"})
-	// res、err 用于本次流程后续判断的res、err
-	res, err := d.DB.ExecContext(ctx, query, cookieID, chatID, boolToInt(!needsText), boolToInt(!needsImage), leaseExpiresAt)
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	if // affected 用于本次流程后续判断的affected
-	affected, _ := res.RowsAffected(); affected > 0 {
-		return DefaultReplyRecord{Status: defaultReplyStatusSending, TextSent: !needsText, ImageSent: !needsImage}, true, nil
-	}
-
-	// record、err 用于本次流程后续判断的record、err
-	record, err := d.Record(ctx, cookieID, chatID)
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	if record.Status == "sent" {
-		return record, false, nil
-	}
-	// pending 是旧版本发送任务的短租约。进程崩溃或强制退出后，历史 pending
-	// 记录仍可被新实例接管；新建记录使用 sending，避免未知结果自动重发。
-	res, err = d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='pending',last_error='',lease_expires_at=?,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?
-		  AND (status='failed' OR (status='pending' AND lease_expires_at<? AND COALESCE(last_error,'') NOT LIKE ?))`,
-		leaseExpiresAt, cookieID, chatID, now, uncertainReplyErrorPrefix+"%")
-	if err != nil {
-		return DefaultReplyRecord{}, false, err
-	}
-	// affected 用于本次流程后续判断的affected
-	affected, _ := res.RowsAffected()
-	return record, affected > 0, nil
+	return d.RecordsForItem("").ClaimRecord(ctx, cookieID, chatID, needsText, needsImage)
 }
 
-// Record 查询一次默认回复的投递状态。
+// Record 返回 ctx 下 cookieID/chatID 的账号兜底分段状态，不存在时保留 sql.ErrNoRows。
 func (d *DefaultReplies) Record(ctx context.Context, cookieID, chatID string) (DefaultReplyRecord, error) {
-	// record 用于本次流程后续判断的record
-	var record DefaultReplyRecord
-	// textSent、imageSent 用于本次流程后续判断的文本Sent、imageSent
-	var textSent, imageSent int
-	// err 用于本次流程后续判断的err
-	err := d.DB.QueryRowContext(ctx, `SELECT status,text_sent,image_sent
-		FROM default_reply_records WHERE cookie_id=? AND chat_id=?`, cookieID, chatID).
-		Scan(&record.Status, &textSent, &imageSent)
-	record.TextSent = textSent != 0
-	record.ImageSent = imageSent != 0
-	return record, err
+	return d.RecordsForItem("").Record(ctx, cookieID, chatID)
 }
 
-// MarkPartSent 标记图片或文字已经成功投递。
+// MarkPartSent 在 ctx 下标记 cookieID/chatID 的账号兜底 part 分段，part 只接受 text/image；无效输入返回错误。
 func (d *DefaultReplies) MarkPartSent(ctx context.Context, cookieID, chatID, part string) error {
-	// column 用于本次流程后续判断的column
-	column := ""
-	switch part {
-	case "text":
-		column = "text_sent"
-	case "image":
-		column = "image_sent"
-	default:
-		return errors.New("未知默认回复部分")
-	}
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records SET `+column+`=1,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?`, cookieID, chatID)
-	return err
+	return d.RecordsForItem("").MarkPartSent(ctx, cookieID, chatID, part)
 }
 
-// MarkRecordFailed 封装MarkRecord失败业务协调。
+// MarkRecordFailed 用 message 记录 ctx 下 cookieID/chatID 的账号兜底确定失败，不会修改商品记录。
 func (d *DefaultReplies) MarkRecordFailed(ctx context.Context, cookieID, chatID, message string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='failed',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, message, cookieID, chatID)
-	return err
+	return d.RecordsForItem("").MarkRecordFailed(ctx, cookieID, chatID, message)
 }
 
-// MarkRecordUncertain 隔离可能已经发送但未得到可靠本地确认的默认回复，避免自动重发。
+// MarkRecordUncertain 用 message 隔离 ctx 下 cookieID/chatID 的账号兜底未知结果，禁止自动重放。
 func (d *DefaultReplies) MarkRecordUncertain(ctx context.Context, cookieID, chatID, message string) error {
-	// err 保存将一次性回复转换为人工核对状态时的数据库错误。
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='uncertain',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, message, cookieID, chatID)
-	if err == nil {
-		return nil
-	}
-	// fallbackMessage 保存无法写入 uncertain 状态时仍可持久化的隔离标记。
-	fallbackMessage := uncertainReplyErrorPrefix + message
-	// fallbackErr 保存降级为 pending 隔离记录时的数据库错误。
-	_, fallbackErr := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='pending',last_error=?,lease_expires_at=0,updated_at=CURRENT_TIMESTAMP WHERE cookie_id=? AND chat_id=?`, fallbackMessage, cookieID, chatID)
-	if fallbackErr == nil {
-		return nil
-	}
-	return errors.Join(err, fallbackErr)
+	return d.RecordsForItem("").MarkRecordUncertain(ctx, cookieID, chatID, message)
 }
 
-// MarkRecordSent 封装MarkRecordSent业务协调。
+// MarkRecordSent 将 ctx 下 cookieID/chatID 的账号兜底标记为全部完成，数据库失败原样返回。
 func (d *DefaultReplies) MarkRecordSent(ctx context.Context, cookieID, chatID string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx, `UPDATE default_reply_records
-		SET status='sent',last_error='',lease_expires_at=0,replied_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
-		WHERE cookie_id=? AND chat_id=?`, cookieID, chatID)
-	return err
+	return d.RecordsForItem("").MarkRecordSent(ctx, cookieID, chatID)
 }
 
-// AddRecord 记录已回复（reply_once 防重复）。
+// AddRecord 在 ctx 下幂等写入 cookieID/chatID 的账号兜底完成记录，保留旧调用方接口。
 func (d *DefaultReplies) AddRecord(ctx context.Context, cookieID, chatID string) error {
-	// err 用于本次流程后续判断的err
-	_, err := d.DB.ExecContext(ctx,
-		dialectInsertIgnorePrefix(d.Dialect)+` INTO default_reply_records (cookie_id, chat_id) VALUES (?, ?)`+dialectInsertIgnore(d.Dialect, []string{"cookie_id", "chat_id"}),
-		cookieID, chatID)
-	return err
+	return d.RecordsForItem("").AddRecord(ctx, cookieID, chatID)
 }
 
 // ItemReplies 指定商品回复操作。

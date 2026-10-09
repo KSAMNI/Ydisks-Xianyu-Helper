@@ -366,6 +366,8 @@ export interface DefaultReply {
 
 /** 商品专属默认回复；空正文和空图片表示继续使用账号兜底。 */
 export interface ItemDefaultReply {
+  /** 商品独立会话去重；历史调用方缺省时按关闭处理。 */
+  reply_once?: boolean;
   /** 账号稳定标识，用于隔离同名商品。 */
   cookie_id: string;
   /** 平台商品标识。 */

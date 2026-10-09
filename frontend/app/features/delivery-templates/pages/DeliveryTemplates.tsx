@@ -24,6 +24,8 @@ const DeliveryTemplates: React.FC = () => {
   const editorGenerationRef = useRef(0);
   // dialogRef 用于初始焦点与键盘循环。
   const dialogRef = useRef<HTMLDivElement>(null);
+  // pendingMessageFocusRef 只记录本次添加待聚焦的草稿身份，节点提交后立即消费，不影响排序焦点。
+  const pendingMessageFocusRef = useRef<number | undefined>(undefined);
   React.useEffect(/* 当前副作用在打开时聚焦名称、关闭时恢复触发按钮。 */ () => {
     if (!editorOpen) return;
     // previousFocus 是用户打开编辑器前的焦点。
@@ -59,6 +61,7 @@ const DeliveryTemplates: React.FC = () => {
     cancelSave();
     setEditingID(null);
     setDraft(emptyDraft());
+    pendingMessageFocusRef.current = undefined;
     setEditorOpen(false);
   };
 
@@ -101,9 +104,12 @@ const DeliveryTemplates: React.FC = () => {
     }));
   };
 
-  // addMessage 在模板末尾追加一条空白消息输入框。
+  // addMessage 仅在未保存时追加文本草稿，记录身份让提交后的节点聚焦并滚入正文视口。
   const addMessage = (): void => {
-    setDraft(/* current 是更新前的模板草稿。 */ current => ({ ...current, messages: [...current.messages, emptyTemplateMessage()] }));
+    // message 是本次追加的独立草稿，稳定身份避免把排序或重新打开误判为添加。
+    const message = emptyTemplateMessage();
+    pendingMessageFocusRef.current = message.editor_key;
+    setDraft(/* current 是更新前的模板草稿，函数式追加保留连续添加的每一条。 */ current => ({ ...current, messages: [...current.messages, message] }));
   };
 
   // saveTemplate 校验并保存模板草稿。
@@ -202,40 +208,49 @@ const DeliveryTemplates: React.FC = () => {
               <button type="button" onClick={closeEditor} className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gray-100 transition-colors hover:bg-gray-200" aria-label="关闭编辑器"><X className="h-5 w-5 text-gray-600" /></button>
             </div>
 
-            <fieldset disabled={saving} className="delivery-template-editor__body disabled:opacity-60">
-              <div className="delivery-template-editor__main">
-                <section className="delivery-template-editor__content" aria-label="模板内容编辑">
-                  <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
-                    <div className="space-y-2">
-                      <label htmlFor="delivery-template-name" className="block text-sm font-bold text-gray-800">模板名称</label>
-                      <input id="delivery-template-name" value={draft.name} onChange={updateDraftName} placeholder="例如：数字产品发货" className="ios-input w-full rounded-xl px-4 py-3" />
+            {/* 普通块负责受限高度和滚动；fieldset 仅负责保存时禁用，避免其特殊布局吞掉滚动。 */}
+            <div className="delivery-template-editor__body">
+              <fieldset disabled={saving} className="delivery-template-editor__fields disabled:opacity-60">
+                <div className="delivery-template-editor__main">
+                  <section className="delivery-template-editor__content" aria-label="模板内容编辑">
+                    <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
+                      <div className="space-y-2">
+                        <label htmlFor="delivery-template-name" className="block text-sm font-bold text-gray-800">模板名称</label>
+                        <input id="delivery-template-name" value={draft.name} onChange={updateDraftName} placeholder="例如：数字产品发货" className="ios-input w-full rounded-xl px-4 py-3" />
+                      </div>
+                      <label className="flex items-center gap-2 self-end rounded-xl bg-gray-50 px-4 py-3 text-sm font-bold text-gray-700"><input type="checkbox" checked={draft.enabled} onChange={updateDraftEnabled} />启用模板</label>
                     </div>
-                    <label className="flex items-center gap-2 self-end rounded-xl bg-gray-50 px-4 py-3 text-sm font-bold text-gray-700"><input type="checkbox" checked={draft.enabled} onChange={updateDraftEnabled} />启用模板</label>
-                  </div>
 
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-black text-gray-900">发送消息</h3><p className="mt-1 text-xs text-gray-500">每一行消息都会独立发送，顺序从上到下。</p></div><span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">{draft.messages.length} 条消息</span></div>
-                    <ol className="space-y-3" aria-label="消息列表">
-                      {draft.messages.map(/* message 是正在编辑的独立图文消息。 */ (message, index) => (
-                        <li key={message.editor_key}>
-                          <TemplateMessageEditor message={message} index={index} count={draft.messages.length}
-                            onChange={/* next 保留其他消息草稿。 */ next => updateMessage(index, next)}
-                            onMove={/* direction 改变实际发送顺序。 */ direction => moveMessage(index, direction)}
-                            onRemove={/* 当前回调删除当前顺序消息。 */ () => removeMessage(index)} />
-                        </li>
-                      ))}
-                    </ol>
-                    <button type="button" onClick={addMessage} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-bold text-gray-600 transition-colors hover:border-sky-400 hover:text-sky-700"><Plus className="h-4 w-4" />添加消息</button>
-                  </div>
-                </section>
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-black text-gray-900">发送消息</h3><p className="mt-1 text-xs text-gray-500">每一行消息都会独立发送，顺序从上到下。</p></div><span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">{draft.messages.length} 条消息</span></div>
+                      <ol className="space-y-3" aria-label="消息列表">
+                        {draft.messages.map(/* message 是独立草稿；index 是当前发送顺序，身份仍由 editor_key 保持。 */ (message, index) => (
+                          <li key={message.editor_key} ref={/* element 是当前消息节点，只对用户刚添加的草稿聚焦并滚入视口，避免原生聚焦只露出部分输入框。 */ element => {
+                            if (element && pendingMessageFocusRef.current === message.editor_key) {
+                              pendingMessageFocusRef.current = undefined;
+                              element.querySelector('textarea')?.focus();
+                              element.scrollIntoView({ block: 'nearest' });
+                            }
+                          }}>
+                            <TemplateMessageEditor message={message} index={index} count={draft.messages.length}
+                              onChange={/* next 保留其他消息草稿。 */ next => updateMessage(index, next)}
+                              onMove={/* direction 改变实际发送顺序。 */ direction => moveMessage(index, direction)}
+                              onRemove={/* 当前回调删除当前顺序消息。 */ () => removeMessage(index)} />
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  </section>
 
-                <aside className="delivery-template-editor__guide">
-                  <TemplateVariableGuide />
-                </aside>
-              </div>
-            </fieldset>
+                  <aside className="delivery-template-editor__guide">
+                    <TemplateVariableGuide />
+                  </aside>
+                </div>
+              </fieldset>
+            </div>
 
             <div className="modal-footer delivery-template-editor__footer">
+              <button type="button" disabled={saving} onClick={addMessage} className="delivery-template-editor__add inline-flex items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-2.5 text-sm font-bold text-gray-600 transition-colors hover:border-sky-400 hover:text-sky-700 disabled:opacity-50"><Plus className="h-4 w-4" />添加消息</button>
               <button type="button" onClick={closeEditor} className="rounded-xl bg-gray-100 px-5 py-2.5 text-sm font-bold text-gray-700 transition-colors hover:bg-gray-200">取消</button>
               <button type="button" disabled={saving} onClick={/* callback 保存模板草稿。 */ () => void saveTemplate()} className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"><Save className="h-4 w-4" />保存模板</button>
             </div>
