@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -256,6 +255,8 @@ type Service struct {
 	localImageLoader LocalImageLoader
 	// identityResolver 保存平台身份查询端口，凭证只在适配器内部短暂存在。
 	identityResolver IdentityResolver
+	// identities由本服务独占并在各HTTP请求间共享资料准入，内部锁不跨外部I/O。
+	identities identityPolicy
 	// subscription 保存实时事件订阅端口；平台和领域实现不会泄露到 HTTP 层。
 	subscription SubscriptionProvider
 	// refresh 保存平台聊天刷新端口；原始响应只在适配器内部解析和持久化。
@@ -571,97 +572,4 @@ func (s *Service) ReportPlatformRead(ctx context.Context, accountID, chatID stri
 		return nil
 	}
 	return s.readReporter.ReportRead(ctx, strings.TrimSpace(accountID), strings.TrimSpace(chatID), messageIDs)
-}
-
-// ResolveSessionIdentity 补全单个会话展示身份并尽力保存到本地。
-// 平台查询错误会原样返回，但已获得的会话摘要仍会返回给调用方。
-func (s *Service) ResolveSessionIdentity(ctx context.Context, session Session) (Session, error) {
-	if s == nil || s.repository == nil || strings.TrimSpace(session.AccountID) == "" || strings.TrimSpace(session.ChatID) == "" {
-		return session, ErrInvalidInput
-	}
-	// resolveErr 保存平台身份查询失败，供 HTTP 层决定是否触发会话恢复。
-	var resolveErr error
-	if session.PeerUserID != "1400" && s.identityResolver != nil {
-		// identity 和 err 保存平台适配器返回的非敏感身份及调用错误。
-		identity, err := s.identityResolver.Resolve(ctx, session.AccountID, session.ChatID)
-		if err != nil {
-			resolveErr = err
-		} else {
-			// name 是去除空白后的平台对端名称。
-			if name := strings.TrimSpace(identity.PeerName); name != "" {
-				session.PeerName = name
-			}
-			// avatar 是去除空白后的平台对端头像地址。
-			if avatar := strings.TrimSpace(identity.PeerAvatar); avatar != "" {
-				session.PeerAvatar = avatar
-			}
-		}
-	}
-	// repository 保存会话身份更新所需的窄端口。
-	if repository, ok := s.repository.(SessionRepository); ok {
-		// _ 表示身份缓存更新失败不应覆盖旧 handler 的展示容错语义。
-		_ = repository.UpdateSessionIdentity(ctx, session.AccountID, session.ChatID, session.PeerUserID, session.PeerName, session.PeerAvatar)
-	}
-	return session, resolveErr
-}
-
-// RefreshSessionIdentities 并发补全会话列表身份，保留首个失败以供调用方处理过期会话。
-func (s *Service) RefreshSessionIdentities(ctx context.Context, accountID string, sessions []Session) ([]Session, error) {
-	accountID = strings.TrimSpace(accountID)
-	if s == nil || s.repository == nil || accountID == "" {
-		return sessions, ErrInvalidInput
-	}
-	if s.identityResolver == nil {
-		return sessions, nil
-	}
-	// result 复制输入列表，避免异步身份补全修改 handler 持有的外部切片。
-	result := append([]Session(nil), sessions...)
-	// jobs 保存待补全的会话下标。
-	jobs := make(chan int)
-	// workers 保存身份补全工作器的完成状态。
-	var workers sync.WaitGroup
-	// once 保证只记录第一个平台查询错误。
-	var once sync.Once
-	// firstErr 保存第一个平台查询错误。
-	var firstErr error
-	// workerCount 是固定的并发度，避免单个账号的联系人数量放大 goroutine 数量。
-	workerCount := 8
-	// worker 表示当前启动的身份补全工作器序号。
-	for worker := 0; worker < workerCount; worker++ {
-		workers.Add(1)
-		go func() {
-			defer workers.Done()
-			// index 表示当前待处理会话在结果切片中的下标。
-			for index := range jobs {
-				// identityCtx 和 cancel 限制单个联系人平台查询的最长时间。
-				identityCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-				// updated 和 err 保存身份补全后的会话及平台查询错误。
-				updated, err := s.ResolveSessionIdentity(identityCtx, result[index])
-				cancel()
-				result[index] = updated
-				if err != nil {
-					once.Do(func() { firstErr = err })
-				}
-			}
-		}()
-	}
-	// queueDone 表示是否因为父上下文取消而提前停止投递。
-	queueDone := false
-	// index 表示当前排队会话在结果切片中的下标。
-	for index := range result {
-		if result[index].PeerUserID == "1400" {
-			continue
-		}
-		select {
-		case jobs <- index:
-		case <-ctx.Done():
-			queueDone = true
-		}
-		if queueDone {
-			break
-		}
-	}
-	close(jobs)
-	workers.Wait()
-	return result, firstErr
 }

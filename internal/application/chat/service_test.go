@@ -505,9 +505,9 @@ func TestSessionPortPreservesIdentityErrorAndCachedSession(t *testing.T) {
 	service := NewWithIdentity(repository, fakeIdentityResolver{err: wantErr})
 	// session 和 err 保存身份失败后的会话及错误。
 	session, err := service.ResolveSessionIdentity(context.Background(), Session{AccountID: "account-1", ChatID: "chat-1", PeerUserID: "buyer-1", PeerName: "旧名称"})
-	// failedUpdates 保存身份查询失败后的线程安全写入快照。
+	// failedUpdates必须为空；资料失败只能读旧值，不得重写并发更新的身份。
 	failedUpdates := repository.updatedSessionSnapshot()
-	if !errors.Is(err, wantErr) || session.PeerName != "旧名称" || len(failedUpdates) != 1 {
+	if !errors.Is(err, wantErr) || session.PeerName != "旧名称" || len(failedUpdates) != 0 {
 		t.Fatalf("session=%+v err=%v updates=%+v", session, err, failedUpdates)
 	}
 }
@@ -691,9 +691,9 @@ func TestSessionOwnershipAndRefreshBoundaries(t *testing.T) {
 	if refreshErr != nil || len(refreshed) != 1 {
 		t.Fatalf("no identity refresh=%+v err=%v", refreshed, refreshErr)
 	}
-	// started、release 控制八个身份工作器进入阻塞查询并统一放行。
-	started, release := make(chan struct{}, 8), make(chan struct{})
-	// blockingService 是稳定验证排队取消分支的身份刷新服务。
+	// started、release控制唯一有预算的身份查询进入阻塞并放行。
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	// blockingService验证取消期间剩余会话不再追加平台查询。
 	blockingService := NewWithIdentity(&fakeRepository{}, blockingIdentityResolver{started: started, release: release})
 	// refreshContext、cancel 保存刷新生命周期上下文及取消函数。
 	refreshContext, cancel := context.WithCancel(context.Background())
@@ -704,7 +704,7 @@ func TestSessionOwnershipAndRefreshBoundaries(t *testing.T) {
 		// err 保存异步刷新返回的首个错误。
 		err error
 	})
-	// blockedSessions 保存足以占满八个身份工作器的会话队列。
+	// blockedSessions保留多条待查会话，以断言预算取消后没有后续调用。
 	blockedSessions := make([]Session, 9)
 	// index 表示当前需要填充的阻塞会话下标。
 	for index := range blockedSessions {
@@ -718,13 +718,14 @@ func TestSessionOwnershipAndRefreshBoundaries(t *testing.T) {
 			err      error
 		}{sessions: refreshed, err: refreshErr}
 	}()
-	for range 8 {
-		<-started
-	}
+	<-started
 	cancel()
 	close(release)
 	// canceled 保存排队取消后的刷新结果。
 	canceled := <-resultChannel
+	if len(started) != 0 {
+		t.Fatal("取消后不得追加资料查询")
+	}
 	if canceled.err != nil || len(canceled.sessions) != len(blockedSessions) {
 		t.Fatalf("canceled refresh=%+v", canceled)
 	}

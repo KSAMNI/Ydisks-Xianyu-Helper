@@ -1,4 +1,5 @@
 import type React from 'react';
+import { useLocalSessionRefresh } from './useLocalSessionRefresh';
 import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from 'react';
 import { emojiURL,renderXianyuText,xianyuEmojis } from '../../../chatEmojis';
 import type { AccountDetail,ChatMessage,ChatSession } from './api';
@@ -206,8 +207,24 @@ export const useChat = (): UseChatResult => {
   useLayoutEffect(/* 当前回调在浏览器处理下一条实时事件前同步已经提交的会话列表快照。 */ () => { sessionsByAccountRef.current = sessionsByAccount; }, [sessionsByAccount]);
   useEffect(/* 当前回调在切换账号或会话时清理只针对旧会话的发送状态收口提示。 */ () => { setSendNotice(''); }, [activeAccountID, activeChatID]);
 
+  /** applyLocalSessionPage 将accountID的本地首页与已加载sessions合并，不回退分页游标或当前已读投影。 */
+  const applyLocalSessionPage = useCallback(/* accountID和sessions是已通过取消代次验证的本地会话页。 */ (accountID: string, sessions: ChatSession[]) => {
+    if (deletingAccountIDRef.current === accountID) return;
+    setSessionsByAccount(/* current保存全部账号的缓存，多页联系人不能被本地首页替换。 */ current => ({
+      ...current,
+      [accountID]: mergeChatSessions(current[accountID] || [], sessions).map(/* session是合并后的行，当前会话保持已读。 */ session =>
+        accountID === activeAccountRef.current && session.chat_id === activeChatRef.current ? { ...session, unread_count: 0 } : session),
+    }));
+  }, []);
+  /** scheduleLocalRefresh合并未知会话事件；cancelLocalRefresh隔离切换、刷新、分页和删除的旧响应。 */
+  const { scheduleLocalRefresh, cancelLocalRefresh } = useLocalSessionRefresh(applyLocalSessionPage);
+  useEffect(/* 当前副作用在账号切换时取消旧账号补读，真实平台首刷仍由原有逻辑负责。 */ () => {
+    cancelLocalRefresh();
+  }, [activeAccountID, cancelLocalRefresh]);
+
   /** 刷新指定账号的联系人列表，并丢弃过期响应。 */
   const reloadSessions = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ async (accountID: string): Promise<ChatSession[]> => {
+    cancelLocalRefresh();
     // sequence 请求序号。
     const sequence = ++sessionSequence.current;
     sessionReloadingRef.current = true;
@@ -241,10 +258,11 @@ export const useChat = (): UseChatResult => {
     } finally {
       if (sessionSequence.current === sequence) sessionReloadingRef.current = false;
     }
-  }, []);
+  }, [cancelLocalRefresh]);
 
 	/** 只读取本地联系人缓存，供删除收口和管理连接恢复使用；该函数永远不会触发平台同步。 */
 	const reloadLocalSessions = useCallback(/* reloadLocalSessions 固定执行本地会话读取，不允许切换为平台刷新。 */ async (accountID: string): Promise<ChatSession[]> => {
+    cancelLocalRefresh();
 		// sequence 隔离本地恢复请求与账号切换或删除产生的旧响应。
 		const sequence = ++sessionSequence.current;
     sessionReloadingRef.current = true;
@@ -271,7 +289,7 @@ export const useChat = (): UseChatResult => {
 		} finally {
       if (sessionSequence.current === sequence) sessionReloadingRef.current = false;
     }
-	}, []);
+	}, [cancelLocalRefresh]);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => {
     // controller 请求取消控制器。
@@ -536,8 +554,8 @@ export const useChat = (): UseChatResult => {
         void markChatRead(accountID, message.chat_id, readReceipts);
       }
     }
-    if (!knownInLoadedSessions) void reloadSessions(accountID);
-  }, [reloadSessions]);
+    if (!knownInLoadedSessions) scheduleLocalRefresh(accountID);
+  }, [scheduleLocalRefresh]);
 
   useEffect(/* 当前副作用订阅认证应用壳唯一连接发布的事件，聊天页卸载时取消订阅而不关闭全局连接。 */ () => {
     /** handleLiveEvent 根据事件类型分别同步连接状态或消息内容。 */
@@ -590,6 +608,7 @@ export const useChat = (): UseChatResult => {
   /** 加载当前账号下一页联系人。 */
   const loadMoreContacts = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ async (): Promise<void> => {
     if (!activeAccountID || sessionReloadingRef.current || deletingAccountIDRef.current === activeAccountID || contactsLoading || !(platformHasMoreContacts[activeAccountID] || storedHasMoreContacts[activeAccountID])) return;
+    cancelLocalRefresh();
     // sequence 请求序号。
     const sequence = ++contactSequence.current;
     contactController.current?.abort();
@@ -616,7 +635,7 @@ export const useChat = (): UseChatResult => {
     } finally {
       if (isCurrentChatRequest(contactSequence.current, sequence, controller.signal)) setContactsLoading(false);
     }
-  }, [activeAccountID, contactCursors, contactsLoading, platformHasMoreContacts, storedHasMoreContacts, storedContactCursors]);
+  }, [cancelLocalRefresh, activeAccountID, contactCursors, contactsLoading, platformHasMoreContacts, storedHasMoreContacts, storedContactCursors]);
 
   /** 发送文本消息并记录失败重试数据。 */
   const sendText = useCallback(/* 当前回调封装可复用的交互处理逻辑。 */ async (text: string, rememberRetry: boolean, clearDraft: boolean): Promise<void> => {
@@ -762,6 +781,7 @@ export const useChat = (): UseChatResult => {
 	/** 在本机隐藏会话并清空消息；只有当前代次的成功响应能够改写聊天状态。 */
 	const deleteConversation = useCallback(/* 当前回调提交确认框选中的账号与会话。 */ async (accountID: string, chatID: string): Promise<boolean> => {
 		if (!accountID || !chatID || (deleteController.current && !deleteController.current.signal.aborted)) return false;
+    cancelLocalRefresh();
 		// sequence 标识本次删除请求，账号切换或卸载会推进代次使其失效。
 		const sequence = ++deleteSequence.current;
 		deleteController.current?.abort();
@@ -845,7 +865,7 @@ export const useChat = (): UseChatResult => {
 				deleteController.current = null;
 			}
 		}
-	}, [reloadLocalSessions]);
+	}, [reloadLocalSessions, cancelLocalRefresh]);
 
 	/** 清除确认框打开前遗留的删除错误。 */
 	const clearDeleteError = useCallback(/* 当前回调只重置删除流程错误，不影响聊天页其他提示。 */ (): void => setDeleteError(''), []);

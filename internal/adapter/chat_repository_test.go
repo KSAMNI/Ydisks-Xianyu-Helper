@@ -131,8 +131,10 @@ type fakeChatIdentityClient struct {
 	info *mtop.ChatUserInfo
 }
 
-// sessionRefreshingIdentityClient 模拟身份查询通过请求 CookieSession 下发换签 Cookie 的平台响应。
+// sessionRefreshingIdentityClient模拟身份查询响应，包括失败时仍需吸收的Cookie。
 type sessionRefreshingIdentityClient struct {
+	// failure是吸收响应Cookie之后返回的可选平台失败。
+	failure error
 	// mtop.Client 保留未涉及身份查询的接口占位。
 	mtop.Client
 	// info 保存平台返回的非敏感对端身份。
@@ -200,7 +202,7 @@ func (c sessionRefreshingIdentityClient) FetchChatUserInfo(ctx context.Context, 
 		c.beforeResponse()
 	}
 	session.ReplaceSnapshot(c.snapshot)
-	return c.info, nil
+	return c.info, c.failure
 }
 
 // TestChatRepositoryMapsSessionMaintenance 验证聊天数据库适配器覆盖列表、清理、身份和归属端口。
@@ -463,3 +465,29 @@ func TestChatImageUploaderRejectsStaleCookieWriteback(t *testing.T) {
 
 var _ chatapp.SessionRepository = chatRepository{}
 var _ chatapp.IdentityResolver = chatIdentityResolver{}
+
+// TestChatIdentityRiskPreservesCookieSettlement验证风险映射不会跳过响应Cookie收口，也不会误判为Token或Session过期。
+func TestChatIdentityRiskPreservesCookieSettlement(t *testing.T) {
+	// store和cleanup限定SQLite夹具生命周期；不访问真实平台。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// risk保留原MTOP分类，以便errors.As和账号恢复分类仍能看到权威错误。
+	risk := &mtop.MTopResponseError{Kind: mtop.MTopErrorRiskVerification, API: "mtop.taobao.idlemessage.pc.user.query", Ret: []string{"FAIL_SYS_USER_VALIDATE", "RGV587_ERROR"}}
+	// client下发新的签名Cookie后返回风险，模拟HTTP200但业务拒绝的响应。
+	client := sessionRefreshingIdentityClient{failure: risk, snapshot: []cookierefresh.BrowserCookie{
+		{Name: "unb", Value: "1", Domain: ".goofish.com", Path: "/"},
+		{Name: "_m_h5_tk", Value: "risk_fixture_1", Domain: ".goofish.com", Path: "/"},
+	}}
+	// resolver只向应用层传展示字段和分类，不传Cookie；提供函数不建立平台连接。
+	resolver := NewChatIdentityResolver(store, func() mtop.Client { return client }, nil)
+	// identity和err保存安全返回值及包含风险标记的完整错误链。
+	identity, err := resolver.Resolve(context.Background(), "cid", "chat")
+	if identity != (chatapp.Identity{}) || !errors.Is(err, chatapp.ErrIdentityRisk) || !errors.Is(err, risk) || IsCredentialExpiredError(err) || mtop.IsMTopTokenExpiredErr(err) {
+		t.Fatal("风险分类或错误链不正确")
+	}
+	// persisted和readErr仅用于验证测试Cookie已经提交，任何失败输出都不打印其明文。
+	persisted, readErr := store.Cookies.GetCookiePlatformRuntimeData(context.Background(), "cid")
+	if readErr != nil || !strings.Contains(persisted.Value, "_m_h5_tk=risk_fixture_1") {
+		t.Fatal("风险响应Cookie未完成写回")
+	}
+}

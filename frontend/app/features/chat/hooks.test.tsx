@@ -550,8 +550,8 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
       () => publishChatLiveMessage(unknownMessage),
     );
     await waitFor(
-      // reloadAssertion 等待未知会话触发联系人刷新。
-      () => expect(getSessionPageMock).toHaveBeenCalledWith('account-1', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }), true),
+      // reloadAssertion要求未知会话只触发本地补读，不再次同步平台联系人。
+      () => expect(getSessionPageMock).toHaveBeenCalledWith('account-1', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }), false),
     );
     await waitFor(
       // unknownSessionAssertion 等待实时事件关联的新会话写入联系人列表。
@@ -920,4 +920,72 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     await act(/* 当前回调完成新删除并释放所有 Promise。 */ async () => { newDeletePending.resolve({ success: true }); await newDelete; });
     hook.unmount();
   });
+  test('未知会话合并补读保留已加载分页和平台同步次数', /* 多条推送只读本地一次，旧分页和游标不能丢失。 */ async () => {
+    getSessionPageMock.mockResolvedValue({ sessions: [sessionFixture], has_more: true, platform_has_more: false, stored_has_more: true, next_stored_cursor: 'first' });
+    /** hook先执行原有首屏同步，之后才检查未知会话事件带来的增量。 */
+    const hook = renderHook(/* 构造真实聊天Hook而非源码匹配。 */ () => useChat());
+    await waitFor(/* 等待首屏及消息加载，避免初始刷新取消本次测试补读。 */ () => expect(hook.result.current.messagesLoading).toBe(false));
+    await waitFor(/* 确保选中账号并完成平台首次刷新。 */ () => expect(hook.result.current.activeChatID).toBe('chat-1'));
+    /** older是已加载第二页的会话，后续本地首页不可将其移除。 */
+    const older = { ...sessionFixture, chat_id: 'older', last_message_at: 0 };
+    getSessionPageMock.mockResolvedValueOnce({ sessions: [older], has_more: true, platform_has_more: false, stored_has_more: true, next_stored_cursor: 'second' });
+    await act(/* 加载第二页并保留下一页游标。 */ async () => { await hook.result.current.loadMoreContacts(); });
+    expect(hook.result.current.activeSessions).toContainEqual(older);
+    /** platformCalls统计事件发生前真实平台同步入口的次数。 */
+    const platformCalls = getSessionPageMock.mock.calls.filter(/* call只统计显式refresh=true的请求。 */ call => call[3] === true).length;
+    /** callsBefore是本地补读前累计请求数，避免初始同步掩盖重复查询。 */
+    const callsBefore = getSessionPageMock.mock.calls.length;
+    /** unknown是新消息对应的本地会话，资料不会通过平台补查伪造。 */
+    const unknown = { ...sessionFixture, chat_id: 'unknown-new', last_message_at: 9 };
+    getSessionPageMock.mockResolvedValueOnce({ sessions: [unknown, sessionFixture], has_more: false });
+    vi.useFakeTimers();
+    try {
+      act(/* 同一窗口连续推送20条未知会话事件。 */ () => {
+        for (let /* index枚举同一批实时通知。 */ index = 0; index < 20; index += 1) publishChatLiveMessage({ ...messageFixture, chat_id: unknown.chat_id });
+      });
+      await act(/* 等待唯一300毫秒本地合并读取完成。 */ async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(getSessionPageMock).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(getSessionPageMock).toHaveBeenLastCalledWith('account-1', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }), false);
+      expect(hook.result.current.activeSessions).toContainEqual(unknown);
+      expect(hook.result.current.activeSessions).toContainEqual(older);
+      expect(hook.result.current.activeSessions.find(/* session定位当前打开会话以检查已读投影。 */ session => session.chat_id === 'chat-1')?.unread_count).toBe(0);
+      getSessionPageMock.mockResolvedValueOnce({ sessions: [], has_more: false });
+      await act(/* 补读不改原分页位置，仍从second继续读取本地下一页。 */ async () => { await hook.result.current.loadMoreContacts(); });
+      expect(getSessionPageMock).toHaveBeenLastCalledWith('account-1', undefined, expect.objectContaining({ signal: expect.any(AbortSignal) }), false, 'second');
+      expect(getSessionPageMock.mock.calls.filter(/* call确认事件未追加平台刷新。 */ call => call[3] === true)).toHaveLength(platformCalls);
+    } finally {
+      hook.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  test('删除在途时的未知会话补读不能恢复旧列表', /* 独立补读不能绕过原有删除隔离；删除完成后本地恢复仍可读到新会话。 */ async () => {
+    /** pendingDelete把删除请求保持在途，以稳定触发本地补读提交时的隔离检查。 */
+    const pendingDelete = deferredChatReview<Awaited<ReturnType<typeof deleteChatSession>>>();
+    deleteSessionMock.mockReturnValueOnce(pendingDelete.promise);
+    /** hook使用真实删除和未知会话事件编排。 */
+    const hook = renderHook(/* 构造聊天页面状态。 */ () => useChat());
+    await waitFor(/* 等待默认账号和会话，保证后续只观察删除竞争。 */ () => expect(hook.result.current.activeChatID).toBe('chat-1'));
+    await waitFor(/* 等待初始消息加载结束。 */ () => expect(hook.result.current.messagesLoading).toBe(false));
+    /** unknown是删除期间新收到的另一个会话，不能提前合并旧快照。 */
+    const unknown = { ...sessionFixture, chat_id: 'while-deleting', last_message_at: 10 };
+    /** deleting保存完整删除流程，以便测试结束前Join所有异步收口。 */
+    let deleting!: Promise<boolean>;
+    vi.useFakeTimers();
+    try {
+      act(/* 删除当前会话，并保持远端响应未完成。 */ () => { deleting = hook.result.current.deleteConversation('account-1', 'chat-1'); });
+      getSessionPageMock.mockResolvedValueOnce({ sessions: [unknown, sessionFixture], has_more: false });
+      act(/* 不同会话的消息会请求本地补读，但不能越过账号删除隔离。 */ () => publishChatLiveMessage({ ...messageFixture, chat_id: unknown.chat_id }));
+      await act(/* 本地旧快照先于删除完成返回，必须被拒绝提交。 */ async () => { await vi.advanceTimersByTimeAsync(300); });
+      expect(hook.result.current.activeSessions.some(/* session定位被隔离的新会话。 */ session => session.chat_id === unknown.chat_id)).toBe(false);
+      getSessionPageMock.mockResolvedValueOnce({ sessions: [unknown], has_more: false });
+      await act(/* 删除完成后通过原有本地恢复读取最新结果。 */ async () => { pendingDelete.resolve({ success: true }); await deleting; });
+      expect(hook.result.current.activeSessions).toContainEqual(unknown);
+      expect(hook.result.current.activeSessions.some(/* session确认已删除会话未被旧响应恢复。 */ session => session.chat_id === 'chat-1')).toBe(false);
+    } finally {
+      hook.unmount();
+      vi.useRealTimers();
+    }
+  });
+
 });

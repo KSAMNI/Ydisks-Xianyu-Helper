@@ -253,6 +253,10 @@ func (r chatIdentityResolver) Resolve(ctx context.Context, accountID, chatID str
 	}
 	// info 和 fetchErr 保存平台返回的展示身份与调用错误；即使 fetchErr 非空也必须先收口已收到的响应 Cookie。
 	info, fetchErr := fetcher.FetchChatUserInfo(requestContext, initial.Value, chatID)
+	// 风险分类仅影响资料准入，仍必须先完成下方响应Cookie收口，再将错误交给应用层。
+	if mtop.IsRiskVerificationErr(fetchErr) {
+		fetchErr = errors.Join(chatapp.ErrIdentityRisk, fetchErr)
+	}
 	// updatedCookies 兼容没有 CookieSession 的历史 MTOP 实现；当前实现优先从 cookieSession 读取完整 Cookie Jar。
 	updatedCookies := ""
 	if info != nil {
