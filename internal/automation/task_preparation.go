@@ -27,8 +27,15 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, err
 	if task.TriggerType == TriggerOrderCreated || task.ChatID == "" {
 		return task, nil
 	}
-	// order 保存按账号、会话以及可选买家和商品条件命中的待发货订单。
-	order, err := c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	// order 保存按账号、会话及可选身份约束匹配的事实；未知角色只接受唯一候选，不按最近时间猜单。
+	var order *db.Order
+	// err 保存对应选择策略的数据库错误，失败时不能继续外部动作。
+	var err error
+	if task.OrderRole == OrderRoleUnknown && isWebSocketSellerOrderTask(task) {
+		order, err = c.store.Orders.FindUniquePendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	} else {
+		order, err = c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	}
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return task, nil

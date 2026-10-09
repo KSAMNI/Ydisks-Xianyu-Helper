@@ -18,16 +18,9 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 	if task.TriggerType != TriggerOrderPaid {
 		return true, nil
 	}
-	if task.Source != "ws" && task.Source != "scheduler" {
-		// reason 说明旧版或人工来源付款运行不能被计划任务静默续跑。
-		reason := "付款运行缺少可信的 WebSocket 或待发货兜底来源，已停止自动恢复"
-		return false, s.quarantineRunForReview(ctx, run, reason)
-	}
-	// order、orderErr 保存计划任务执行前读取到的最新订单事实。
-	order, orderErr := s.center.store.Orders.Get(ctx, run.OrderID)
-	if errors.Is(orderErr, db.ErrNotFound) {
-		// reason 说明没有订单事实时无法证明买家仍已付款且等待发货。
-		reason := "本地缺少订单状态，无法确认订单仍为待发货，已停止自动恢复"
+	// order、reason、orderErr 共用延期恢复的来源与身份检查；只读事实，不复活缺失订单。
+	order, reason, orderErr := paidReplayOrder(ctx, s.center.store, task)
+	if reason != "" {
 		return false, s.quarantineRunForReview(ctx, run, reason)
 	}
 	if orderErr != nil {
@@ -38,11 +31,6 @@ func (s *Scheduler) paidRecoveryReady(ctx context.Context, task Task, run db.Aut
 		}
 		s.center.logger.Warn("读取付款恢复订单状态失败，已延期等待下次核对", "run_id", run.ID, "account", run.CookieID, "order_id", run.OrderID, "err", orderErr)
 		return false, nil
-	}
-	if order.CookieID != run.CookieID {
-		// reason 说明订单归属变化后不能继续使用原运行的账号凭证或会话。
-		reason := "订单归属账号与付款运行不一致，已停止自动恢复"
-		return false, s.quarantineRunForReview(ctx, run, reason)
 	}
 	if !isPendingShipOrder(order) || order.SystemShipped {
 		// reason 记录自动取消原因；订单已取消、完成或发货时无需用户再次处理。
@@ -218,6 +206,9 @@ func pendingShipResumeFrozenPlan(candidate db.PendingShipResume) ([]db.Automatio
 	// err 保存快照解析错误；历史快照损坏时不能猜测缺失的动作。
 	if err := json.Unmarshal([]byte(candidate.RawEventJSON), &original); err != nil {
 		return nil, false, fmt.Errorf("待发货续跑运行的原始计划无法解析: %w", err)
+	}
+	if (original.Source != "ws" && original.Source != "scheduler") || original.TriggerType != TriggerOrderPaid || original.OrderRole == OrderRoleBuyer {
+		return nil, false, fmt.Errorf("待发货续跑缺少可信付款来源或卖家角色，必须人工核对")
 	}
 	if original.AccountID != candidate.Order.CookieID || original.OrderID != candidate.Order.OrderID || len(original.ActionPlan) == 0 {
 		return nil, false, fmt.Errorf("待发货续跑运行的原始计划缺失或归属不符")

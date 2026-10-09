@@ -204,15 +204,20 @@ func (s *Scheduler) scan(ctx context.Context) {
 					ChatID: order.ChatID, OrderID: order.OrderID, ItemID: order.ItemID, BuyerID: order.BuyerID,
 					Text: "发货后一段时间未评价", Raw: map[string]any{"source": "scheduler", "rule_id": rule.ID,
 						"order_id": order.OrderID, "attempt": order.ReviewRequestCount + 1}}
-				// executeErr 保存求评价规则本轮执行的最终结果，用于区分成功、延期和失败。
-				executeErr := s.center.executeRule(ctx, task, rule)
-				switch {
-				case executeErr == nil:
-					s.center.logger.Info("求评价计划任务执行成功", "account", order.CookieID, "order_id", order.OrderID, "rule_id", rule.ID)
-				case errors.Is(executeErr, errAutomationDeferred):
-					s.center.logger.Info("求评价计划任务已延期，等待下一次执行", "account", order.CookieID, "order_id", order.OrderID, "rule_id", rule.ID)
+				// execution、executeErr 区分本次真实执行与幂等跳过；历史成功记录不能冒充本轮发送成功。
+				execution, executeErr := s.center.runs.executeRuleWithResult(ctx, task, rule)
+				// logFields 只携带无凭证的关联标识；attempt 为业务提醒轮次，sent_count 为动作累计数。
+				logFields := []any{"account", order.CookieID, "order_id", order.OrderID, "rule_id", rule.ID,
+					"run_id", execution.RunID, "attempt", order.ReviewRequestCount + 1, "outcome", execution.Status}
+				switch execution.Status {
+				case ruleExecutionSucceeded:
+					s.center.logger.Info("求评价计划任务执行成功", append(logFields, "sent_count", execution.SentCount)...)
+				case ruleExecutionSkipped:
+					s.center.logger.Debug("求评价计划任务已跳过", append(logFields, "reason", execution.SkipReason)...)
+				case ruleExecutionDeferred:
+					s.center.logger.Info("求评价计划任务已延期，等待下一次执行", logFields...)
 				default:
-					s.center.logger.Warn("求评价计划任务执行失败", "account", order.CookieID, "order_id", order.OrderID, "rule_id", rule.ID, "err", executeErr)
+					s.center.logger.Warn("求评价计划任务执行未完成", append(logFields, "err", executeErr)...)
 				}
 			}
 		}
@@ -327,6 +332,12 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			// frozenPlan、eligible、planErr 保存运行快照里冻结的动作计划、是否可自动续跑及不可续跑原因。
 			frozenPlan, eligible, planErr := pendingShipResumeFrozenPlan(candidate)
 			if planErr != nil || !eligible {
+				if planErr != nil {
+					// reviewErr 把不可信的冻结快照隔离并通知，不将其重新标记成合法调度来源。
+					if reviewErr := s.rejectPendingShipCandidate(ctx, candidate, planErr.Error()); reviewErr != nil {
+						s.center.logger.Warn("隔离待发货续跑快照失败", "run_id", candidate.RunID, "err", reviewErr)
+					}
+				}
 				s.center.logger.Info("待发货运行不满足自动续跑条件，保留人工核对",
 					"account", candidate.Order.CookieID, "order_id", candidate.Order.OrderID,
 					"run_id", candidate.RunID, "action_cursor", candidate.ActionCursor, "err", planErr)
@@ -357,14 +368,16 @@ func (s *Scheduler) scanPendingShipResumesWithContextAndLimit(ctx context.Contex
 			taskCtx, cancel := context.WithTimeout(ctx, pendingShipTaskTimeout)
 			// task 携带运行快照里冻结的动作计划与运行标识：执行链必须沿用运行创建时的计划，
 			// 不能把数字游标套用到管理员后来修改过的规则上。
-			// task 是从本地卖家订单和已冻结运行计划恢复的任务；显式标记卖家，避免被 WS 未知角色门禁误拦截。
-			task := Task{Source: "scheduler", AccountID: candidate.Order.CookieID, OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid,
-				ChatID: candidate.Order.ChatID, OrderID: candidate.Order.OrderID,
-				ItemID: candidate.Order.ItemID, BuyerID: candidate.Order.BuyerID,
-				ActionPlan: frozenPlan,
-				Text:       "待发货运行未完成，按检查点续跑",
-				Raw: map[string]any{"source": "scheduler", "order_id": candidate.Order.OrderID,
-					"automation_run_id": candidate.RunID, "automation_rule_id": candidate.RuleID}}
+			// task 保留已验证快照的来源、角色与身份，不能把人工来源或未知角色升级为调度卖家事件。
+			var task Task
+			_ = json.Unmarshal([]byte(candidate.RawEventJSON), &task) // 同一快照已由 pendingShipResumeFrozenPlan 严格解析。
+			task.ActionPlan = frozenPlan
+			if task.Raw == nil {
+				task.Raw = map[string]any{}
+			}
+			task.Raw["automation_run_id"] = candidate.RunID
+			task.Raw["automation_rule_id"] = candidate.RuleID
+			task.Raw["automation_deferred_replay"] = true
 			// err 保存本次续跑任务的处理错误；只告警，不阻断其余候选运行的续跑。
 			if err := s.center.HandleTask(taskCtx, task); err != nil {
 				s.center.logger.Warn("待发货续跑任务执行失败",
@@ -551,19 +564,20 @@ func recoveryNeedsSender(task Task, rule db.AutomationRule, cursor int) bool {
 	}
 }
 
-// runDeferredTasks 封装运行Deferred任务列表业务协调。
+// runDeferredTasks 在调用方 ctx 的生命周期内领取并处理 s 所属的延期队列，不启动额外 goroutine。
+// 返回状态收口失败的聚合错误；业务核验失败按既有退避落库，达到上限通知人工处理。
 func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 	// resultErr 汇总延迟任务最终状态写入失败，避免领取成功后状态异常被静默吞掉。
 	var resultErr error
-	// tasks、err 用于本次流程后续判断的tasks、err
+	// tasks、err 保存原子领取到的任务和领取错误，每条任务使用 ClaimVersion 防止过期 worker 收口。
 	tasks, err := s.center.store.Automation.ClaimDueDeferredTasks(ctx, 100)
 	if err != nil {
-		s.center.logger.Warn("扫描暂停期间自动化事件失败", "err", err)
+		s.center.logger.Warn("扫描延期自动化事件失败", "err", err)
 		return err
 	}
-	// pending 表示当前遍历过程中的pending
+	// pending 是本轮已取得执行租约的延期事件。
 	for _, pending := range tasks {
-		// task 用于本次流程后续判断的任务
+		// task 是待解码的历史事件快照，诊断只允许读取白名单身份字段。
 		var task Task
 		if // err 用于本次流程后续判断的err
 		err := json.Unmarshal([]byte(pending.TaskJSON), &task); err != nil {
@@ -580,7 +594,7 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 					fmt.Errorf("保存解析失败的暂停事件状态失败: %w", finishErr),
 				)
 			} else {
-				s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", pending.CookieID, "err", err)
+				s.center.logger.Warn("延期自动化事件解析失败", "task_id", pending.ID, "account", pending.CookieID, "trigger", pending.TriggerType, "attempt", pending.ClaimVersion, "terminal", pending.ClaimVersion >= 5, "reason", "invalid_snapshot", "err", err)
 				if pending.ClaimVersion >= 5 {
 					s.notifyDeferredTaskNeedsReview(ctx, pending, Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}, failureReason+"；已达到自动重试上限")
 				}
@@ -591,27 +605,41 @@ func (s *Scheduler) runDeferredTasks(ctx context.Context) error {
 			task.Raw = map[string]any{}
 		}
 		task.Raw["automation_deferred_replay"] = true
-		// deferredAgain、runErr 用于本次流程后续判断的deferredAgain、runErr
-		deferredAgain, runErr := s.center.handleTask(ctx, task)
-		if deferredAgain {
-			// handleTask 已按新的 paused_until 重置同一任务；当前 claim 不再删除。
-			s.center.logger.Info("暂停期间自动化事件重放再次延期", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
+		// deferredAgain 表示已重新持久化延期；runErr 区分处理完成与需按队列策略重试的失败。
+		deferredAgain, runErr := s.handleDeferredReplay(ctx, pending, task)
+		if errors.Is(runErr, errReplayNeedsReview) {
+			// rejectErr 将不安全快照直接收口死信，不继续普通自动退避；即使收口失败仍通知人工处理。
+			// finishCtx、finishCancel 保证请求预算取消后仍能有界持久化人工处理状态。
+			finishCtx, finishCancel := newAutomationRunCompensationContext(ctx)
+			// rejectErr 保存死信写入失败，必须向调用者报告并保留通知。
+			rejectErr := s.center.store.Automation.RejectDeferredTask(finishCtx, pending.ID, pending.ClaimVersion, runErr.Error())
+			finishCancel()
+			if task.AccountID != pending.CookieID || task.TriggerType != pending.TriggerType {
+				task = Task{AccountID: pending.CookieID, TriggerType: pending.TriggerType}
+			}
+			s.notifyDeferredTaskNeedsReview(ctx, pending, task, runErr.Error())
+			resultErr = errors.Join(resultErr, rejectErr)
 			continue
 		}
-		// finishErr 保存暂停事件重放终态的持久化错误；只有它成功后才记录重放成功或失败。
+		if deferredAgain {
+			// handleTask 已按新的 paused_until 重置同一任务；当前 claim 不再删除。
+			s.center.logger.Info("延期自动化事件再次延期", deferredTaskLogFields(pending, task, runErr)...)
+			continue
+		}
+		// finishErr 保存延期事件处理结果的持久化错误；成功仅表示队列处理完成，不等于外部动作执行。
 		finishErr := s.center.store.Automation.FinishDeferredTask(ctx, pending.ID, pending.ClaimVersion, runErr == nil, errorString(runErr))
 		if finishErr != nil {
-			s.center.logger.Warn("保存暂停事件重放结果失败", "task_id", pending.ID, "err", finishErr)
-			s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件重放后无法保存任务状态："+finishErr.Error())
-			resultErr = errors.Join(resultErr, errAutomationNeedsReview, runErr, fmt.Errorf("保存暂停事件重放结果失败: %w", finishErr))
+			s.center.logger.Warn("保存延期事件处理结果失败", "task_id", pending.ID, "err", finishErr)
+			s.notifyDeferredTaskNeedsReview(ctx, pending, task, "延期事件处理后无法保存任务状态："+finishErr.Error())
+			resultErr = errors.Join(resultErr, errAutomationNeedsReview, runErr, fmt.Errorf("保存延期事件处理结果失败: %w", finishErr))
 			continue
 		}
 		if runErr == nil {
-			s.center.logger.Info("暂停期间自动化事件重放成功", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType)
+			s.center.logger.Info("延期自动化事件处理完成", deferredTaskLogFields(pending, task, nil)...)
 		} else {
-			s.center.logger.Warn("暂停期间自动化事件重放失败", "task_id", pending.ID, "account", task.AccountID, "trigger", task.TriggerType, "err", runErr)
+			s.center.logger.Warn("延期自动化事件处理失败", append(deferredTaskLogFields(pending, task, runErr), "terminal", pending.ClaimVersion >= 5, "err", runErr)...)
 			if pending.ClaimVersion >= 5 {
-				s.notifyDeferredTaskNeedsReview(ctx, pending, task, "暂停事件连续重放失败并已达到自动重试上限："+runErr.Error())
+				s.notifyDeferredTaskNeedsReview(ctx, pending, task, "延期事件连续处理失败并已达到自动重试上限："+runErr.Error())
 			}
 		}
 	}
@@ -633,6 +661,7 @@ func (s *Scheduler) notifyDeferredTaskNeedsReview(ctx context.Context, pending d
 	notificationKey := fmt.Sprintf("manual-intervention:deferred-task:%d", pending.ID)
 	// notifyCtx 保证任务状态写失败或原始重放预算取消后，告警仍有独立的短时入队预算。
 	notifyCtx, notifyCancel := newAutomationRunCompensationContext(ctx)
+	// 保留通知 action 的旧文案以兼容现有订阅与处理流程；日志分类已区分角色核验、动作延迟和暂停。
 	s.center.notifications.notifyManualIntervention(notifyCtx, task, "暂停自动化事件重放", reason, notificationKey)
 	notifyCancel()
 }

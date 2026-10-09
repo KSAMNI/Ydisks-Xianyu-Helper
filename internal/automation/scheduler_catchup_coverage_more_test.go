@@ -664,9 +664,9 @@ func TestScanPendingShipResumesReportsStorageFailures(t *testing.T) {
 func TestPendingShipResumeFrozenPlanBoundaries(t *testing.T) {
 	// ownerOrder 保存归属校验通过的订单事实。
 	ownerOrder := db.Order{OrderID: "o-frozen", CookieID: "frozen-acc"}
-	// snapshot 按 Task 的字段名拼出快照，便于逐用例替换动作计划。
+	// snapshot 为 cookieID、orderID 和 planJSON 构造可信调度付款快照；来源拒绝由独立恢复测试覆盖。
 	snapshot := func(cookieID, orderID, planJSON string) string {
-		return `{"AccountID":"` + cookieID + `","OrderID":"` + orderID + `","ActionPlan":` + planJSON + `}`
+		return `{"Source":"scheduler","TriggerType":"order_paid","AccountID":"` + cookieID + `","OrderID":"` + orderID + `","ActionPlan":` + planJSON + `}`
 	}
 	// tailPlan 是「发卡 + 确认发货」的冻结计划。
 	tailPlan := `[{"ActionType":"send_card","Enabled":true},{"ActionType":"confirm_shipment","Enabled":true}]`

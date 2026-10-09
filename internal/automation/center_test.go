@@ -595,37 +595,37 @@ func TestReviewAutomationsDoNotRequireOrderDetail(t *testing.T) {
 	}
 }
 
-// TestOrderPaidPreparationFailureIsPersistedAndRecovered 封装Test订单PaidPreparationFailureIsPersistedAndRecovered业务协调。
+// TestOrderPaidPreparationFailureIsPersistedAndRecovered 验证 t 管理的合法待发货 WS 事件在详情暂时失败后仍可恢复，缺少阶段事实另由拒绝重放测试覆盖。
 func TestOrderPaidPreparationFailureIsPersistedAndRecovered(t *testing.T) {
-	// store、cleanup 用于本次流程后续判断的store、cleanup
+	// store、cleanup 提供本测试独占的 SQLite 及释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
-	// ctx 用于本次流程后续判断的ctx
+	// ctx 控制本地规则、订单和队列操作。
 	ctx := context.Background()
-	// admin 用于本次流程后续判断的admin
+	// admin 提供测试规则和卡密的用户归属。
 	admin, _ := store.Users.GetByUsername(ctx, "admin")
 	_, _ = store.DB.ExecContext(ctx, `INSERT INTO item_info (cookie_id,item_id,item_title,is_multi_spec) VALUES ('cid','pending-item','商品',1)`)
 	_, _ = store.DB.ExecContext(ctx, `INSERT INTO cards (id,name,type,text_content,enabled,user_id) VALUES (91,'库存','text','RECOVERED-CARD',1,?)`, admin.ID)
-	if // err 用于本次流程后续判断的err
+	if // err 保留本次本地规则或事件持久化失败，不能继续假设夹具已建立。
 	_, err := store.Automation.Create(ctx, db.AutomationRuleInput{
 		UserID: admin.ID, CookieID: "cid", ItemID: "pending-item", Name: "付款恢复", TriggerType: TriggerOrderPaid, Enabled: true,
 		Actions: []db.AutomationActionInput{{ActionType: ActionSendCard, CardID: 91, DeliveryCount: 1, ConfigJSON: `{"spec_name":"套餐","spec_value":"恢复版"}`, Enabled: true}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// sender 用于本次流程后续判断的sender
+	// sender 只记录实际发卡次数，不访问闲鱼平台。
 	sender := &testSender{}
-	// center 用于本次流程后续判断的center
+	// center 首次模拟详情接口暂时失败，验证事件先落到持久化延期队列。
 	center := NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{
 		OrderDetailFetcher: testFetcher{err: errors.New("temporary order API failure")},
 	})
-	// task 用于本次流程后续判断的任务
-	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
-	if // err 用于本次流程后续判断的err
+	// task 携带明确卖家角色和已知待发货阶段，不能用缺失状态的旧快照测试合法自动恢复。
+	task := Task{Source: "ws", AccountID: "cid", OrderRole: OrderRoleSeller, TriggerType: TriggerOrderPaid, OrderID: "pending-order", ItemID: "pending-item", OrderStatus: "pending_ship", ChatID: "chat", BuyerID: "buyer", Raw: map[string]any{"message_id": "paid-1"}}
+	if // err 保留本次本地规则或事件持久化失败，不能继续假设夹具已建立。
 	err := center.HandleTask(ctx, task); err != nil {
 		t.Fatalf("preparation failure should be durably deferred: %v", err)
 	}
-	// pending、runs 用于本次流程后续判断的pending、runs
+	// pending、runs 分别验证延期事件已保存且失败准备尚未创建动作运行。
 	var pending, runs int
 	_ = store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_pending_tasks WHERE cookie_id='cid' AND trigger_type='order_paid'`).Scan(&pending)
 	_ = store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_runs WHERE order_id='pending-order'`).Scan(&runs)
@@ -642,7 +642,7 @@ func TestOrderPaidPreparationFailureIsPersistedAndRecovered(t *testing.T) {
 		t.Fatalf("recovered sends=%v", sender.texts)
 	}
 	_ = store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_pending_tasks WHERE cookie_id='cid'`).Scan(&pending)
-	// status 用于本次流程后续判断的状态
+	// status 验证恢复运行最终成功收口，不留下活动租约。
 	var status string
 	_ = store.DB.QueryRowContext(ctx, `SELECT status FROM automation_runs WHERE order_id='pending-order'`).Scan(&status)
 	if pending != 0 || status != "success" {

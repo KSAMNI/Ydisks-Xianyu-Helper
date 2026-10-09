@@ -192,19 +192,19 @@ const DeliveryTemplates: React.FC = () => {
           if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
         }}>
-          <div ref={dialogRef} className="modal-container" style={{ maxWidth: '64rem' }} role="dialog" aria-modal="true" aria-labelledby="delivery-template-editor-title">
-            <div className="modal-header flex items-start justify-between gap-4">
-              <div>
+          <div ref={dialogRef} className="modal-container delivery-template-editor" role="dialog" aria-modal="true" aria-labelledby="delivery-template-editor-title">
+            <div className="modal-header delivery-template-editor__header">
+              <div className="min-w-0">
                 <p className="text-xs font-black uppercase tracking-[0.2em] text-sky-600">Delivery template editor</p>
-                <h2 id="delivery-template-editor-title" className="mt-1 text-2xl font-black tracking-tight text-gray-950">{editingID === null ? '新建发货模板' : '编辑发货模板'}</h2>
+                <h2 id="delivery-template-editor-title" className="mt-1 truncate text-2xl font-black tracking-tight text-gray-950">{editingID === null ? '新建发货模板' : '编辑发货模板'}</h2>
                 <p className="mt-1 text-sm font-medium text-gray-500">消息按顺序发送，卡密变量在自动化规则中绑定库存。</p>
               </div>
               <button type="button" onClick={closeEditor} className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-2xl bg-gray-100 transition-colors hover:bg-gray-200" aria-label="关闭编辑器"><X className="h-5 w-5 text-gray-600" /></button>
             </div>
 
-            <fieldset disabled={saving} className="modal-body space-y-5 disabled:opacity-60">
-              <div className="grid gap-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
-                <section className="space-y-5" aria-label="模板内容编辑">
+            <fieldset disabled={saving} className="delivery-template-editor__body disabled:opacity-60">
+              <div className="delivery-template-editor__main">
+                <section className="delivery-template-editor__content" aria-label="模板内容编辑">
                   <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
                     <div className="space-y-2">
                       <label htmlFor="delivery-template-name" className="block text-sm font-bold text-gray-800">模板名称</label>
@@ -215,21 +215,27 @@ const DeliveryTemplates: React.FC = () => {
 
                   <div className="space-y-3">
                     <div className="flex items-center justify-between gap-3"><div><h3 className="text-sm font-black text-gray-900">发送消息</h3><p className="mt-1 text-xs text-gray-500">每一行消息都会独立发送，顺序从上到下。</p></div><span className="rounded-full bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-700">{draft.messages.length} 条消息</span></div>
-                    {draft.messages.map(/* message 是正在编辑的独立图文消息。 */ (message, index) => (
-                      <TemplateMessageEditor key={message.editor_key} message={message} index={index} count={draft.messages.length}
-                        onChange={/* next 保留其他消息草稿。 */ next => updateMessage(index, next)}
-                        onMove={/* direction 改变实际发送顺序。 */ direction => moveMessage(index, direction)}
-                        onRemove={/* 当前回调删除当前顺序消息。 */ () => removeMessage(index)} />
-                    ))}
+                    <ol className="space-y-3" aria-label="消息列表">
+                      {draft.messages.map(/* message 是正在编辑的独立图文消息。 */ (message, index) => (
+                        <li key={message.editor_key}>
+                          <TemplateMessageEditor message={message} index={index} count={draft.messages.length}
+                            onChange={/* next 保留其他消息草稿。 */ next => updateMessage(index, next)}
+                            onMove={/* direction 改变实际发送顺序。 */ direction => moveMessage(index, direction)}
+                            onRemove={/* 当前回调删除当前顺序消息。 */ () => removeMessage(index)} />
+                        </li>
+                      ))}
+                    </ol>
+                    <button type="button" onClick={addMessage} className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-dashed border-gray-300 bg-white px-4 py-3 text-sm font-bold text-gray-600 transition-colors hover:border-sky-400 hover:text-sky-700"><Plus className="h-4 w-4" />添加消息</button>
                   </div>
-                  <button type="button" onClick={addMessage} className="inline-flex items-center rounded-xl bg-gray-100 px-3 py-2 text-xs font-bold text-gray-700 transition-colors hover:bg-gray-200">+ 添加消息</button>
                 </section>
 
-                <TemplateVariableGuide />
+                <aside className="delivery-template-editor__guide">
+                  <TemplateVariableGuide />
+                </aside>
               </div>
             </fieldset>
 
-            <div className="modal-footer flex items-center justify-end gap-3">
+            <div className="modal-footer delivery-template-editor__footer">
               <button type="button" onClick={closeEditor} className="rounded-xl bg-gray-100 px-5 py-2.5 text-sm font-bold text-gray-700 transition-colors hover:bg-gray-200">取消</button>
               <button type="button" disabled={saving} onClick={/* callback 保存模板草稿。 */ () => void saveTemplate()} className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-5 py-2.5 text-sm font-bold text-white transition-colors hover:bg-sky-700 disabled:opacity-50"><Save className="h-4 w-4" />保存模板</button>
             </div>

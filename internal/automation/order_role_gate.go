@@ -51,7 +51,7 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 	}
 	if task.TriggerType == TriggerOrderCreated {
 		if strings.TrimSpace(task.ItemID) == "" {
-			return task, false, "missing_local_item", nil
+			return task, false, "missing_item_id", nil
 		}
 		if c == nil || c.store == nil || c.store.Items == nil {
 			return task, false, "item_store_unavailable", nil
@@ -140,7 +140,7 @@ func isPendingShipOrder(order *db.Order) bool {
 // roleVerificationRetryable 判断拒绝原因是否可能因订单或商品同步完成而恢复；身份冲突和已结束订单不应反复重放。
 func roleVerificationRetryable(reason string) bool {
 	switch reason {
-	case "missing_local_order", "missing_order_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
+	case "missing_local_order", "missing_order_id", "missing_item_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
 		return true
 	default:
 		return false

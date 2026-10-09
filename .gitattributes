@@ -1,2 +1,4 @@
 # 固定 Vite HTML 输入换行，避免 Windows 构建生成混合 CRLF/LF 静态入口。
 frontend/index.html text eol=lf
+# OpenAPI 生成器固定输出 LF，避免 Windows 检出制造字节级契约漂移。
+frontend/shared/api-contract/generated/schema.ts text eol=lf

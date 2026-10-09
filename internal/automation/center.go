@@ -298,14 +298,14 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		if roleVerificationRetryable(rejectReason) {
 			if isDeferredReplay(task) {
 				// 未知角色延期任务再次没有本地证据时交给统一退避；达到上限后由调度器发送人工处理通知。
-				return false, errSellerRoleEvidencePending
+				return false, newSellerRoleEvidenceError(task, rejectReason)
 			}
 			// deferErr 保存首条未知角色事件写入延期队列的错误；写入失败不能伪装成已安全处理。
 			if deferErr := c.deferUnknownRoleTask(ctx, task, rejectReason); deferErr != nil {
 				return false, deferErr
 			}
 			if c.logger != nil {
-				c.logger.Info("未知角色发货事件已保存，等待本地卖家事实", "account", task.AccountID, "order_id", task.OrderID, "trigger", task.TriggerType, "reason", rejectReason)
+				c.logger.Info("未知角色交易事件已保存，等待本地卖家事实", "account", task.AccountID, "order_id", task.OrderID, "item_id", task.ItemID, "chat_id", task.ChatID, "trigger", task.TriggerType, "kind", "role_verification", "reason", rejectReason)
 			}
 			return true, nil
 		}
@@ -318,6 +318,10 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		c.logger.Info("未知角色交易事件已通过本地卖家核验，继续执行自动化", "account", verifiedTask.AccountID, "order_id", verifiedTask.OrderID, "item_id", verifiedTask.ItemID, "trigger", verifiedTask.TriggerType, "source", verifiedTask.Source)
 	}
 	task = verifiedTask
+	// stopped、deferred、replayErr 在旧事实写入前检查延期任务当前资格，避免复活终态订单或已停用规则。
+	if stopped, deferred, replayErr := c.guardDeferredReplay(ctx, task); stopped {
+		return deferred, replayErr
+	}
 	if // err 用于本次流程后续判断的err
 	err := c.facts.record(ctx, task); err != nil {
 		if errors.Is(err, db.ErrForbidden) {
@@ -531,11 +535,6 @@ func taskDelayCursor(task Task) int {
 		return -1
 	}
 	return cursor
-}
-
-// isDeferredReplay 封装isDeferredReplay业务协调。
-func isDeferredReplay(task Task) bool {
-	return task.Raw != nil && task.Raw["automation_deferred_replay"] == true
 }
 
 // deferTask 封装defer任务业务协调。

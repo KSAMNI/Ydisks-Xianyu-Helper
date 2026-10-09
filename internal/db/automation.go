@@ -573,9 +573,7 @@ func (a *AutomationRules) reclaimRun(ctx context.Context, execer sqlQueryExecer,
 	   SET status='running',error_message='',lease_expires_at=?,next_retry_at=0,
 	       attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP
 	 WHERE rule_id=? AND trigger_key=? AND cookie_id=? AND COALESCE(order_id,'')=?
-	   AND ((status='running' AND action_started=0 AND (lease_expires_at=0 OR lease_expires_at<?))
-	        OR (status='failed' AND action_started=0 AND attempt_count<3 AND next_retry_at<=?
-	            AND ((sent_count=0 AND error_message NOT LIKE '[no_retry]%') OR error_message LIKE '[safe_retry]%')))`,
+	   AND `+automationRunReclaimPredicate,
 		leaseExpiresAt, run.RuleID, run.TriggerKey, run.CookieID, run.OrderID, now, now)
 	if err != nil {
 		return 0, false, err

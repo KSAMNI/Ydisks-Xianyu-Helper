@@ -48,19 +48,50 @@ type automationRunCoordinator struct {
 	notifyResult func(context.Context, Task, int64, string, int, string)
 }
 
-// executeRule 创建或恢复一次自动化运行，并统一处理运行成功、失败、延期和人工核对结果；resultErr 返回动作执行或结果收口错误。
-func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, rule db.AutomationRule) (resultErr error) {
+// executeRule 保留错误型兼容入口；ctx 控制 task 按 rule 执行，幂等跳过继续返回 nil，而调度日志必须使用结构化入口。
+func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, rule db.AutomationRule) error {
+	// executionErr 只向旧调用方传播执行或收口错误，不将安全跳过改成重试失败。
+	_, executionErr := r.executeRuleWithResult(ctx, task, rule)
+	return executionErr
+}
+
+// executeRuleWithResult 使用 ctx 的取消预算执行 task 对应的 rule，并返回本次调用的 outcome 和 resultErr。
+// r 不缓存运行状态；只读准入仅减少无效准备，数据库原子领取仍是并发执行权的最终裁决。
+func (r automationRunCoordinator) executeRuleWithResult(ctx context.Context, task Task, rule db.AutomationRule) (outcome ruleExecutionResult, resultErr error) {
+	outcome.Status = ruleExecutionFailed
+	// 最外层收口在持久化补偿之后执行；延期和人工核对错误必须覆盖内层可能产生的成功状态。
+	defer func() {
+		switch {
+		case errors.Is(resultErr, errAutomationNeedsReview):
+			outcome.Status = ruleExecutionNeedsReview
+		case errors.Is(resultErr, errAutomationDeferred):
+			outcome.Status = ruleExecutionDeferred
+		case resultErr != nil:
+			outcome.Status = ruleExecutionFailed
+		}
+	}()
+	// admission、admissionErr 保存当前求评价轮次的只读准入结果；非求评价和显式续跑不会使用此优化。
+	admission, admissionErr := r.reviewRunAdmission(ctx, task, rule)
+	if admissionErr != nil {
+		return outcome, admissionErr
+	}
+	if admission != nil && !admission.Allowed {
+		outcome.Status, outcome.RunID, outcome.SkipReason = ruleExecutionSkipped, admission.RunID, admission.Reason
+		return outcome, nil
+	}
 	// preparedTask 是补全订单事实和凭证上下文后的任务；run 是本次独占或恢复的运行状态。
 	preparedTask, run, skipped, prepareErr := r.prepareRuleRun(ctx, task, rule)
 	if prepareErr != nil {
-		return prepareErr
+		return outcome, prepareErr
 	}
 	if skipped {
-		return nil
+		outcome.Status, outcome.SkipReason = ruleExecutionSkipped, "idempotency_guard"
+		return outcome, nil
 	}
 	if run == nil {
-		return errors.New("自动化运行记录缺失，已停止执行外部动作")
+		return outcome, errors.New("自动化运行记录缺失，已停止执行外部动作")
 	}
+	outcome.RunID = run.ID
 	task = preparedTask
 	// status 是运行完成时写入数据库的结果状态。
 	status := "success"
@@ -70,7 +101,9 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	sent := run.SentCount
 	// finish 表示函数返回时是否应执行正常运行收口。
 	finish := true
+	// 运行收口先持久化终态，再决定是否可报告本次实际成功。
 	defer func() {
+		outcome.SentCount = sent
 		if !finish {
 			return
 		}
@@ -97,6 +130,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			r.notifyResult(finishCtx, task, run.ID, status, sent, errMsg)
 		}
 		if status == "success" {
+			outcome.Status = ruleExecutionSucceeded
 			r.logger.Info("自动化规则执行成功", "run_id", run.ID, "account", task.AccountID,
 				"order_id", task.OrderID, "trigger", task.TriggerType, "sent_count", sent)
 		}
@@ -105,7 +139,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	actions := task.ActionPlan
 	if task.TriggerType == TriggerOrderPaid && !r.planner.hasMatchingSendCard(task, actions) {
 		status, errMsg = "failed", "未匹配到订单规格对应的卡密动作"
-		return errors.New(errMsg)
+		return outcome, errors.New(errMsg)
 	}
 	// deferred 表示动作已写入延迟队列；actionErr 表示动作执行或检查点失败。
 	var deferred bool
@@ -114,7 +148,12 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 	sent, deferred, actionErr = r.executeRunActions(ctx, task, rule.ID, run, actions, false)
 	if deferred {
 		finish = false
-		return errAutomationDeferred
+		return outcome, errAutomationDeferred
+	}
+	if errors.Is(actionErr, errReplayCanceled) {
+		finish = false
+		outcome.Status, outcome.SkipReason = ruleExecutionSkipped, "order_no_longer_pending"
+		return outcome, nil
 	}
 	if errors.Is(actionErr, errAutomationNeedsReview) {
 		finish = false
@@ -124,7 +163,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, actionErr.Error())
 			notifyCancel()
 		}
-		return actionErr
+		return outcome, actionErr
 	}
 	if actionErr != nil {
 		if sent > 0 && !errors.Is(actionErr, ErrMessageNotSent) && !errors.Is(actionErr, errActionNotPerformed) {
@@ -138,7 +177,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			if quarantineErr != nil {
 				finish = false
 				r.logger.Error("保存自动化人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
-				return errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
+				return outcome, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, actionErr, quarantineErr)
 			}
 			finish = false
 			if r.hasNotifier() {
@@ -147,13 +186,13 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
-			return fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
+			return outcome, fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 		}
 		status, errMsg = "failed", actionErr.Error()
 		if errors.Is(actionErr, ErrMessageNotSent) || errors.Is(actionErr, errActionNotPerformed) {
 			errMsg = db.SafeRetryErrorPrefix + errMsg
 		}
-		return actionErr
+		return outcome, actionErr
 	}
 	if task.TriggerType == TriggerReviewMissingTimeout && task.OrderID != "" {
 		// incrementErr 保存求评价消息成功后的提醒次数。
@@ -168,7 +207,7 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 			if quarantineErr != nil {
 				finish = false
 				r.logger.Error("保存求评价人工核对状态失败", "run_id", run.ID, "err", quarantineErr)
-				return errors.Join(errAutomationNeedsReview, errAutomationQuarantine, incrementErr, quarantineErr)
+				return outcome, errors.Join(errAutomationNeedsReview, errAutomationQuarantine, incrementErr, quarantineErr)
 			}
 			finish = false
 			if r.hasNotifier() {
@@ -177,10 +216,10 @@ func (r automationRunCoordinator) executeRule(ctx context.Context, task Task, ru
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
-			return fmt.Errorf("%w: %v", errAutomationNeedsReview, incrementErr)
+			return outcome, fmt.Errorf("%w: %v", errAutomationNeedsReview, incrementErr)
 		}
 	}
-	return nil
+	return outcome, nil
 }
 
 // prepareRuleRun 先补全任务事实和动作计划，再恢复既有运行或原子创建新的幂等运行；skipped 为 true 表示重复事件或已失效恢复任务无需执行。
@@ -460,6 +499,10 @@ func (r automationRunCoordinator) executeRunActionLoop(ctx context.Context, task
 				}
 				return sent, true, nil
 			}
+		}
+		// admissionErr 在详情获取和动作延迟之后重新确认当前授权，不把入队时的事实当作永久执行许可。
+		if admissionErr := r.guardReplayAction(ctx, task, run); admissionErr != nil {
+			return sent, false, admissionErr
 		}
 		// started 表示当前 worker 是否成功占用动作检查点。
 		started, err := r.store.Automation.StartRunAction(ctx, run.ID, run.AttemptCount, cursor, time.Now().UTC().Add(5*time.Minute).Unix())

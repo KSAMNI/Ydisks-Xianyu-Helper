@@ -37,7 +37,7 @@ describe('DeliveryTemplates 页面组合行为', /* 当前回调验证模板编�
     fireEvent.click(screen.getByRole('button', { name: '新建模板' }));
     fireEvent.change(screen.getByLabelText('模板名称'), { target: { value: '图文发货' } });
     fireEvent.change(screen.getByLabelText('第 1 条消息正文'), { target: { value: '您的卡密 {{cards.main}}' } });
-    fireEvent.click(screen.getByRole('button', { name: '+ 添加消息' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加消息' }));
     fireEvent.change(screen.getByLabelText('第 2 条消息类型'), { target: { value: 'image' } });
     fireEvent.change(screen.getByLabelText('图片 URL'), { target: { value: 'https://example.com/old.png' } });
     fireEvent.change(screen.getByLabelText('图片来源'), { target: { value: 'local' } });
@@ -129,9 +129,9 @@ describe('DeliveryTemplates 页面组合行为', /* 当前回调验证模板编�
     render(<DeliveryTemplates />);
     fireEvent.click(screen.getByRole('button', { name: '新建模板' }));
     fireEvent.change(screen.getByLabelText('第 1 条消息正文'), { target: { value: 'A' } });
-    fireEvent.click(screen.getByRole('button', { name: '+ 添加消息' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加消息' }));
     fireEvent.change(screen.getByLabelText('第 2 条消息正文'), { target: { value: 'B' } });
-    fireEvent.click(screen.getByRole('button', { name: '+ 添加消息' }));
+    fireEvent.click(screen.getByRole('button', { name: '添加消息' }));
     fireEvent.change(screen.getByLabelText('第 3 条消息正文'), { target: { value: 'C' } });
     // moveButton 对应用户从键盘聚焦的 A 消息下移按钮。
     const moveButton = screen.getByRole('button', { name: '下移第 1 条消息' });

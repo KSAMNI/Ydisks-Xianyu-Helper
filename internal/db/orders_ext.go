@@ -185,6 +185,18 @@ func (o *Orders) ByCookie(ctx context.Context, cookieID string, limit int) ([]Or
 // FindLatestPendingByChat 按账号和会话查找最近一笔待发货订单，供简化系统消息补回订单号及商品事实。
 // buyerID、itemID 非空时同时作为串单防线；多个候选按最近更新时间和订单号稳定选择。
 func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string) (*Order, error) {
+	return o.findPendingByChat(ctx, cookieID, chatID, buyerID, itemID, false)
+}
+
+// FindUniquePendingByChat 仅当账号 cookieID 的会话 chatID 在 buyerID、itemID 约束下恰有一笔待发货订单时返回事实。
+// ctx 控制查询；无候选或多候选均返回 nil，禁止未知角色事件按最近更新时间猜测订单；数据库失败返回错误。
+func (o *Orders) FindUniquePendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string) (*Order, error) {
+	return o.findPendingByChat(ctx, cookieID, chatID, buyerID, itemID, true)
+}
+
+// findPendingByChat 共用账号和可选身份条件；requireUnique 为 true 时必须唯一匹配，否则保留显式卖家事件的旧最近订单策略。
+// o 提供订单存储，ctx 控制查询，cookieID、chatID、buyerID、itemID 限定事实范围；返回匹配订单或数据库错误。
+func (o *Orders) findPendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string, requireUnique bool) (*Order, error) {
 	// accountID 是经过空白清理的账号标识，限制订单归属范围。
 	accountID := strings.TrimSpace(cookieID)
 	// sessionID 是去除协议后缀的会话标识，兼容订单表历史存储格式。
@@ -206,10 +218,14 @@ func (o *Orders) FindLatestPendingByChat(ctx context.Context, cookieID, chatID, 
 		where = append(where, "item_id=?")
 		args = append(args, productID)
 	}
-	// orderID 保存查询出的最近待发货订单业务标识。
+	// orderID 保存通过唯一性或历史兼容选择策略查到的订单标识。
 	var orderID string
 	// query 保存按更新时间和订单号倒序选择候选订单的 SQL。
 	query := `SELECT order_id FROM orders WHERE ` + strings.Join(where, " AND ") + ` ORDER BY updated_at DESC, order_id DESC LIMIT 1`
+	if requireUnique {
+		// 聚合只在恰有一行时返回标识；MIN 不承担择近或猜测语义，三种数据库均支持此查询。
+		query = `SELECT MIN(order_id) FROM orders WHERE ` + strings.Join(where, " AND ") + ` HAVING COUNT(*)=1`
+	}
 	// err 保存候选订单查询或扫描错误。
 	if err := o.DB.QueryRowContext(ctx, query, args...).Scan(&orderID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
