@@ -137,6 +137,17 @@ jobs:
         with:
           node-version: 24
 
+      # 公共verify不能替代目标架构实测；每个原生runner均须先通过测试再构建镜像。
+      - name: 验证当前原生架构的前端与 Go
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci --prefix frontend
+          npm run typecheck --prefix frontend
+          npm test --prefix frontend
+          npm run build --prefix frontend
+          go test ./...
+
       - name: 恢复 Docker Chromium runtime 缓存
         id: cache-docker-playwright
         uses: actions/cache/restore@v5

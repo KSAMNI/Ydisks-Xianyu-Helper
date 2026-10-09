@@ -30,6 +30,8 @@ type dockerWorkflowFixture struct {
 
 // dockerWorkflowJob 保存依赖、审批环境与发布命令，用于静态门禁回归。
 type dockerWorkflowJob struct {
+	// RunsOn要求镜像构建和架构测试共同在当前matrix原生runner执行。
+	RunsOn string `yaml:"runs-on"`
 	// Needs 指向必须成功的上游任务，保证测试和双架构健康检查不被跳过。
 	Needs string `yaml:"needs"`
 	// If 保存触发条件，latest 只能由 main 的手动输入开启。
@@ -48,6 +50,10 @@ type dockerWorkflowJob struct {
 	} `yaml:"concurrency"`
 	// Steps 包含镜像构建、健康检查和标签命令。
 	Steps []struct {
+		// If用于拒绝架构测试被条件跳过。
+		If string `yaml:"if"`
+		// ContinueOnError必须关闭，任一架构测试失败都不得继续发布。
+		ContinueOnError bool `yaml:"continue-on-error"`
 		// Run 是受测试检查的静态脚本，不执行平台发布。
 		Run string `yaml:"run"`
 		// Uses 记录摘要下载等标准 action。
@@ -101,5 +107,48 @@ func TestDockerLatestPublishKeepsVerificationGates(t *testing.T) {
 		if !strings.Contains(content, requirement) {
 			t.Fatalf("镜像工作流缺少既有验证门禁：%s", requirement)
 		}
+	}
+}
+
+// TestDockerEachNativeArchitectureRunsTestsBeforeBuild验证每个矩阵runner均在镜像推送前完成Go与前端测试。
+func TestDockerEachNativeArchitectureRunsTestsBeforeBuild(t *testing.T) {
+	// source和readErr来自真实工作流，不能只验证一个不会执行的复制脚本。
+	source, readErr := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "docker-publish.yml"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	// workflow保存最小YAML结构，用于区分公共verify与每个原生构建job的步骤。
+	var workflow dockerWorkflowFixture
+	// parseErr要求工作流解析失败时直接阻止发布。
+	if parseErr := yaml3.Unmarshal(source, &workflow); parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	// build必须使用矩阵指定的原生runner，测试与构建不能分配到不同架构。
+	build := workflow.Jobs["build"]
+	if build.RunsOn != "${{ matrix.runner }}" {
+		t.Fatal("架构测试和构建必须使用原生矩阵runner")
+	}
+	// testIndex与buildIndex限定原生测试先于任何镜像摘要推送。
+	testIndex, buildIndex := -1, -1
+	// index和step遍历实际build矩阵中的步骤，而不是公共amd64验证job。
+	for index, step := range build.Steps {
+		if strings.Contains(step.Run, "go test ./...") {
+			testIndex = index
+			if step.If != "" || step.ContinueOnError {
+				t.Fatal("原生架构测试不能条件跳过或忽略失败")
+			}
+			// command逐项核对前端安装、类型、测试、构建及Go测试的失败即停止边界。
+			for _, command := range []string{"set -Eeuo pipefail", "npm ci --prefix frontend", "npm run typecheck --prefix frontend", "npm test --prefix frontend", "npm run build --prefix frontend", "go test ./..."} {
+				if !strings.Contains(step.Run, command) {
+					t.Fatalf("原生架构验证缺少命令：%s", command)
+				}
+			}
+		}
+		if strings.HasPrefix(step.Uses, "docker/build-push-action@") {
+			buildIndex = index
+		}
+	}
+	if testIndex < 0 || buildIndex <= testIndex {
+		t.Fatal("每个原生架构必须先完成测试，才允许构建并推送摘要")
 	}
 }
