@@ -295,6 +295,10 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return false, roleErr
 	}
 	if !sellerVerified {
+		// 零身份事实且本地无候选的待办提醒与卖家身份无关时直接静默丢弃，详见 shouldDiscardZeroEvidenceReminder。
+		if c.shouldDiscardZeroEvidenceReminder(task, rejectReason) {
+			return false, nil
+		}
 		if roleVerificationRetryable(rejectReason) {
 			if isDeferredReplay(task) {
 				// 未知角色延期任务再次没有本地证据时交给统一退避；达到上限后由调度器发送人工处理通知。

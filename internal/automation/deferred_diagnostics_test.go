@@ -24,7 +24,8 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 		{name: "缺商品号", reason: "missing_item_id", task: Task{TriggerType: TriggerOrderCreated}},
 		{name: "缺商品事实", reason: "missing_local_item", task: Task{TriggerType: TriggerOrderCreated, ItemID: "item"}},
 		{name: "缺会话标识", reason: "missing_chat_id", task: Task{TriggerType: TriggerOrderPaid}},
-		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat"}},
+		// 无待发货候选用例带买家标识，避免被零事实静默丢弃拦截，专注于验证无候选时的延期退避链路。
+		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat", BuyerID: "buyer"}},
 		{name: "缺订单事实", reason: "missing_local_order", task: Task{TriggerType: TriggerOrderPaid, OrderID: "missing-order"}},
 	}
 	// scenario 是本轮验证的字段或本地事实缺失场景。

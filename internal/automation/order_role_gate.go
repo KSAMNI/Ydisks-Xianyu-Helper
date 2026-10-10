@@ -138,6 +138,33 @@ func isPendingShipOrder(order *db.Order) bool {
 	}
 }
 
+// isZeroEvidenceReminder 判断事件是否为不含任何可核验身份事实的纯待办提醒。
+// 这类 redReminder 简化通知只携带会话号和一句提醒文字，订单号、商品号、买家号、角色全部为空，
+// 因此无论延期核验多少次、等订单同步多久，都永远不会有可匹配的锚点。
+// 与"真实订单同步滞后"的本质区别是：后者带订单号，同步到了就能核验；前者零事实，永远核验不过。
+// 只有订单、商品、买家、角色全部缺失时才返回 true，任何一项存在都必须保留原有延期核验路径。
+func isZeroEvidenceReminder(task Task) bool {
+	return strings.TrimSpace(task.OrderID) == "" &&
+		strings.TrimSpace(task.ItemID) == "" &&
+		strings.TrimSpace(task.BuyerID) == "" &&
+		task.OrderRole == OrderRoleUnknown
+}
+
+// shouldDiscardZeroEvidenceReminder 判断一个未通过卖家核验的事件是否应被静默丢弃而不是延期核验。
+// 仅当事件不含任何身份事实（isZeroEvidenceReminder）且本地按会话已确认无任何待发货候选
+// （reason == no_pending_order_candidate）时成立：真实订单必在本地有待发货记录，
+// resolvePaidTaskOrder 已先按会话查询，会话查无候选说明该提醒与当前账号卖家身份无关。
+// 只要事件带订单号等锚点，或本地仍有候选，都必须保留延期核验，不得在此丢弃。
+func (c *Center) shouldDiscardZeroEvidenceReminder(task Task, rejectReason string) bool {
+	if !isZeroEvidenceReminder(task) || rejectReason != "no_pending_order_candidate" {
+		return false
+	}
+	if c.logger != nil {
+		c.logger.Info("忽略本地无对应待发货订单的待办提醒，与当前账号卖家身份无关", "account", task.AccountID, "trigger", task.TriggerType, "chat_id", task.ChatID, "reason", rejectReason)
+	}
+	return true
+}
+
 // missingOrderIDReason 为缺少订单号的未知角色发货事件计算更精确的原因码。
 // 依次区分缺会话标识、无本地待发货候选、同会话多候选三类，查询失败时回退到保守的 missing_order_id。
 // 该方法只做只读统计，不猜测或补全订单号。

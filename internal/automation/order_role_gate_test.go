@@ -371,3 +371,67 @@ func TestMissingOrderIDReasonClassification(t *testing.T) {
 		})
 	}
 }
+
+// TestZeroEvidenceReminderDiscarded 用 t 验证不含任何身份事实、本地也无待发货候选的付款待办提醒
+// 被静默丢弃（不创建延期任务、不发送外部消息），而带订单号或本地有候选的事件仍保留延期核验。
+func TestZeroEvidenceReminderDiscarded(t *testing.T) {
+	// redReminderRaw 构造与生产报文一致的“等待卖家发货”红点简化通知：只有会话号和一句提醒。
+	redReminderRaw := func(chatID string) map[string]any {
+		return map[string]any{"1": chatID + "@goofish", "2": 1, "3": map[string]any{"redReminder": "等待卖家发货", "redReminderStyle": "1"}, "4": 1791627433273}
+	}
+	// pendingCount 返回当前延期队列行数，用于断言是否产生了延期任务。
+	pendingCount := func(t *testing.T, store *db.Store) int {
+		// count 是延期任务总数；err 阻止把查询失败误当零记录。
+		var count int
+		// err 保存延期任务计数查询错误。
+		if err := store.DB.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM automation_pending_tasks`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+
+	// t.Run 子测试一：零事实且本地无候选的红点提醒被静默丢弃，不产生延期任务。
+	t.Run("零事实无候选静默丢弃", func(t *testing.T) {
+		// store、cleanup 提供无任何订单的隔离数据库。
+		store, cleanup := newAutomationTestStore(t)
+		defer cleanup()
+		// sender 捕获不应发生的外部消息；center 是真实提取与门禁链路。
+		sender := &testSender{}
+		// center 是真实提取与门禁协调器。
+		center := New(store, testSenderProvider{sender: sender}, nil)
+		// task 经真实 WS 提取，确认它能被识别为付款事件。
+		task := ExtractTaskFromWS("cid", "", redReminderRaw("67605511678"))
+		if task == nil || task.TriggerType != TriggerOrderPaid {
+			t.Fatalf("红点提醒未被识别为付款事件: %+v", task)
+		}
+		// handleErr 保存静默丢弃结果；不应返回错误。
+		if handleErr := center.HandleTask(context.Background(), *task); handleErr != nil {
+			t.Fatalf("零事实提醒应静默丢弃而非报错: %v", handleErr)
+		}
+		// got 保存静默丢弃后的延期任务数。
+		if got := pendingCount(t, store); got != 0 || len(sender.texts) != 0 {
+			t.Fatalf("零事实无候选提醒产生了延期任务或外部消息: pending=%d sends=%d", got, len(sender.texts))
+		}
+	})
+
+	// t.Run 子测试二：带订单号的事件即使本地暂未同步订单，也保留延期核验（不静默丢弃）。
+	t.Run("带订单号保留延期", func(t *testing.T) {
+		// store、cleanup 提供无订单的隔离数据库。
+		store, cleanup := newAutomationTestStore(t)
+		defer cleanup()
+		// sender 不应收到消息；center 走真实门禁。
+		sender := &testSender{}
+		// center 是真实门禁协调器。
+		center := New(store, testSenderProvider{sender: sender}, nil)
+		// task 是带订单号但本地未同步的未知角色付款事件。
+		task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, OrderID: "future-order", ChatID: "chat", Text: "等待卖家发货"}
+		// handleErr 保存带订单号事件的延期处理结果。
+		if handleErr := center.HandleTask(context.Background(), task); handleErr != nil {
+			t.Fatalf("带订单号事件延期失败: %v", handleErr)
+		}
+		// got 保存延期处理后的队列任务数。
+		if got := pendingCount(t, store); got != 1 {
+			t.Fatalf("带订单号事件应保留延期核验: pending=%d", got)
+		}
+	})
+}
