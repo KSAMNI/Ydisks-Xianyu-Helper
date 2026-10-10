@@ -71,7 +71,8 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 		return task, false, "order_store_unavailable", nil
 	}
 	if strings.TrimSpace(task.OrderID) == "" {
-		return task, false, "missing_order_id", nil
+		// 简化付款或砍价通知未能提供订单号时，按本地待发货候选细分原因，避免统一笼统的 missing_order_id。
+		return task, false, c.missingOrderIDReason(ctx, task), nil
 	}
 	// order、orderErr 保存当前账号的本地订单事实；读取范围随后还会再次核对账号归属。
 	order, orderErr := c.store.Orders.Get(ctx, task.OrderID)
@@ -137,10 +138,35 @@ func isPendingShipOrder(order *db.Order) bool {
 	}
 }
 
+// missingOrderIDReason 为缺少订单号的未知角色发货事件计算更精确的原因码。
+// 依次区分缺会话标识、无本地待发货候选、同会话多候选三类，查询失败时回退到保守的 missing_order_id。
+// 该方法只做只读统计，不猜测或补全订单号。
+func (c *Center) missingOrderIDReason(ctx context.Context, task Task) string {
+	if strings.TrimSpace(task.ChatID) == "" {
+		return "missing_chat_id"
+	}
+	if c == nil || c.store == nil || c.store.Orders == nil {
+		return "missing_order_id"
+	}
+	// count、err 保存当前账号同会话待发货候选数量和统计错误；失败时不细分类别。
+	count, err := c.store.Orders.CountPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	if err != nil {
+		return "missing_order_id"
+	}
+	if count == 0 {
+		return "no_pending_order_candidate"
+	}
+	if count > 1 {
+		return "multiple_pending_order_candidates"
+	}
+	// 唯一候选存在但 resolvePaidTaskOrder 已按唯一性回填失败，说明商品或买家约束不一致。
+	return "missing_order_id"
+}
+
 // roleVerificationRetryable 判断拒绝原因是否可能因订单或商品同步完成而恢复；身份冲突和已结束订单不应反复重放。
 func roleVerificationRetryable(reason string) bool {
 	switch reason {
-	case "missing_local_order", "missing_order_id", "missing_item_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
+	case "missing_local_order", "missing_order_id", "missing_chat_id", "no_pending_order_candidate", "multiple_pending_order_candidates", "missing_item_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
 		return true
 	default:
 		return false

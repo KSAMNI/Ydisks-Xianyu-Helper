@@ -60,6 +60,54 @@ func issueOrderID(raw, accountID, storedID string) string {
 	return strings.TrimSpace(identity.OrderID)
 }
 
+// automationIssueClues 只解析延期快照中尚未关联订单时仍可展示的非敏感身份线索；
+// 不反序列化消息正文、卡密或凭证。所有字段在归属一致时才用于展示回退。
+type automationIssueClues struct {
+	// AccountID 是当前格式的账号标识。
+	AccountID string
+	// ItemID 是事件快照中已知的商品标识。
+	ItemID string
+	// BuyerID 是事件快照中已知的买家标识。
+	BuyerID string
+	// ChatID 是事件快照中已知的会话标识。
+	ChatID string
+	// LegacyAccountID 兼容旧快照的账号字段。
+	LegacyAccountID string `json:"account_id"`
+	// LegacyItemID 兼容旧快照的商品字段。
+	LegacyItemID string `json:"item_id"`
+	// LegacyBuyerID 兼容旧快照的买家字段。
+	LegacyBuyerID string `json:"buyer_id"`
+	// LegacyChatID 兼容旧快照的会话字段。
+	LegacyChatID string `json:"chat_id"`
+}
+
+// issueSnapshotClues 从延期任务快照提取与 accountID 一致的非敏感商品/买家/会话线索。
+// 仅在订单尚未关联、本地也没有订单事实时作为展示回退；归属不一致或快照损坏时返回零值，绝不猜测关联。
+func issueSnapshotClues(raw, accountID string) automationIssueClues {
+	// clues 只在本次展示回退中存在，不作为 HTTP 响应之外的关联依据。
+	var clues automationIssueClues
+	if json.Unmarshal([]byte(raw), &clues) != nil {
+		return automationIssueClues{}
+	}
+	if clues.AccountID == "" {
+		clues.AccountID = clues.LegacyAccountID
+	}
+	if clues.ItemID == "" {
+		clues.ItemID = clues.LegacyItemID
+	}
+	if clues.BuyerID == "" {
+		clues.BuyerID = clues.LegacyBuyerID
+	}
+	if clues.ChatID == "" {
+		clues.ChatID = clues.LegacyChatID
+	}
+	// 快照账号与记录账号不一致时，线索可能属于其他账号，不能展示。
+	if clues.AccountID != "" && clues.AccountID != accountID {
+		return automationIssueClues{}
+	}
+	return clues
+}
+
 // CheckOrderAutomation 用 ctx 检查 accountID/orderID 的持久停用记录；无订单的非订单任务不受影响，查询失败必须停止动作。
 func (a *AutomationRules) CheckOrderAutomation(ctx context.Context, accountID, orderID string) error {
 	return checkOrderAutomation(ctx, a.DB, accountID, orderID)

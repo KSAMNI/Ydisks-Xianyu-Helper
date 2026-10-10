@@ -123,6 +123,21 @@ func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]Autom
 		issue.OrderStatus = info.OrderStatus
 		issue.CanStopOrder = info.CanStopOrder
 		issue.OrderID = info.OrderID
+		// 订单尚未关联时，用事件快照中与账号一致的商品/买家/会话线索补充展示，
+		// 避免已知信息一律显示为“尚未获取”；线索不用于关联或停用授权。
+		if issue.OrderID == "" {
+			// clues 是仅从快照解析的非敏感身份线索，归属已由 issueSnapshotClues 校验。
+			clues := issueSnapshotClues(taskSnapshots[index], issue.CookieID)
+			if issue.ItemID == "" {
+				issue.ItemID = clues.ItemID
+			}
+			if issue.BuyerID == "" {
+				issue.BuyerID = clues.BuyerID
+			}
+			if issue.ChatID == "" {
+				issue.ChatID = clues.ChatID
+			}
+		}
 		visibleTasks = append(visibleTasks, issue)
 	}
 	return visibleRuns, visibleTasks, nil

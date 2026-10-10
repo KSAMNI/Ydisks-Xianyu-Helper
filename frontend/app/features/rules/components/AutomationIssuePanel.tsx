@@ -1,6 +1,6 @@
 import { AlertCircle } from 'lucide-react';
 import type { AutomationRunIssue, DeferredAutomationIssue } from '../api';
-import { automationIssueKindLabel, automationTaskLabel, automationOrderStatusLabel, canResolveAutomationIssue, type AutomationResolution, type DeferredResolution } from '../issueState';
+import { automationIssueKindLabel, automationTaskLabel, deferredTaskLabel, automationOrderStatusLabel, canResolveAutomationIssue, type AutomationResolution, type DeferredResolution } from '../issueState';
 import { copyAutomationOrderID } from '../issueActions';
 
 /** AutomationIssuePanelProps 保持运行与延期两类异常及其服务端处理能力独立。 */
@@ -39,7 +39,7 @@ export const AutomationIssuePanel = ({ runs, pendingTasks, busy = false, onResol
       <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
       <div><h3 className="font-black text-red-900">需要人工处理的自动化任务</h3>
         <p className="text-sm text-red-700 mt-1">请先核对闲鱼订单和聊天记录。终止本次任务不等于停止整单；停止整单后，后续自动化及历史重试均不会再执行。</p>
-        <p className="text-xs text-red-700 mt-1">已确认完成的动作数不等于卡密张数；未记录成功也不能证明平台未执行。已发送内容或正在执行的请求无法撤回。</p>
+        <p className="text-xs text-red-700 mt-1">延期任务的「彻底删除」会永久移除该条出错记录（不可恢复），不再重试也不再告警；已确认完成的动作数不等于卡密张数；未记录成功也不能证明平台未执行。已发送内容或正在执行的请求无法撤回。</p>
       </div>
     </div>
     {runs.map(/* issue 是当前需要人工核对的运行，只展示其允许的处理动作。 */ issue => (
@@ -59,13 +59,13 @@ export const AutomationIssuePanel = ({ runs, pendingTasks, busy = false, onResol
     ))}
     {pendingTasks.map(/* issue 是当前延期死信，订单关联来自经过验证的任务快照。 */ issue => (
       <article key={`task-${issue.id}`} className="rounded-xl border border-red-100 bg-white p-4 space-y-3">
-        <div className="font-bold text-gray-900">任务：{automationTaskLabel(issue.trigger_type)} <span className="text-xs text-gray-500">· 延期任务 #{issue.id}</span></div>
+        <div className="font-bold text-gray-900">任务：{deferredTaskLabel(issue.trigger_type)} <span className="text-xs text-gray-500">· 延期任务 #{issue.id}</span></div>
         <IssueIdentity issue={issue} />
         <div className="text-sm">已尝试执行 {issue.attempt_count} 次；已达到自动重试上限</div>
         <div className="text-sm text-red-700 whitespace-pre-wrap break-words">停止原因：{issue.error_message || '未提供具体原因，请核对实际结果'}</div>
         <div className="flex flex-wrap gap-2">
           <button disabled={busy} onClick={/* 当前回调只重新入队此延期任务。 */ () => onResolveDeferredTask(issue.id, 'retry', issue)} className="px-3 py-2 rounded-lg bg-amber-100 text-amber-800 text-xs font-bold disabled:opacity-50">重新入队</button>
-          <button disabled={busy} onClick={/* 当前回调忽略单条异常，不影响未来任务。 */ () => onResolveDeferredTask(issue.id, 'dismiss', issue)} className="px-3 py-2 rounded-lg bg-gray-100 text-gray-700 text-xs font-bold disabled:opacity-50">忽略本次任务</button>
+          <button disabled={busy} onClick={/* 当前回调彻底删除单条出错延期任务，不影响未来任务。 */ () => onResolveDeferredTask(issue.id, 'dismiss', issue)} className="px-3 py-2 rounded-lg bg-red-100 text-red-800 text-xs font-bold disabled:opacity-50">彻底删除</button>
           {issue.order_id && issue.can_stop_order && <button disabled={busy} onClick={/* 当前回调停用可靠关联订单，不能为无订单任务猜测归属。 */ () => onResolveDeferredTask(issue.id, 'stop_order', issue)} className="px-3 py-2 rounded-lg bg-red-100 text-red-800 text-xs font-bold disabled:opacity-50">停止此订单全部自动化</button>}
         </div>
       </article>

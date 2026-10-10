@@ -194,6 +194,41 @@ func (o *Orders) FindUniquePendingByChat(ctx context.Context, cookieID, chatID, 
 	return o.findPendingByChat(ctx, cookieID, chatID, buyerID, itemID, true)
 }
 
+// CountPendingByChat 统计账号 cookieID 的会话 chatID 在 buyerID、itemID 约束下的待发货订单候选数量。
+// 与 FindUniquePendingByChat 使用完全一致的筛选条件，供未知角色事件区分“没有候选”和“同会话多候选”。
+// ctx 控制查询取消；返回候选数量和数据库错误，数量大于 1 表示不能唯一关联。
+func (o *Orders) CountPendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string) (int, error) {
+	// accountID 是经过空白清理的账号标识，限制订单归属范围。
+	accountID := strings.TrimSpace(cookieID)
+	// sessionID 是去除协议后缀的会话标识，兼容订单表历史存储格式。
+	sessionID := strings.TrimSpace(strings.TrimSuffix(chatID, "@goofish"))
+	if accountID == "" || sessionID == "" {
+		return 0, nil
+	}
+	// where 保存与 findPendingByChat 完全一致的跨数据库订单筛选条件。
+	where := []string{"cookie_id=?", "chat_id=?", "deleted_at IS NULL", "order_status IN (?,?,?,?,?,?)"}
+	// args 保存 where 条件对应的绑定参数，状态集合覆盖本地和参考项目的待发货别名。
+	args := []any{accountID, sessionID, "pending_ship", "paid", "2", "pending_delivery", "partial_success", "partial_pending_finalize"}
+	// normalizedBuyerID 是去除协议后缀的买家标识，用于兼容裸值和带后缀值。
+	if normalizedBuyerID := strings.TrimSuffix(strings.TrimSpace(buyerID), "@goofish"); normalizedBuyerID != "" {
+		where = append(where, "buyer_id IN (?,?)")
+		args = append(args, normalizedBuyerID, normalizedBuyerID+"@goofish")
+	}
+	// productID 是可选的商品约束，防止同一会话内跨商品串单。
+	if productID := strings.TrimSpace(itemID); productID != "" {
+		where = append(where, "item_id=?")
+		args = append(args, productID)
+	}
+	// count 是符合全部条件的待发货候选数量。
+	var count int
+	// err 保存候选计数查询错误；失败必须阻止调用方按“无候选”归类。
+	err := o.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM orders WHERE `+strings.Join(where, " AND "), args...).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // findPendingByChat 共用账号和可选身份条件；requireUnique 为 true 时必须唯一匹配，否则保留显式卖家事件的旧最近订单策略。
 // o 提供订单存储，ctx 控制查询，cookieID、chatID、buyerID、itemID 限定事实范围；返回匹配订单或数据库错误。
 func (o *Orders) findPendingByChat(ctx context.Context, cookieID, chatID, buyerID, itemID string, requireUnique bool) (*Order, error) {

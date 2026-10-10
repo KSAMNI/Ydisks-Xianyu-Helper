@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react';
 import { beforeEach, afterEach, expect, test, vi } from 'vitest';
 import { resolveAutomationRun, resolveDeferredAutomationTask, type AutomationRunIssue } from './api';
 import { copyAutomationOrderID, useIssueActions } from './issueActions';
-import { automationTaskLabel, automationOrderStatusLabel, issueResolutionPrompt, canResolveAutomationIssue } from './issueState';
+import { automationTaskLabel, deferredTaskLabel, automationOrderStatusLabel, issueResolutionPrompt, canResolveAutomationIssue } from './issueState';
 
 /** API 替身仅记录人工决策，不访问实际订单。 */
 vi.mock('./api', () => ({ resolveAutomationRun: vi.fn(), resolveDeferredAutomationTask: vi.fn() }));
@@ -34,13 +34,20 @@ const pending = () => {
 test('任务名称明确区分求评价与付款发货，未知类型不误标', /* 当前场景验证标签和订单状态映射。 */ () => {
   expect(['order_paid', 'order_created', 'buyer_reviewed', 'review_missing_timeout', 'bargain_pending', 'order_completed', 'auto_rate'].map(/* trigger 是待展示的业务类型。 */ trigger => automationTaskLabel(trigger))).toEqual(['付款发货', '拍下改价', '评价赠品', '求评价', '砍价自动免拼', '确认收货', '自动评价买家']);
   expect(automationTaskLabel('future')).toContain('future'); expect(automationTaskLabel('')).toBe('未知任务');
+  // 延期事件尚无规则运行，使用事件阶段名而非业务任务名；其它触发类型回退到任务名。
+  expect(deferredTaskLabel('order_paid')).toBe('付款发货事件（卖家身份待核验）');
+  expect(deferredTaskLabel('order_created')).toBe('订单创建事件（卖家身份待核验）');
+  expect(deferredTaskLabel('buyer_reviewed')).toBe('评价赠品');
+  // 延期死信的二次确认使用事件阶段名，运行仍使用业务任务名。
+  expect(issueResolutionPrompt('dismiss', { ...issue, attempt_count: 5, trigger_type: 'order_paid' })).toContain('付款发货事件（卖家身份待核验）');
+  expect(issueResolutionPrompt('stop_order', issue)).toContain('求评价');
   expect(automationOrderStatusLabel('pending_ship')).toBe('待发货'); expect(automationOrderStatusLabel()).toBe('尚未获取'); expect(automationOrderStatusLabel('future')).toBe('future');
   expect(canResolveAutomationIssue(issue, 'stop_order')).toBe(true);
   expect(canResolveAutomationIssue({ ...issue, order_id: '' }, 'stop_order')).toBe(false);
   expect(canResolveAutomationIssue({ ...issue, can_stop_order: false }, 'stop_order')).toBe(false);
   expect(issueResolutionPrompt('stop_order', issue)).toContain('求评价'); expect(issueResolutionPrompt('stop_order', issue)).toContain('order-7');
   expect(issueResolutionPrompt('stop_order', issue)).toContain('重启后仍有效'); expect(issueResolutionPrompt('cancel', issue)).toContain('不会停止该订单其他');
-  expect(issueResolutionPrompt('continue')).toContain('下一步'); expect(issueResolutionPrompt('retry')).toContain('重复发送'); expect(issueResolutionPrompt('dismiss')).toContain('延期异常');
+  expect(issueResolutionPrompt('continue')).toContain('下一步'); expect(issueResolutionPrompt('retry')).toContain('重复发送'); expect(issueResolutionPrompt('dismiss')).toContain('彻底删除');
 });
 
 test('确认停用后按异常主键提交并刷新，缺订单不能提交整单停用', /* 当前场景同时覆盖运行和延期入口。 */ async () => {

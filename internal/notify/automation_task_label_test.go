@@ -9,8 +9,8 @@ import (
 
 // TestManualTaskLabelsAndOutboxDetails 验证每种通知能明确识别求评价、发货及免拼，旧类别订阅和稳定去重仍生效。
 func TestManualTaskLabelsAndOutboxDetails(t *testing.T) {
-	// labels 覆盖全部已知类型以及缺省和未来类型。
-	labels := map[string]string{"order_paid": "付款发货", "order_created": "拍下改价", "buyer_reviewed": "评价赠品", "review_missing_timeout": "求评价", "bargain_pending": "砍价自动免拼", "order_completed": "确认收货", "": "未知自动化任务", "future": "其他任务（future）"}
+	// labels 覆盖全部已知类型以及缺省和未来类型；订单创建与付款事件尚无规则运行，使用事件阶段名而非业务任务名。
+	labels := map[string]string{"order_paid": "付款发货事件（卖家身份待核验）", "order_created": "订单创建事件（卖家身份待核验）", "buyer_reviewed": "评价赠品", "review_missing_timeout": "求评价", "bargain_pending": "砍价自动免拼", "order_completed": "确认收货", "": "未知自动化任务", "future": "其他任务（future）"}
 	// store、cleanup 是本地通知 outbox，不实际发送到外部渠道。
 	store, cleanup := newNotifyStoreBare(t)
 	defer cleanup()

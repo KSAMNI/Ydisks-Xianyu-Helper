@@ -57,6 +57,20 @@ func TestFindUniquePendingByChat(t *testing.T) {
 	if legacyErr != nil || legacy == nil {
 		t.Fatalf("旧查询兼容失败: %v", legacyErr)
 	}
+	// count、countErr 验证 CountPendingByChat 与 FindUniquePendingByChat 使用一致筛选条件。
+	// 同会话同买家有两笔候选时应返回 2，限定商品后只剩 1 笔。
+	count, countErr := store.Orders.CountPendingByChat(ctx, accountID, "chat", "buyer", "")
+	if countErr != nil || count != 2 {
+		t.Fatalf("多候选计数不符: count=%d err=%v", count, countErr)
+	}
+	count, countErr = store.Orders.CountPendingByChat(ctx, accountID, "chat", "buyer", "order-a")
+	if countErr != nil || count != 1 {
+		t.Fatalf("商品限定后计数不符: count=%d err=%v", count, countErr)
+	}
+	count, countErr = store.Orders.CountPendingByChat(ctx, accountID, "chat", "other", "")
+	if countErr != nil || count != 0 {
+		t.Fatalf("错误买家候选计数不符: count=%d err=%v", count, countErr)
+	}
 	// finishErr 将第二笔候选结束，唯一查询只允许剩余待发货订单。
 	if _, finishErr := store.DB.ExecContext(ctx, `UPDATE orders SET order_status='shipped' WHERE order_id='order-b'`); finishErr != nil {
 		t.Fatal(finishErr)

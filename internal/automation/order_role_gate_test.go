@@ -326,3 +326,48 @@ func TestUnknownWebSocketRecoveryRequiresSellerEvidence(t *testing.T) {
 		t.Fatalf("未知角色历史卖家运行未恢复发货: %v", sender.texts)
 	}
 }
+
+// TestMissingOrderIDReasonClassification 验证缺少订单号的未知角色付款事件按本地待发货候选细分为
+// 缺会话、无候选、多候选三类原因，而不是统一笼统的 missing_order_id。
+func TestMissingOrderIDReasonClassification(t *testing.T) {
+	// store、cleanup 提供隔离的订单表与延期队列。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 控制本测试内订单事实写入和门禁核验。
+	ctx := context.Background()
+	// 准备同账号同会话的两笔待发货订单，作为多候选场景的事实来源。
+	for _, orderID := range []string{"multi-a", "multi-b"} {
+		// upsertErr 保存同会话多候选订单事实的写入错误。
+		if upsertErr := store.Orders.Upsert(ctx, orderID, db.OrderUpsertOpts{CookieID: "cid", ChatID: "busy-chat", ItemID: "item", BuyerID: "buyer", OrderStatus: "pending_ship"}); upsertErr != nil {
+			t.Fatal(upsertErr)
+		}
+	}
+	// center 使用真实门禁，外部发送被替换为空探针。
+	center := New(store, testSenderProvider{sender: &testSender{}}, nil)
+	// cases 覆盖缺会话、无候选、多候选三种无订单号细分场景。
+	cases := []struct {
+		// name 是子测试名；task 是缺订单号的未知角色事件；reason 是预期细分原因码。
+		name, reason string
+		task         Task
+	}{
+		{name: "缺会话标识", reason: "missing_chat_id", task: Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid}},
+		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "empty-chat"}},
+		{name: "同会话多候选", reason: "multiple_pending_order_candidates", task: Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderPaid, ChatID: "busy-chat", ItemID: "item", BuyerID: "buyer"}},
+	}
+	// scenario 是当前的缺订单号细分场景。
+	for _, scenario := range cases {
+		t.Run(scenario.name, func(t *testing.T) {
+			// verified、reason、err 保存卖家门禁的核验结论、细分原因和意外错误。
+			_, verified, reason, err := center.authorizeWebSocketSellerTask(ctx, scenario.task)
+			if err != nil {
+				t.Fatalf("门禁核验返回意外错误: %v", err)
+			}
+			if verified || reason != scenario.reason {
+				t.Fatalf("细分原因不符: verified=%t reason=%s want=%s", verified, reason, scenario.reason)
+			}
+			if !roleVerificationRetryable(reason) {
+				t.Fatalf("细分原因应保持可重试以等待订单同步: %s", reason)
+			}
+		})
+	}
+}

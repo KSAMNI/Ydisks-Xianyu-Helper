@@ -14,7 +14,7 @@ import (
 
 // TestDeferredRoleEvidenceDiagnosticsAndDeadLetter 用 t 验证缺少字段的事件保持阻断，精确原因持久化，第五次失败仅通知一次。
 func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
-	// cases 将缺商品号、商品归属未同步、缺订单号和订单未同步分别诊断。
+	// cases 将缺商品号、商品归属未同步、缺会话、无待发货候选和订单未同步分别诊断。
 	cases := []struct {
 		// name、reason 分别是子测试名和预期稳定原因码。
 		name, reason string
@@ -23,7 +23,8 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 	}{
 		{name: "缺商品号", reason: "missing_item_id", task: Task{TriggerType: TriggerOrderCreated}},
 		{name: "缺商品事实", reason: "missing_local_item", task: Task{TriggerType: TriggerOrderCreated, ItemID: "item"}},
-		{name: "缺订单号", reason: "missing_order_id", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat"}},
+		{name: "缺会话标识", reason: "missing_chat_id", task: Task{TriggerType: TriggerOrderPaid}},
+		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat"}},
 		{name: "缺订单事实", reason: "missing_local_order", task: Task{TriggerType: TriggerOrderPaid, OrderID: "missing-order"}},
 	}
 	// scenario 是本轮验证的字段或本地事实缺失场景。

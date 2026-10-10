@@ -322,6 +322,7 @@ jobs:
           tags: |
             type=sha,format=long
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
 
       - name: 创建并推送多架构 manifest
