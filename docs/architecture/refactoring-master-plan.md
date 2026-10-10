@@ -170,3 +170,8 @@ git diff --check
 
 
 - 2026-10-10（镜像发布原生架构测试门禁补齐）：发布聊天资料修复时发现Docker公共verify仅在amd64执行Go/前端测试；按仓库“每种架构通过测试后才发布manifest”的规则，在既有build矩阵内增加无条件、失败即停止的前端安装/typecheck/test/build与Go全量测试，确保arm64同样实测。新增真实YAML结构回归先失败后通过，保留原verify、原生runner校验、Chromium/health、manifest依赖和latest审批；不修改应用逻辑、版本标签规则、六阶段状态或冻结CAPTCHA。此次是发布安全约束的窄范围补齐，不放宽任何门禁；本地release包、架构及注释检查通过，原生双架构实测结果以本次Actions为准。
+
+
+- 2026-10-10（人工处理信息增强与订单停用，功能已实现、用户授权发布）：运行及延期异常明确显示付款发货、求评价、赠品等任务类型及可信订单上下文；新增整单持久停用，区别于终止单次运行，并保护新事件、历史恢复、延期和外部动作入口。三方言56迁移、应用端口、具名HTTP DTO、OpenAPI请求/响应、生成类型与嵌入前端同步更新；不改变六阶段状态、不修改冻结 CAPTCHA、不增加注释基线。Go全量statements81.6%、前端103文件678测试/statements81.23%，API/架构/中文注释/typecheck/vet、前端及服务构建通过；实际Chromium启动、health/SPA和关闭通过。RUN_BROWSER_INTEGRATION=1的浏览器回归因冻结轨迹墙钟1391ms超限未完全通过，未放宽；MySQL/PostgreSQL实库、race、golangci-lint及真实账号平台未执行。完整安全语义、命令、覆盖缺口与环境例外见[功能记录](../automation-order-stop-20261010.md)。
+
+- 2026-10-10（上述功能发布授权）：用户明确接受本地冻结滑块耗时失败并要求提交、推送和构建新镜像。该例外仅记录测试现状，不修改冻结范围、不放宽既有CI或逐架构Chromium/health门禁；其余质量与发布验证继续执行。

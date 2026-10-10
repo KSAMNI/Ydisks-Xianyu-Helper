@@ -1,3 +1,6 @@
+import { useIssueActions } from './issueActions';
+import type { AutomationRunIssue, DeferredAutomationIssue } from './api';
+import type { AutomationResolution, DeferredResolution } from './issueState';
 import { useCallback,useEffect,useMemo,useRef,useState,type Dispatch,type SetStateAction } from 'react';
 import {
 deleteReplyRule,
@@ -5,8 +8,6 @@ deleteShippingRule,
 getCards,
 getItems,
 getShippingRules,
-resolveAutomationRun,
-resolveDeferredAutomationTask,
 updateReplyRule,
 updateShippingRule,
 } from './api';
@@ -111,10 +112,12 @@ export interface RuleActionsState extends DefaultReplyActionsState {
   handleDeleteAutomation: (id: string) => Promise<void>;
   // handleToggleAutomation 切换指定自动化规则启用状态。
   handleToggleAutomation: (rule: ShippingRule) => Promise<void>;
+  // issueActionPending 阻止同一页面重复提交人工决策。
+  issueActionPending: boolean;
   // handleResolveRunIssue 处理暂停中的自动化运行。
-  handleResolveRunIssue: (id: number, resolution: 'continue' | 'retry' | 'cancel') => Promise<void>;
+  handleResolveRunIssue: (id: number, resolution: AutomationResolution, issue?: AutomationRunIssue) => Promise<void>;
   // handleResolveDeferredIssue 处理等待重试的自动化任务。
-  handleResolveDeferredIssue: (id: number, resolution: 'retry' | 'dismiss') => Promise<void>;
+  handleResolveDeferredIssue: (id: number, resolution: DeferredResolution, issue?: DeferredAutomationIssue) => Promise<void>;
   // handleAddReplyRule 打开新增关键词回复弹窗。
   handleAddReplyRule: () => void;
   // handleSaveReplyRule 保存当前关键词回复规则。
@@ -429,19 +432,8 @@ export const useRuleActions = ({
     try { await updateShippingRule({ ...rule, enabled: !rule.enabled }); await loadAutomationRules(); } catch (/* error 表示自动化规则状态更新异常。 */ error) { alert('操作失败：' + (error as Error).message); }
   }, [loadAutomationRules]);
 
-  // handleResolveRunIssue 处理自动化运行的人工恢复决策。
-  const handleResolveRunIssue = useCallback(/* resolveRunAction 处理自动化运行异常。 */ async (id: number, resolution: 'continue' | 'retry' | 'cancel') => {
-    // prompt 保存当前恢复操作的确认文案。
-    const prompt = resolution === 'continue' ? '确认外部动作已经执行成功，并跳到下一步吗？' : resolution === 'retry' ? '确认外部动作没有执行，可以安全重试吗？错误判断可能造成重复发送。' : '确认终止该自动化运行吗？';
-    if (!confirm(prompt)) return;
-    try { await resolveAutomationRun(id, resolution); await loadAutomationRules(); } catch (/* error 表示自动化运行恢复异常。 */ error) { alert('处理失败：' + (error as Error).message); }
-  }, [loadAutomationRules]);
-
-  // handleResolveDeferredIssue 处理延迟自动化任务的重试或忽略。
-  const handleResolveDeferredIssue = useCallback(/* resolveDeferredAction 处理延迟任务异常。 */ async (id: number, resolution: 'retry' | 'dismiss') => {
-    if (!confirm(resolution === 'retry' ? '确认重新执行该任务吗？' : '确认忽略并删除该异常任务吗？')) return;
-    try { await resolveDeferredAutomationTask(id, resolution); await loadAutomationRules(); } catch (/* error 表示延迟任务恢复异常。 */ error) { alert('处理失败：' + (error as Error).message); }
-  }, [loadAutomationRules]);
+  /** issueActions 拥有人工决策请求、账号切换隔离与卸载后的响应丢弃。 */
+  const { handleResolveRunIssue, handleResolveDeferredIssue, issueActionPending } = useIssueActions(selectedAccountId, loadAutomationRules);
 
   // handleAddReplyRule 打开一个默认使用包含匹配的关键词回复草稿。
   const handleAddReplyRule = useCallback(/* addReplyAction 创建关键词回复草稿。 */ () => {
@@ -499,7 +491,7 @@ export const useRuleActions = ({
     editingReplyRule, setEditingReplyRule, selectedRuleItem, isMultiSpecRule, currentTrigger,
     currentMeta, reviewConfig, displayVariants, buildAutomationDraft, openAutomationRule, openNewAutomationRule,
     handleTriggerChange, handleAutomationItemChange, updateVariant, updateAdjustPriceTarget, updateAdjustPriceNotifyText, appendDeliveryContent, handleSaveAutomationRule,
-    handleDeleteAutomation, handleToggleAutomation, handleResolveRunIssue, handleResolveDeferredIssue, handleAddReplyRule,
+    handleDeleteAutomation, handleToggleAutomation, handleResolveRunIssue, handleResolveDeferredIssue, issueActionPending, handleAddReplyRule,
     handleSaveReplyRule, handleDeleteReply, toast, showReplyToast,
   };
 };

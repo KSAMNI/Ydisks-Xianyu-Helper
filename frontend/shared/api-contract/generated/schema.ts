@@ -2036,6 +2036,13 @@ export interface components {
             items: components["schemas"]["NotificationUncertainOutboxItem"][];
         };
         AutomationRunIssue: {
+            account_name?: string;
+            item_id?: string;
+            item_title?: string;
+            buyer_id?: string;
+            chat_id?: string;
+            order_status?: string;
+            can_stop_order?: boolean;
             id: number;
             cookie_id: string;
             order_id: string;
@@ -2048,6 +2055,14 @@ export interface components {
             updated_at: string;
         };
         DeferredAutomationIssue: {
+            account_name?: string;
+            item_id?: string;
+            item_title?: string;
+            buyer_id?: string;
+            chat_id?: string;
+            order_status?: string;
+            can_stop_order?: boolean;
+            order_id?: string;
             id: number;
             cookie_id: string;
             trigger_type: string;
@@ -5550,7 +5565,17 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description stop_order 持久停止该异常关联订单的全部自动化，不撤销已发送或在途请求；缺少可靠订单身份时拒绝。
+                     * @enum {string}
+                     */
+                    resolution: "retry" | "dismiss" | "stop_order";
+                };
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {
@@ -6208,7 +6233,17 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * @description stop_order 持久停止该异常关联订单的全部自动化，不撤销已发送或在途请求；缺少可靠订单身份时拒绝。
+                     * @enum {string}
+                     */
+                    resolution: "continue" | "retry" | "cancel" | "stop_order";
+                };
+            };
+        };
         responses: {
             /** @description 成功 */
             200: {

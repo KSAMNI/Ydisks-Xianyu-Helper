@@ -18,6 +18,10 @@ func (e *automationActionExecutor) freeShipBargain(ctx context.Context, task Tas
 // 在平台明确返回 Session 失效时恢复账号凭证并重试一次，避免把已恢复后仍失败的请求循环执行。
 // 它不发送卡密、不确认发货，也不修改订单已发货状态。
 func (e *automationActionExecutor) freeShipBargainAttempt(ctx context.Context, task Task, allowCredentialRecovery bool) error {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return stopErr
+	}
 	if task.OrderID == "" || strings.TrimSpace(task.ItemID) == "" || strings.TrimSpace(task.BuyerID) == "" {
 		return fmt.Errorf("%w: 免拼发货缺少订单ID、商品ID或买家ID", errActionNotPerformed)
 	}

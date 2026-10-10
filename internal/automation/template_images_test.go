@@ -17,8 +17,11 @@ func TestImageTemplatePreservesOrderAndFrozenPlan(t *testing.T) {
 	events := []string{}
 	// sender 记录文本与本地图片，无需真实平台。
 	sender := &localDeliverySender{testSender: testSender{events: &events}}
-	// executor 在无卡密变量时不需要数据库。
-	executor := automationActionExecutor{senders: blockingSenderProvider{sender: sender}}
+	// store、cleanup 提供订单停用准入查询，模板内容仍由本地发送器记录。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// executor 使用真实停用仓储与本地发送器，不访问闲鱼。
+	executor := automationActionExecutor{store: store, senders: blockingSenderProvider{sender: sender}}
 	// action 的旧文本投影故意不完整，验证完整图文计划优先。
 	action := db.AutomationAction{Enabled: true, ActionType: ActionSendTemplate, ConfigJSON: "{}",
 		TemplateMessages: []string{"旧文本投影不能执行"},

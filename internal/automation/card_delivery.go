@@ -18,6 +18,10 @@ func (e *automationActionExecutor) sendCard(ctx context.Context, task Task, acti
 
 // sendCardWithProof 发送卡密并收集实际成功投递的文本或图片凭证，供同一运行的确认发货动作使用。
 func (e *automationActionExecutor) sendCardWithProof(ctx context.Context, task Task, action db.AutomationAction) (actionExecutionResult, error) {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return actionExecutionResult{}, stopErr
+	}
 	if !actionMatchesOrderSpec(task, action) {
 		return actionExecutionResult{}, nil
 	}

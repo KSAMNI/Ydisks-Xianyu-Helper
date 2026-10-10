@@ -53,8 +53,8 @@ func (f *fakeIssueRepository) ResolveRunIssue(_ context.Context, userID, runID i
 }
 
 // ResolveDeferredIssue 返回预设错误并记录延期任务处理参数。
-func (f *fakeIssueRepository) ResolveDeferredIssue(_ context.Context, userID, taskID int64, retry bool) error {
-	f.resolvedTask.userID, f.resolvedTask.taskID, f.resolvedTask.retry = userID, taskID, retry
+func (f *fakeIssueRepository) ResolveDeferredIssue(_ context.Context, userID, taskID int64, resolution string) error {
+	f.resolvedTask.userID, f.resolvedTask.taskID, f.resolvedTask.retry = userID, taskID, resolution == "retry"
 	return f.taskErr
 }
 

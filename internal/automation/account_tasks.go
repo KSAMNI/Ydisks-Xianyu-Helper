@@ -397,6 +397,18 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			summary.Skipped++
 			continue
 		}
+		// stopErr 在评价平台调用前复核订单停用，已领取的本地运行只收口为取消，不发送评价。
+		if stopErr := c.repository.CheckOrderAutomation(ctx, settings.CookieID, orderID); stopErr != nil {
+			if !orderAutomationStopped(stopErr) {
+				return summary, stopErr
+			}
+			// finishErr 保留本地取消收口失败，禁止伪报成功。
+			if finishErr := c.finishAccountTaskRun(ctx, runKey, "canceled", 0, 0, stopErr.Error(), 0); finishErr != nil {
+				return summary, finishErr
+			} // finishErr 保留本地收口失败，禁止伪报成功。
+			summary.Skipped++
+			continue
+		}
 		// result、rateErr 用于本次流程后续判断的result、rateErr
 		result, rateErr := c.client().RateBuyer(credential.requestContext, current, orderID, settings.RateContent)
 		if rateErr != nil || result == nil || !result.Success {

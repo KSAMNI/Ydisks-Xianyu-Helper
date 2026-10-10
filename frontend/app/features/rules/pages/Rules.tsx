@@ -114,7 +114,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
     editingReplyRule, setEditingReplyRule, selectedRuleItem, isMultiSpecRule, currentTrigger,
     currentMeta, reviewConfig, displayVariants, openAutomationRule, openNewAutomationRule, handleTriggerChange,
     handleAutomationItemChange, updateVariant, updateAdjustPriceTarget, updateAdjustPriceNotifyText, appendDeliveryContent, handleSaveAutomationRule, handleDeleteAutomation,
-    handleToggleAutomation, handleResolveRunIssue, handleResolveDeferredIssue, handleAddReplyRule, handleSaveReplyRule,
+    handleToggleAutomation, handleResolveRunIssue, handleResolveDeferredIssue, issueActionPending, handleAddReplyRule, handleSaveReplyRule,
     handleDeleteReply, toast, openDefaultReplyModal,
   } = ruleActions;
 
@@ -274,10 +274,11 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
 
 	  {activeTab === 'automation' && (visibleAutomationIssues.runs.length > 0 || visibleAutomationIssues.pending_tasks.length > 0) ? (
 	    <AutomationIssuePanel
+        busy={issueActionPending}
 	      runs={visibleAutomationIssues.runs}
 	      pendingTasks={visibleAutomationIssues.pending_tasks}
-	      onResolveRun={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution) => void handleResolveRunIssue(id, resolution)}
-	      onResolveDeferredTask={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution) => void handleResolveDeferredIssue(id, resolution)}
+	      onResolveRun={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution, issue) => void handleResolveRunIssue(id, resolution, issue)}
+	      onResolveDeferredTask={/* 当前回调处理用户交互或异步状态变化。 */ (id, resolution, issue) => void handleResolveDeferredIssue(id, resolution, issue)}
 	    />
 	  ) : null}
 

@@ -383,6 +383,14 @@ export const updateShippingRule = async (rule: Partial<ShippingRule>): Promise<O
 export const deleteShippingRule = async (id: string): Promise<OperationResponse> => runContractRequest(/* signal 控制自动化规则删除请求的取消和超时。 */ signal => contractClient.DELETE('/api/v1/automation-rules/{rule_id}', { params: { path: { rule_id: id } }, signal }));
 
 export interface AutomationRunIssue {
+  /** 账号备注；未提供时回退账号标识。 */ account_name?: string;
+  /** 本地商品标识。 */ item_id?: string;
+  /** 非敏感商品标题。 */ item_title?: string;
+  /** 买家标识，仅展示可靠关联。 */ buyer_id?: string;
+  /** 会话标识，不包含聊天内容。 */ chat_id?: string;
+  /** 当前本地订单阶段。 */ order_status?: string;
+  /** 后端确认身份后才允许停止整单，缺省禁止。 */ can_stop_order?: boolean;
+
   /** id 表示标识。 */ id: number;
   /** cookie_id 表示登录凭证标识。 */ cookie_id: string;
   /** order_id 表示订单标识。 */ order_id: string;
@@ -396,6 +404,15 @@ export interface AutomationRunIssue {
 }
 
 export interface DeferredAutomationIssue {
+  /** 账号备注；未提供时回退账号标识。 */ account_name?: string;
+  /** 本地商品标识。 */ item_id?: string;
+  /** 非敏感商品标题。 */ item_title?: string;
+  /** 买家标识，仅展示可靠关联。 */ buyer_id?: string;
+  /** 会话标识，不包含聊天内容。 */ chat_id?: string;
+  /** 当前本地订单阶段。 */ order_status?: string;
+  /** 后端确认身份后才允许停止整单，缺省禁止。 */ can_stop_order?: boolean;
+  /** 延期任务明确记录的订单号，缺失时不猜测。 */ order_id?: string;
+
   /** id 表示标识。 */ id: number;
   /** cookie_id 表示登录凭证标识。 */ cookie_id: string;
   /** trigger_type 表示触发条件类型。 */ trigger_type: string;
@@ -417,12 +434,12 @@ export const getAutomationIssues = async (): Promise<{ /** runs 表示运行记�
 };
 
 // resolveAutomationRun 处理自动化运行记录。
-export const resolveAutomationRun = async (id: number, resolution: 'continue' | 'retry' | 'cancel'): Promise<OperationResponse> =>
-  runContractRequest(/* signal 控制自动化运行处理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/automation-runs/{run_id}/resolve', { params: { path: { run_id: String(id) } }, body: { resolution } as never, signal }));
+export const resolveAutomationRun = async (id: number, resolution: 'continue' | 'retry' | 'cancel' | 'stop_order'): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制自动化运行处理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/automation-runs/{run_id}/resolve', { params: { path: { run_id: String(id) } }, body: { resolution }, signal }));
 
 // resolveDeferredAutomationTask 处理延迟自动化任务。
-export const resolveDeferredAutomationTask = async (id: number, resolution: 'retry' | 'dismiss'): Promise<OperationResponse> =>
-  runContractRequest(/* signal 控制待处理自动化任务请求的取消和超时。 */ signal => contractClient.POST('/api/v1/automation-pending-tasks/{task_id}/resolve', { params: { path: { task_id: String(id) } }, body: { resolution } as never, signal }));
+export const resolveDeferredAutomationTask = async (id: number, resolution: 'retry' | 'dismiss' | 'stop_order'): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制待处理自动化任务请求的取消和超时。 */ signal => contractClient.POST('/api/v1/automation-pending-tasks/{task_id}/resolve', { params: { path: { task_id: String(id) } }, body: { resolution }, signal }));
 
 type KeywordRowPayload = {
     /** 规则稳定标识。 */

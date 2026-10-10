@@ -1,7 +1,10 @@
 import type { AutomationRunIssue,DeferredAutomationIssue } from './api';
 
 // AutomationResolution 表示自动化运行异常可执行的人工处理动作。
-export type AutomationResolution = 'continue' | 'retry' | 'cancel';
+export type AutomationResolution = 'continue' | 'retry' | 'cancel' | 'stop_order';
+
+/** DeferredResolution 保留单任务忽略并区分持久整单停用。 */
+export type DeferredResolution = 'retry' | 'dismiss' | 'stop_order';
 
 // AutomationIssueState 保存规则页异常面板所需的两类异常记录。
 export interface AutomationIssueState {
@@ -15,7 +18,7 @@ export interface AutomationIssueState {
 export const canResolveAutomationIssue = (
   issue: AutomationRunIssue,
   resolution: AutomationResolution,
-): boolean => issue.allowed_resolutions.includes(resolution);
+): boolean => resolution === 'stop_order' ? Boolean(issue.order_id && issue.can_stop_order) : issue.allowed_resolutions.includes(resolution);
 
 // filterAutomationIssues 按账号筛选异常，保持异常面板与规则列表一致。
 export const filterAutomationIssues = (issues: AutomationIssueState, cookieID: string): AutomationIssueState => ({
@@ -60,4 +63,25 @@ export const loadAutomationPageData = async <TRule>(options: AutomationPageDataL
   const rules = await options.loadRules();
   options.onRules(rules);
   await issuesPromise;
+};
+
+/** automationTaskLabel 将触发类型转换成明确业务名称；未知类型保留原值便于定位，不能笼统标作发货。 */
+export const automationTaskLabel = (trigger: string): string => ({
+  order_paid: '付款发货', order_created: '拍下改价', buyer_reviewed: '评价赠品',
+  review_missing_timeout: '求评价', bargain_pending: '砍价自动免拼', order_completed: '确认收货', auto_rate: '自动评价买家',
+}[trigger] || (trigger ? `其他任务（${trigger}）` : '未知任务'));
+
+/** automationOrderStatusLabel 显示本地订单阶段；缺失及未来状态不猜测为待发货。 */
+export const automationOrderStatusLabel = (status?: string): string => ({
+ pending_pay: '待付款', pending_ship: '待发货', pending_receive: '待收货', shipped: '已发货', completed: '已完成', canceled: '已取消', cancelled: '已取消', closed: '已关闭',
+}[status || ''] || status || '尚未获取');
+
+/** issueResolutionPrompt 根据明确的处理范围生成二次确认；issue 可选以兼容既有单任务调用。 */
+export const issueResolutionPrompt = (resolution: AutomationResolution | DeferredResolution, issue?: AutomationRunIssue | DeferredAutomationIssue): string => {
+  /** context 只包含任务类型、账号与订单身份，不含消息内容和凭证。 */
+  const context = issue ? `任务：${automationTaskLabel(issue.trigger_type)}\n账号：${issue.account_name || issue.cookie_id}\n订单：${issue.order_id || '尚未关联订单'}\n\n` : '';
+  if (resolution === 'stop_order') return context + '确认停止此订单全部自动化？\n包括发货、确认发货、免拼、评价赠品、求评价及自动评价买家。重启后仍有效，不影响其他订单。\n已发送内容或正在执行的平台请求不能撤回。不会删除执行记录，也不会自动恢复历史任务。';
+  if (resolution === 'continue') return context + '确认外部动作已经执行成功，并跳到下一步吗？';
+  if (resolution === 'retry') return context + '确认外部动作没有执行，可以安全重试吗？错误判断可能造成重复发送。';
+  return context + (resolution === 'cancel' ? '确认终止本次任务？这不会停止该订单其他自动任务。' : '确认忽略并删除本次延期异常？这不会停止该订单后续自动任务。');
 };

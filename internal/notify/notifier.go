@@ -195,7 +195,7 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 	// fallbackTypes 保存人工处理终态原本所属的自动化类别，兼容现有渠道订阅。
 	var fallbackTypes []string
 	if strings.TrimSpace(status) == "needs_review" {
-		notificationType, notificationLevel, notificationTitle = EventManualInterventionRequired, "critical", "自动化需要人工处理"
+		notificationType, notificationLevel, notificationTitle = EventManualInterventionRequired, "critical", eventLabel(eventType)+"需要人工处理"
 		fallbackTypes = []string{eventType}
 	}
 	n.notifyEvent(ctx, NotificationEvent{
@@ -221,16 +221,17 @@ func (n *Notifier) NotifyManualIntervention(ctx context.Context, triggerType, ac
 		return
 	}
 	// message 汇总人工处理环节与原因，避免用户只看到系统错误却不知道应检查哪个订单。
-	message := fmt.Sprintf("%s（订单 %s）需要人工处理：%s", fallback(action, "自动化任务"), fallback(orderID, "未知"), fallback(reason, "执行结果无法确认"))
+	message := fmt.Sprintf("任务：%s\n账号：%s\n订单：%s\n处理环节：%s\n原因：%s", manualTaskLabel(triggerType), accountID, fallback(orderID, "尚未关联订单"), fallback(action, "自动化任务"), fallback(reason, "执行结果无法确认"))
 	// sourceEventType 保存该人工处理事件原本所属的自动化类别，兼容用户已有的细分类别订阅。
 	sourceEventType := automationEventType(triggerType)
 	n.notifyEvent(ctx, NotificationEvent{
 		AccountID: accountID,
 		Type:      EventManualInterventionRequired,
 		Level:     "critical",
-		Title:     "自动化需要人工处理",
+		Title:     manualTaskLabel(triggerType) + "需要人工处理",
 		Body:      message,
 		Fields: map[string]string{
+			"任务类型": manualTaskLabel(triggerType),
 			"订单ID": orderID,
 			"商品ID": itemID,
 			"买家ID": buyerID,

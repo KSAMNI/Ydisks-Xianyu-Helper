@@ -1621,6 +1621,18 @@ paths:
             schema:
               type: string
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [retry, dismiss, stop_order]
+                  description: stop_order 持久停止该异常关联订单的全部自动化，不撤销已发送或在途请求；缺少可靠订单身份时拒绝。
       responses:
         '200':
           description: 成功
@@ -2034,6 +2046,18 @@ paths:
             schema:
               type: string
       security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [continue, retry, cancel, stop_order]
+                  description: stop_order 持久停止该异常关联订单的全部自动化，不撤销已发送或在途请求；缺少可靠订单身份时拒绝。
       responses:
         '200':
           description: 成功
@@ -7314,6 +7338,13 @@ components:
       type: object
       required: [id, cookie_id, order_id, trigger_type, error_message, issue_kind, allowed_resolutions, action_cursor, sent_count, updated_at]
       properties:
+        account_name: {type: string}
+        item_id: {type: string}
+        item_title: {type: string}
+        buyer_id: {type: string}
+        chat_id: {type: string}
+        order_status: {type: string}
+        can_stop_order: {type: boolean}
         id: {type: integer}
         cookie_id: {type: string}
         order_id: {type: string}
@@ -7328,6 +7359,14 @@ components:
       type: object
       required: [id, cookie_id, trigger_type, error_message, attempt_count, updated_at]
       properties:
+        account_name: {type: string}
+        item_id: {type: string}
+        item_title: {type: string}
+        buyer_id: {type: string}
+        chat_id: {type: string}
+        order_status: {type: string}
+        can_stop_order: {type: boolean}
+        order_id: {type: string}
         id: {type: integer}
         cookie_id: {type: string}
         trigger_type: {type: string}

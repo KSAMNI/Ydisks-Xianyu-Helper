@@ -45,67 +45,11 @@ VALUES (?,?,?,?,?,'pending',0,0,?)`+dialectUpsert(a.Dialect, []string{"task_key"
 	return err
 }
 
-// ListIssues 读取问题列表。
-func (a *AutomationRules) ListIssues(ctx context.Context, userID int64) ([]AutomationRunIssue, []DeferredAutomationIssue, error) {
-	// runRows、err 用于本次流程后续判断的运行Rows、err
-	runRows, err := a.DB.QueryContext(ctx, `SELECT ar.id,ar.cookie_id,ar.order_id,ar.trigger_type,ar.error_message,
-		ar.action_cursor,ar.sent_count,ar.updated_at,ar.raw_event_json,ar.action_started,COALESCE(r.enabled,0)
-		FROM automation_runs ar JOIN cookies c ON c.id=ar.cookie_id
-		LEFT JOIN automation_rules r ON r.id=ar.rule_id
-		WHERE c.user_id=? AND ar.status='needs_review' AND r.deleted_at IS NULL ORDER BY ar.updated_at DESC,ar.id DESC`, userID)
-	if err != nil {
-		return nil, nil, err
-	}
-	// runs 用于本次流程后续判断的运行记录
-	runs := []AutomationRunIssue{}
-	for runRows.Next() {
-		// issue 用于本次流程后续判断的问题
-		var issue AutomationRunIssue
-		// rawEventJSON 用于本次流程后续判断的原始EventJSON
-		var rawEventJSON string
-		// actionStarted、ruleEnabled 用于本次流程后续判断的动作Started、rule启用状态
-		var actionStarted, ruleEnabled int
-		if // err 用于本次流程后续判断的err
-		err := runRows.Scan(&issue.ID, &issue.CookieID, &issue.OrderID, &issue.TriggerType, &issue.ErrorMessage,
-			&issue.ActionCursor, &issue.SentCount, &issue.UpdatedAt, &rawEventJSON, &actionStarted, &ruleEnabled); err != nil {
-			_ = runRows.Close()
-			return nil, nil, err
-		}
-		issue.IssueKind, issue.AllowedResolutions = automationIssuePolicy(
-			rawEventJSON, actionStarted != 0, issue.ActionCursor, ruleEnabled != 0, issue.SentCount, issue.ErrorMessage,
-		)
-		runs = append(runs, issue)
-	}
-	if // err 用于本次流程后续判断的err
-	err := runRows.Close(); err != nil {
-		return nil, nil, err
-	}
-	// taskRows、err 用于本次流程后续判断的任务Rows、err
-	taskRows, err := a.DB.QueryContext(ctx, `SELECT apt.id,apt.cookie_id,apt.trigger_type,apt.error_message,
-		apt.attempt_count,apt.updated_at
-		FROM automation_pending_tasks apt JOIN cookies c ON c.id=apt.cookie_id
-		WHERE c.user_id=? AND apt.status='dead_letter' ORDER BY apt.updated_at DESC,apt.id DESC`, userID)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer taskRows.Close()
-	// tasks 用于本次流程后续判断的任务列表
-	tasks := []DeferredAutomationIssue{}
-	for taskRows.Next() {
-		// issue 用于本次流程后续判断的问题
-		var issue DeferredAutomationIssue
-		if // err 用于本次流程后续判断的err
-		err := taskRows.Scan(&issue.ID, &issue.CookieID, &issue.TriggerType, &issue.ErrorMessage,
-			&issue.AttemptCount, &issue.UpdatedAt); err != nil {
-			return nil, nil, err
-		}
-		tasks = append(tasks, issue)
-	}
-	return runs, tasks, taskRows.Err()
-}
-
 // ResolveRunIssue 处理运行问题。
 func (a *AutomationRules) ResolveRunIssue(ctx context.Context, userID, runID int64, resolution string) error {
+	if resolution == "stop_order" {
+		return a.StopOrderForIssue(ctx, userID, runID, false)
+	}
 	// rawEventJSON、errorMessage 用于本次流程后续判断的原始EventJSON、error消息
 	var rawEventJSON, errorMessage string
 	// actionStarted、ruleEnabled、sentCount 用于本次流程后续判断的动作Started、ruleEnabled、sent数量
@@ -569,6 +513,9 @@ func (a *AutomationRules) ReopenRunForRecovery(ctx context.Context, runID int64,
 	// lockErr 按与 TryStartRun/StartRunAction 相同的账号→订单顺序取得写锁，串行化同订单运行抢占。
 	if lockErr := lockAutomationOwnership(ctx, transaction, cookieID, orderID); lockErr != nil {
 		return false, lockErr
+	}
+	if stopErr := checkOrderAutomation(ctx, transaction, cookieID, orderID); stopErr != nil { // stopErr 防止旧运行绕过订单停用重新领取。
+		return false, stopErr
 	}
 	if strings.TrimSpace(orderID) != "" {
 		// activeCount 保存同订单其它付款运行的活动数量；存在活动运行时不能再重开历史运行。

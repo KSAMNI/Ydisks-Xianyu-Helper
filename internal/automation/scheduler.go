@@ -428,6 +428,13 @@ func (s *Scheduler) runRecoveryTasks(ctx context.Context) error {
 	}
 	// run 表示当前遍历过程中的运行
 	for _, run := range runs {
+		// stopErr 阻止停用订单的历史快照准备、自动重开与重复人工通知；不修改未知动作的审计证据。
+		if stopErr := s.center.store.Automation.CheckOrderAutomation(ctx, run.CookieID, run.OrderID); stopErr != nil {
+			if !errors.Is(stopErr, db.ErrOrderAutomationStopped) {
+				resultErr = errors.Join(resultErr, stopErr)
+			}
+			continue
+		}
 		if run.ActionStarted {
 			// reason 用于本次流程后续判断的原因
 			reason := "进程在外部动作执行期间中断，发送结果未知，已禁止自动重放"

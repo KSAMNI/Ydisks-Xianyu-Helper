@@ -150,30 +150,6 @@ type DeferredAutomationTask struct {
 // ErrDeferredTaskLeaseLost 用于本次流程后续判断的ErrDeferred任务LeaseLost
 var ErrDeferredTaskLeaseLost = errors.New("延迟自动化任务租约已失效")
 
-// AutomationRunIssue 用于本次流程后续判断的自动化运行问题
-type AutomationRunIssue struct {
-	ID                 int64    `json:"id"`
-	CookieID           string   `json:"cookie_id"`
-	OrderID            string   `json:"order_id"`
-	TriggerType        string   `json:"trigger_type"`
-	ErrorMessage       string   `json:"error_message"`
-	IssueKind          string   `json:"issue_kind"`
-	AllowedResolutions []string `json:"allowed_resolutions"`
-	ActionCursor       int      `json:"action_cursor"`
-	SentCount          int      `json:"sent_count"`
-	UpdatedAt          string   `json:"updated_at"`
-}
-
-// DeferredAutomationIssue 用于本次流程后续判断的Deferred自动化问题
-type DeferredAutomationIssue struct {
-	ID           int64  `json:"id"`
-	CookieID     string `json:"cookie_id"`
-	TriggerType  string `json:"trigger_type"`
-	ErrorMessage string `json:"error_message"`
-	AttemptCount int    `json:"attempt_count"`
-	UpdatedAt    string `json:"updated_at"`
-}
-
 // AutomationRuleInput 是创建/更新规则的输入。
 type AutomationRuleInput struct {
 	UserID      int64

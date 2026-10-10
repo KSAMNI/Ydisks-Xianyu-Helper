@@ -34,6 +34,7 @@ func (r *AutomationRepository) ListIssues(ctx context.Context, userID int64) ([]
 	// runIssue 是当前待转换的数据库运行异常记录。
 	for _, runIssue := range runIssues {
 		runs = append(runs, automationapp.RunIssue{
+			AccountName: runIssue.AccountName, ItemID: runIssue.ItemID, ItemTitle: runIssue.ItemTitle, BuyerID: runIssue.BuyerID, ChatID: runIssue.ChatID, OrderStatus: runIssue.OrderStatus, CanStopOrder: runIssue.CanStopOrder,
 			ID: runIssue.ID, CookieID: runIssue.CookieID, OrderID: runIssue.OrderID,
 			TriggerType: runIssue.TriggerType, ErrorMessage: runIssue.ErrorMessage,
 			IssueKind: runIssue.IssueKind, AllowedResolutions: runIssue.AllowedResolutions,
@@ -45,7 +46,8 @@ func (r *AutomationRepository) ListIssues(ctx context.Context, userID int64) ([]
 	// deferredIssue 是当前待转换的数据库延期异常记录。
 	for _, deferredIssue := range deferredIssues {
 		tasks = append(tasks, automationapp.DeferredIssue{
-			ID: deferredIssue.ID, CookieID: deferredIssue.CookieID, TriggerType: deferredIssue.TriggerType,
+			AccountName: deferredIssue.AccountName, ItemID: deferredIssue.ItemID, ItemTitle: deferredIssue.ItemTitle, BuyerID: deferredIssue.BuyerID, ChatID: deferredIssue.ChatID, OrderStatus: deferredIssue.OrderStatus, CanStopOrder: deferredIssue.CanStopOrder,
+			ID: deferredIssue.ID, CookieID: deferredIssue.CookieID, OrderID: deferredIssue.OrderID, TriggerType: deferredIssue.TriggerType,
 			ErrorMessage: deferredIssue.ErrorMessage, AttemptCount: deferredIssue.AttemptCount, UpdatedAt: deferredIssue.UpdatedAt,
 		})
 	}
@@ -57,13 +59,19 @@ func (r *AutomationRepository) ResolveRunIssue(ctx context.Context, userID, runI
 	return mapAutomationIssueError(r.store.Automation.ResolveRunIssue(ctx, userID, runID, resolution))
 }
 
-// ResolveDeferredIssue 按用户归属重试或删除死信延期任务，并归一化未找到错误。
-func (r *AutomationRepository) ResolveDeferredIssue(ctx context.Context, userID, taskID int64, retry bool) error {
-	return mapAutomationIssueError(r.store.Automation.ResolveDeferredIssue(ctx, userID, taskID, retry))
+// ResolveDeferredIssue 按用户归属处理延期异常；resolution 区分单任务重试/删除与持久整单停用，错误归一到应用边界。
+func (r *AutomationRepository) ResolveDeferredIssue(ctx context.Context, userID, taskID int64, resolution string) error {
+	if resolution == "stop_order" {
+		return mapAutomationIssueError(r.store.Automation.StopOrderForIssue(ctx, userID, taskID, true))
+	}
+	return mapAutomationIssueError(r.store.Automation.ResolveDeferredIssue(ctx, userID, taskID, resolution == "retry"))
 }
 
 // mapAutomationIssueError 将数据库未找到错误转换为应用层错误，避免 Port 暴露数据库包。
 func mapAutomationIssueError(err error) error {
+	if errors.Is(err, db.ErrOrderAutomationIdentity) {
+		return automationapp.ErrInvalidOrderIdentity
+	}
 	if errors.Is(err, db.ErrNotFound) {
 		return automationapp.ErrNotFound
 	}

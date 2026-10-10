@@ -523,6 +523,14 @@ export interface DefaultReplyResponse extends DefaultReply {
 export interface AutomationIssuesEnvelope {
   /** runs 是待处理的自动化运行记录。 */
   runs?: Array<{
+  /** 账号备注；未提供时回退账号标识。 */ account_name?: string;
+  /** 本地商品标识。 */ item_id?: string;
+  /** 非敏感商品标题。 */ item_title?: string;
+  /** 买家标识，仅展示可靠关联。 */ buyer_id?: string;
+  /** 会话标识，不包含聊天内容。 */ chat_id?: string;
+  /** 当前本地订单阶段。 */ order_status?: string;
+  /** 后端确认身份后才允许停止整单，缺省禁止。 */ can_stop_order?: boolean;
+
     /** 记录标识。 */
     id: number;
     /** 所属账号标识。 */
@@ -546,6 +554,15 @@ export interface AutomationIssuesEnvelope {
   }>;
   /** pending_tasks 是延迟自动化任务列表。 */
   pending_tasks?: Array<{
+  /** 账号备注；未提供时回退账号标识。 */ account_name?: string;
+  /** 本地商品标识。 */ item_id?: string;
+  /** 非敏感商品标题。 */ item_title?: string;
+  /** 买家标识，仅展示可靠关联。 */ buyer_id?: string;
+  /** 会话标识，不包含聊天内容。 */ chat_id?: string;
+  /** 当前本地订单阶段。 */ order_status?: string;
+  /** 后端确认身份后才允许停止整单，缺省禁止。 */ can_stop_order?: boolean;
+  /** 可靠关联的订单号。 */ order_id?: string;
+
     /** 任务标识。 */
     id: number;
     /** 所属账号标识。 */

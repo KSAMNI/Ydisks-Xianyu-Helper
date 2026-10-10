@@ -57,6 +57,7 @@ func automationRunIssueDTOs(issues []automationapp.RunIssue) []automationRunIssu
 	// issue 是当前待转换的应用层运行异常摘要。
 	for _, issue := range issues {
 		result = append(result, automationRunIssueDTO{
+			AccountName: issue.AccountName, ItemID: issue.ItemID, ItemTitle: issue.ItemTitle, BuyerID: issue.BuyerID, ChatID: issue.ChatID, OrderStatus: issue.OrderStatus, CanStopOrder: issue.CanStopOrder,
 			ID: issue.ID, CookieID: issue.CookieID, OrderID: issue.OrderID,
 			TriggerType: issue.TriggerType, ErrorMessage: issue.ErrorMessage,
 			IssueKind: issue.IssueKind, AllowedResolutions: issue.AllowedResolutions,
@@ -73,7 +74,8 @@ func deferredAutomationIssueDTOs(issues []automationapp.DeferredIssue) []deferre
 	// issue 是当前待转换的应用层延期异常摘要。
 	for _, issue := range issues {
 		result = append(result, deferredAutomationIssueDTO{
-			ID: issue.ID, CookieID: issue.CookieID, TriggerType: issue.TriggerType,
+			AccountName: issue.AccountName, ItemID: issue.ItemID, ItemTitle: issue.ItemTitle, BuyerID: issue.BuyerID, ChatID: issue.ChatID, OrderStatus: issue.OrderStatus, CanStopOrder: issue.CanStopOrder,
+			ID: issue.ID, CookieID: issue.CookieID, OrderID: issue.OrderID, TriggerType: issue.TriggerType,
 			ErrorMessage: issue.ErrorMessage, AttemptCount: issue.AttemptCount, UpdatedAt: issue.UpdatedAt,
 		})
 	}
@@ -103,7 +105,11 @@ func (s *Server) resolveAutomationRun(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "异常运行不存在或已处理")
 			return
 		}
-		writeErr(w, http.StatusBadRequest, err.Error())
+		if strings.TrimSpace(req.Resolution) == "stop_order" && !errors.Is(err, automationapp.ErrInvalidOrderIdentity) {
+			writeErr(w, http.StatusInternalServerError, "停止订单自动化失败")
+		} else {
+			writeErr(w, http.StatusBadRequest, err.Error())
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
@@ -121,18 +127,22 @@ func (s *Server) resolveDeferredAutomationTask(w http.ResponseWriter, r *http.Re
 	var req automationIssueResolutionRequest
 	if // err 用于本次流程后续判断的err
 	err := decodeJSON(r, &req); err != nil {
-		writeErr(w, http.StatusBadRequest, "处理方式必须是 retry 或 dismiss")
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
 	// sess 用于本次流程后续判断的sess
 	sess := auth.SessionFromContext(r.Context())
 	if // err 用于本次流程后续判断的err
 	err := s.automationIssuesApplication().ResolveDeferredIssue(r.Context(), sess.UserID, taskID, req.Resolution); err != nil {
-		if errors.Is(err, automationapp.ErrInvalidDeferredResolution) {
+		if errors.Is(err, automationapp.ErrInvalidDeferredResolution) || errors.Is(err, automationapp.ErrInvalidOrderIdentity) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		writeErr(w, http.StatusNotFound, "异常任务不存在或已处理")
+		if errors.Is(err, automationapp.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "异常任务不存在或已处理")
+		} else {
+			writeErr(w, http.StatusInternalServerError, "处理自动化异常失败")
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})

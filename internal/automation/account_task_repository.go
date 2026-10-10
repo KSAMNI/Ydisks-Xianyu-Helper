@@ -8,6 +8,8 @@ import (
 
 // AccountTaskRepository 定义账号任务协调器需要的最小账号与任务持久化能力。
 type AccountTaskRepository interface {
+	// CheckOrderAutomation 在评价动作前检查指定账号订单是否被用户持久停用，ctx 控制查询取消。
+	CheckOrderAutomation(ctx context.Context, accountID, orderID string) error
 	// IsPaused 返回账号暂停状态及结束时间。
 	IsPaused(ctx context.Context, cookieID string) (bool, int64, error)
 	// Status 返回账号是否启用。

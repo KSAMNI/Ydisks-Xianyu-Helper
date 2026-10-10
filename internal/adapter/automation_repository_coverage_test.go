@@ -221,14 +221,14 @@ func TestAutomationRepositoryIssuesAndErrorMapping(t *testing.T) {
 		t.Fatal(continueErr)
 	}
 	// retryErr 保存延期任务重试处理结果。
-	retryErr := repository.ResolveDeferredIssue(ctx, 1, tasks[0].ID, true)
+	retryErr := repository.ResolveDeferredIssue(ctx, 1, tasks[0].ID, "retry")
 	if retryErr != nil {
 		t.Fatal(retryErr)
 	}
 	// missingRunErr、missingTaskErr 保存不存在异常的应用层错误。
 	missingRunErr := repository.ResolveRunIssue(ctx, 1, 999999, "cancel")
 	// missingTaskErr 保存不存在延期任务的应用层错误。
-	missingTaskErr := repository.ResolveDeferredIssue(ctx, 1, 999999, false)
+	missingTaskErr := repository.ResolveDeferredIssue(ctx, 1, 999999, "dismiss")
 	if !errors.Is(missingRunErr, automationapp.ErrNotFound) || !errors.Is(missingTaskErr, automationapp.ErrNotFound) {
 		t.Fatalf("missing errors run=%v task=%v", missingRunErr, missingTaskErr)
 	}

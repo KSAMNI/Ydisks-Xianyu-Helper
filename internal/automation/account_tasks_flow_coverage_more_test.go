@@ -429,3 +429,8 @@ func TestAccountTaskCoordinatorCoversPropagationAndRecoveryBranches(t *testing.T
 		t.Fatalf("Token 错误不得执行账号恢复副作用: %v", postReadRecoveryErr)
 	}
 }
+
+// CheckOrderAutomation 明确为既有账号任务流程夹具提供未停用状态；停用和错误分支由独立定向测试覆盖。
+func (repository *accountTaskFlowRepository) CheckOrderAutomation(context.Context, string, string) error {
+	return nil
+}

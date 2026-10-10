@@ -13,11 +13,29 @@ var ErrInvalidInput = errors.New("自动化异常参数无效")
 // ErrNotFound 表示异常记录不存在、已处理或不属于当前用户。
 var ErrNotFound = errors.New("自动化异常不存在或已处理")
 
-// ErrInvalidDeferredResolution 表示延期任务只能执行重试或驳回处理。
-var ErrInvalidDeferredResolution = errors.New("处理方式必须是 retry 或 dismiss")
+// ErrInvalidOrderIdentity 表示当前异常不能安全执行整单停用。
+var ErrInvalidOrderIdentity = errors.New("订单身份缺失或归属不一致，只能处理本次任务，不能停止整单")
+
+// ErrInvalidDeferredResolution 表示延期任务请求不是重试、忽略或整单停用。
+var ErrInvalidDeferredResolution = errors.New("处理方式必须是 retry、dismiss 或 stop_order")
 
 // RunIssue 是需要人工处理的自动化运行非敏感摘要。
 type RunIssue struct {
+	// AccountName 是账号备注，缺省时使用账号标识。
+	AccountName string
+	// ItemID 是可靠关联的商品标识。
+	ItemID string
+	// ItemTitle 是本地商品标题，不包含商品详情或凭证。
+	ItemTitle string
+	// BuyerID 是可靠关联的买家标识。
+	BuyerID string
+	// ChatID 是可靠关联的会话标识。
+	ChatID string
+	// OrderStatus 是当前本地订单阶段，仅用于展示。
+	OrderStatus string
+	// CanStopOrder 是订单身份及归属已确认时才允许整单停止。
+	CanStopOrder bool
+
 	// ID 是自动化运行的稳定标识。
 	ID int64
 	// CookieID 是关联账号标识，不包含 Cookie 内容。
@@ -42,6 +60,23 @@ type RunIssue struct {
 
 // DeferredIssue 是需要人工处理的延期任务非敏感摘要。
 type DeferredIssue struct {
+	// AccountName 是账号备注，缺省时使用账号标识。
+	AccountName string
+	// ItemID 是可靠关联的商品标识。
+	ItemID string
+	// ItemTitle 是本地商品标题，不包含商品详情或凭证。
+	ItemTitle string
+	// BuyerID 是可靠关联的买家标识。
+	BuyerID string
+	// ChatID 是可靠关联的会话标识。
+	ChatID string
+	// OrderStatus 是当前本地订单阶段，仅用于展示。
+	OrderStatus string
+	// CanStopOrder 是订单身份及归属已确认时才允许整单停止。
+	CanStopOrder bool
+	// OrderID 是任务明确记录的订单标识；缺失时不猜测关联。
+	OrderID string
+
 	// ID 是延期任务的稳定标识。
 	ID int64
 	// CookieID 是关联账号标识，不包含 Cookie 内容。
@@ -62,8 +97,8 @@ type IssueRepository interface {
 	ListIssues(ctx context.Context, userID int64) ([]RunIssue, []DeferredIssue, error)
 	// ResolveRunIssue 按用户归属执行异常运行的人工处理动作。
 	ResolveRunIssue(ctx context.Context, userID, runID int64, resolution string) error
-	// ResolveDeferredIssue 按用户归属重试或删除死信延期任务。
-	ResolveDeferredIssue(ctx context.Context, userID, taskID int64, retry bool) error
+	// ResolveDeferredIssue 按用户归属执行延期任务的重试、忽略或整单停用决策。
+	ResolveDeferredIssue(ctx context.Context, userID, taskID int64, resolution string) error
 }
 
 // IssueService 编排自动化异常查询与人工处理，不持有 HTTP 请求或数据库连接。
@@ -93,15 +128,15 @@ func (s *IssueService) ResolveRunIssue(ctx context.Context, userID, runID int64,
 	return s.repository.ResolveRunIssue(ctx, userID, runID, strings.TrimSpace(resolution))
 }
 
-// ResolveDeferredIssue 处理死信延期任务，并将 retry/dismiss 转换为端口使用的布尔语义。
+// ResolveDeferredIssue 校验延期任务的重试、忽略或订单停用决策；ctx 控制调用，用户与任务标识限定归属。
 func (s *IssueService) ResolveDeferredIssue(ctx context.Context, userID, taskID int64, resolution string) error {
 	if s == nil || s.repository == nil || userID <= 0 || taskID <= 0 {
 		return ErrInvalidInput
 	}
 	// normalizedResolution 保存去除空白后的人工处理动作，避免兼容客户端的首尾空格改变语义。
 	normalizedResolution := strings.TrimSpace(resolution)
-	if normalizedResolution != "retry" && normalizedResolution != "dismiss" {
+	if normalizedResolution != "retry" && normalizedResolution != "dismiss" && normalizedResolution != "stop_order" {
 		return ErrInvalidDeferredResolution
 	}
-	return s.repository.ResolveDeferredIssue(ctx, userID, taskID, normalizedResolution == "retry")
+	return s.repository.ResolveDeferredIssue(ctx, userID, taskID, normalizedResolution)
 }

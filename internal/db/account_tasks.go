@@ -142,6 +142,7 @@ func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID str
 	// rows、err 分别保存按确认收货时间排序的本地候选订单和查询错误。
 	rows, err := s.DB.QueryContext(ctx, `SELECT order_id FROM orders
 		WHERE cookie_id=? AND deleted_at IS NULL AND order_status='completed' AND completed_at<>''
+		AND NOT EXISTS (SELECT 1 FROM order_automation_stops stops WHERE stops.cookie_id=orders.cookie_id AND stops.order_id=orders.order_id)
 		ORDER BY completed_at,order_id LIMIT ?`, cookieID, limit)
 	if err != nil {
 		return nil, err

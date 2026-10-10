@@ -54,6 +54,10 @@ func (e *automationActionExecutor) deliverImage(ctx context.Context, task Task, 
 
 // preparedImageSender 按 task 的实际账号取得图片准备端口，所有准备及快照发送都先核验 ctx 执行权。
 func (e *automationActionExecutor) preparedImageSender(ctx context.Context, task Task) (PreparedImageSender, error) {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return nil, stopErr
+	}
 	if err := checkRunExecution(ctx); err != nil { // err 防止取消或失权后读取文件、上传或发送。
 		return nil, fmt.Errorf("%w: %w", ErrMessageNotSent, err)
 	}

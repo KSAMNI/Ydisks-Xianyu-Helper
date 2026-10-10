@@ -10,7 +10,8 @@ import (
 
 // beginOwnershipWrite 为 a 的自动化写入建立事务；ctx 控制等待，cookieID/orderID 是任务声称的本地归属。
 // 锁顺序与 RecoverSoldOwnership 一致：账号 → 订单 → 调用方的运行/延期记录。成功返回的事务必须由调用方提交或回滚。
-// 事务不覆盖外部动作；运行先提交会阻止修复，修复先提交则本方法拒绝旧归属。无订单或尚无本地行的历史任务保持兼容。
+// 事务不覆盖外部动作；运行先提交会阻止修复，修复先提交则本方法拒绝旧归属；持久停用拒绝新建、延期与动作领取。
+// 无订单或尚无本地行的历史任务保持兼容。
 func (a *AutomationRules) beginOwnershipWrite(ctx context.Context, cookieID, orderID string) (*sql.Tx, error) {
 	// transaction、beginErr 保存本次短数据库事务；默认隔离下先写锁再查询，避免预先建立过期读取快照。
 	transaction, beginErr := a.DB.BeginTx(ctx, nil)
@@ -21,6 +22,11 @@ func (a *AutomationRules) beginOwnershipWrite(ctx context.Context, cookieID, ord
 	if lockErr := lockAutomationOwnership(ctx, transaction, cookieID, orderID); lockErr != nil {
 		_ = transaction.Rollback()
 		return nil, lockErr
+	}
+	// stopErr 在与停用写入相同的锁域内拒绝创建、延期及动作领取。
+	if stopErr := checkOrderAutomation(ctx, transaction, cookieID, orderID); stopErr != nil {
+		_ = transaction.Rollback()
+		return nil, stopErr
 	}
 	return transaction, nil
 }

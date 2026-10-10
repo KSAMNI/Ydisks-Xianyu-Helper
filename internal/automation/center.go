@@ -264,13 +264,6 @@ func (c *Center) scanAccountTasks(ctx context.Context) {
 	c.taskRunner.scanAccountTasks(ctx)
 }
 
-// HandleTask 处理一条自动化任务。无匹配规则时安全忽略。
-func (c *Center) HandleTask(ctx context.Context, task Task) error {
-	// err 用于本次流程后续判断的err
-	_, err := c.handleTask(ctx, task)
-	return err
-}
-
 // handleTask 封装handle任务业务协调。
 func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 	if c == nil || c.store == nil || c.store.Automation == nil {
@@ -286,6 +279,13 @@ func (c *Center) handleTask(ctx context.Context, task Task) (bool, error) {
 		return false, resolveErr
 	} else {
 		task = resolvedTask
+	}
+	// stopErr 在身份回填后拦截整单停用；仍由独立订单同步更新事实，不再触发新任务或延期。
+	if stopErr := c.store.Automation.CheckOrderAutomation(ctx, task.AccountID, task.OrderID); stopErr != nil {
+		if errors.Is(stopErr, db.ErrOrderAutomationStopped) {
+			return false, nil
+		}
+		return false, stopErr
 	}
 	// unknownRoleTask 标记本次 WebSocket 交易事件是否未携带明确角色；仅该类事件需要记录本地卖家事实核验的放行日志。
 	unknownRoleTask := task.OrderRole == OrderRoleUnknown && isWebSocketSellerOrderTask(task)

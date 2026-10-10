@@ -31,6 +31,9 @@ type manualInterventionNotifier interface {
 // notifyResult 根据规则执行终态发送通知；只要运行进入 success，就通知自动化已完成，避免 sent_count 为零时静默丢失结果。
 // runID 与 status 会传给持久化 outbox，防止恢复扫描对同一运行重复排队。
 func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int64, status string, sent int, errMsg string) {
+	if status == "canceled" {
+		return
+	}
 	// notifier 是当前可选的外部通知器。
 	notifier := n.current()
 	if notifier == nil {
@@ -67,8 +70,16 @@ func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int
 		notifyForTrigger(message)
 		return
 	}
-	// message 是失败或人工核对通知正文。
+	// message 明确区分人工核对与可重试失败，运行编号和已确认动作数用于定位，不把动作数解释成卡密张数。
 	message := fmt.Sprintf("🚨 %s失败（订单 %s）：%s", triggerName, task.OrderID, errMsg)
+	if status == "needs_review" {
+		// orderLabel 在无可信订单身份时明确提示缺失，不按聊天或时间猜单。
+		orderLabel := task.OrderID
+		if orderLabel == "" {
+			orderLabel = "尚未关联订单"
+		}
+		message = fmt.Sprintf("⚠️ 需要人工处理\n任务：%s\n账号：%s\n订单：%s\n运行编号：%d\n已确认完成动作：%d\n原因：%s\n请到自动化规则页核对订单，选择安全继续、终止本次任务或停止此订单全部自动化。已发送或正在执行的请求不能撤回。", triggerName, task.AccountID, orderLabel, runID, sent, errMsg)
+	}
 	notifyForTrigger(message)
 }
 

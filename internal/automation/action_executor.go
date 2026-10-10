@@ -126,6 +126,10 @@ func (e *automationActionExecutor) executeAction(ctx context.Context, task Task,
 // executeActionWithProof 执行动作并把已发送的发货凭证传递给后续确认发货动作；
 // 运行协调器会把成功内容加密持久化为订单重发快照。
 func (e *automationActionExecutor) executeActionWithProof(ctx context.Context, task Task, action db.AutomationAction, proof shipmentDeliveryProof) (actionExecutionResult, error) {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return actionExecutionResult{}, stopErr
+	}
 	switch action.ActionType {
 	case ActionConfirmShipment:
 		return actionExecutionResult{}, e.confirmShipmentWithProof(ctx, task, proof)
@@ -189,6 +193,10 @@ func (e *automationActionExecutor) confirmShipmentWithProof(ctx context.Context,
 
 // confirmShipmentAttempt 使用凭证快照调用 Consign，并以指纹条件写回 Cookie；远端成功但订单事实落库失败时创建可重试补偿记录。
 func (e *automationActionExecutor) confirmShipmentAttempt(ctx context.Context, task Task, proof shipmentDeliveryProof, allowCredentialRecovery bool) error {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return stopErr
+	}
 	// session 固定本次 MTOP 请求的最小凭证视图，外部调用期间不持有账号凭证锁。
 	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
 	if err != nil {
@@ -334,6 +342,10 @@ func isAdjustPriceTransientBusy(err error) bool {
 
 // adjustOrderPriceAttempt 使用凭证快照调用订单改价，并以指纹条件写回响应 Cookie；仅 Session 失效时最多执行一次账号恢复后重试。
 func (e *automationActionExecutor) adjustOrderPriceAttempt(ctx context.Context, task Task, priceCents int64, allowCredentialRecovery bool) error {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return stopErr
+	}
 	// session 固定本次 MTOP 请求的最小凭证视图，外部调用期间不持有账号凭证锁。
 	session, err := e.openShipmentConsignSession(ctx, task.AccountID)
 	if err != nil {
@@ -584,6 +596,10 @@ func appendTradeText(current, next string) string {
 
 // sendText 向账号在线发送器发送文字消息，并保留确定未发送的错误标记。
 func (e *automationActionExecutor) sendText(ctx context.Context, task Task, text string) error {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return stopErr
+	}
 	// executionErr 在平台副作用前拒绝已取消或失去数据库执行权的旧动作。
 	if executionErr := checkRunExecution(ctx); executionErr != nil {
 		return fmt.Errorf("%w: %w", ErrMessageNotSent, executionErr)
@@ -605,6 +621,10 @@ func (e *automationActionExecutor) sendText(ctx context.Context, task Task, text
 
 // sendImage 向账号在线发送器发送图片消息，并标记关联卡密组。
 func (e *automationActionExecutor) sendImage(ctx context.Context, task Task, imageURL string, cardID int64) error {
+	// stopErr 在本次外部动作或库存准备之前复核整单停用，避免排队和凭证恢复期间的晚到操作。
+	if stopErr := e.checkOrderAutomation(ctx, task); stopErr != nil {
+		return stopErr
+	}
 	// executionErr 在平台副作用前拒绝已取消或失去数据库执行权的旧动作。
 	if executionErr := checkRunExecution(ctx); executionErr != nil {
 		return fmt.Errorf("%w: %w", ErrMessageNotSent, executionErr)
