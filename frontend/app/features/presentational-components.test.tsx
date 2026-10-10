@@ -112,7 +112,7 @@ describe('前端纯展示组件', /* 当前回调处理无浏览器依赖的展�
     expect(panel).toContain('未执行，安全重试');
     expect(panel).toContain('终止');
     expect(panel).toContain('重新入队');
-    expect(panel).toContain('忽略');
+    expect(panel).toContain('彻底删除');
   });
 
   test('订单筛选栏渲染状态、账号和关键词输入', /* 当前回调处理订单筛选工具栏的静态结构。 */ () => {
