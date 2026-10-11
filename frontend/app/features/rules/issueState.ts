@@ -86,7 +86,9 @@ export const automationOrderStatusLabel = (status?: string): string => ({
 export const issueResolutionPrompt = (resolution: AutomationResolution | DeferredResolution, issue?: AutomationRunIssue | DeferredAutomationIssue): string => {
   /** context 只包含任务类型、账号与订单身份，不含消息内容和凭证；延期死信尚无规则运行，使用事件阶段名。 */
   const isDeferred = issue != null && 'attempt_count' in issue;
+  // taskLabel 是当前任务类型的用户可读名称，供确认弹窗说明将影响的自动化范围。
   const taskLabel = issue == null ? '' : (isDeferred ? deferredTaskLabel(issue.trigger_type) : automationTaskLabel(issue.trigger_type));
+  // context 是确认弹窗的上下文行，仅暴露任务类型、账号与订单身份等非敏感信息。
   const context = issue ? `任务：${taskLabel}\n账号：${issue.account_name || issue.cookie_id}\n订单：${issue.order_id || '尚未关联订单'}\n\n` : '';
   if (resolution === 'stop_order') return context + '确认停止此订单全部自动化？\n包括发货、确认发货、免拼、评价赠品、求评价及自动评价买家。重启后仍有效，不影响其他订单。\n已发送内容或正在执行的平台请求不能撤回。不会删除执行记录，也不会自动恢复历史任务。';
   if (resolution === 'continue') return context + '确认外部动作已经执行成功，并跳到下一步吗？';

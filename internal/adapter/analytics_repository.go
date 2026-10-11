@@ -243,6 +243,59 @@ func (r *AnalyticsRepository) ListValidOrders(ctx context.Context, filter analyt
 	return records, rows.Err()
 }
 
+// QuerySalesStatus 返回销售统计所需的按原始状态聚合结果；状态集合由应用层通过 filter.Statuses 传入（含已发货/已完成/已取消及其数字码别名）。
+func (r *AnalyticsRepository) QuerySalesStatus(ctx context.Context, filter analyticsapp.Filter) ([]analyticsapp.StatusRecord, error) {
+	// where、args、clean 和 amountFilter 是当前方言的订单范围条件。
+	where, args, clean, amountFilter := r.orderScope(filter, "amount")
+	// rows、err 是按原始状态聚合的查询结果及错误。
+	rows, err := r.store.Analytics.QueryContext(ctx, `
+		SELECT COALESCE(order_status,'unknown'), COUNT(DISTINCT order_id), COALESCE(SUM(`+clean+`),0)
+		FROM orders `+where+amountFilter+`
+		GROUP BY order_status`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// records 是数据库按原始状态返回的聚合记录。
+	records := make([]analyticsapp.StatusRecord, 0)
+	for rows.Next() {
+		// record 是当前状态的聚合字段。
+		var record analyticsapp.StatusRecord
+		if // err 是当前状态记录读取错误。
+		err := rows.Scan(&record.Status, &record.Count, &record.Amount); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
+// QuerySalesDaily 返回销售统计按日聚合所需的原始订单记录（订单号、金额、状态、创建时间），不含商品连接，仅按用户本地日期归属。
+func (r *AnalyticsRepository) QuerySalesDaily(ctx context.Context, filter analyticsapp.Filter) ([]analyticsapp.SalesDailyRecord, error) {
+	// where、args 和 amountFilter 是当前方言的订单范围条件；按日聚合在应用层解析金额，此处不复用 SQL 金额清洗。
+	where, args, _, amountFilter := r.orderScope(filter, "amount")
+	// rows、err 是销售订单原始记录查询结果及错误。
+	rows, err := r.store.Analytics.QueryContext(ctx, `
+		SELECT order_id, amount, COALESCE(order_status,'unknown'), created_at
+		FROM orders `+where+amountFilter, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	// records 是销售按日聚合原始记录。
+	records := make([]analyticsapp.SalesDailyRecord, 0)
+	for rows.Next() {
+		// record 是当前订单的原始统计字段。
+		var record analyticsapp.SalesDailyRecord
+		if // err 是当前销售订单记录读取错误。
+		err := rows.Scan(&record.OrderID, &record.Amount, &record.Status, &record.CreatedAt); err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	return records, rows.Err()
+}
+
 // orderScope 构造订单查询的用户、日期、状态和金额过滤条件。
 func (r *AnalyticsRepository) orderScope(filter analyticsapp.Filter, amountColumn string) (string, []any, string, string) {
 	// conditions 保存 SQL WHERE 条件片段。

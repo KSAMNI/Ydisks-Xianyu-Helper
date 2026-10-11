@@ -20,6 +20,7 @@ func (s *Server) mountAnalyticsReal(r chi.Router) {
 	r.Get("/dashboard/stats", s.dashboardStats)
 	r.Get("/analytics/orders", s.orderAnalytics)
 	r.Get("/analytics/orders/valid", s.validOrders)
+	r.Get("/analytics/sales", s.salesStats)
 }
 
 // dashboardStats 返回当前登录用户的数据概览；管理员全局统计由 /admin/stats 提供。
@@ -81,6 +82,24 @@ func (s *Server) validOrders(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, validOrdersResponseFromApplication(result))
 }
 
+// salesStats 返回指定日期范围内的销售额、已收货款与退货货款统计。
+func (s *Server) salesStats(w http.ResponseWriter, r *http.Request) {
+	// sess 是当前请求的认证会话。
+	sess := auth.SessionFromContext(r.Context())
+	// query 是从 HTTP 查询参数映射出的销售统计用例请求。
+	query := analyticsapp.Query{
+		UserID: sess.UserID, StartDate: r.URL.Query().Get("start_date"), EndDate: r.URL.Query().Get("end_date"),
+		Location: analyticsapp.LocationFromOffset(r.URL.Query().Get("timezone_offset_minutes")),
+	}
+	// result 和 err 是订单分析应用服务返回的销售统计结果及错误。
+	result, err := s.analyticsApplication().SalesStats(r.Context(), query)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, analyticsapp.ErrorMessage(err))
+		return
+	}
+	writeJSON(w, http.StatusOK, salesStatsResponseFromApplication(result))
+}
+
 // analyticsDateBoundary 保留日期边界测试使用的应用层转换入口。
 func analyticsDateBoundary(raw string, endExclusive bool, location *time.Location) string {
 	return analyticsapp.DateBoundary(raw, endExclusive, location)
@@ -126,6 +145,25 @@ func orderAnalyticsResponseFromApplication(result analyticsapp.OrderAnalytics) o
 			AvgAmount: result.RevenueStats.AvgAmount, UniqueBuyers: result.RevenueStats.UniqueBuyers, UniqueItems: result.RevenueStats.UniqueItems,
 		},
 		DailyStats: dailyStats, StatusStats: statusStats, CityStats: cityStats, ItemStats: itemStats,
+	}
+}
+
+// salesStatsResponseFromApplication 将应用销售统计映射为 HTTP DTO。
+func salesStatsResponseFromApplication(result analyticsapp.SalesStats) salesStatsResponse {
+	// daily 是应用层按日结果对应的传输 DTO 列表。
+	daily := make([]salesDailyStatsResponse, 0, len(result.Daily))
+	// item 是当前按日销售统计结果。
+	for _, item := range result.Daily {
+		daily = append(daily, salesDailyStatsResponse{
+			Date: item.Date, SalesAmount: item.SalesAmount, ReceivedAmount: item.ReceivedAmount,
+			RefundedAmount: item.RefundedAmount, OrderCount: item.OrderCount,
+		})
+	}
+	return salesStatsResponse{
+		SalesAmount: result.SalesAmount, SalesOrders: result.SalesOrders,
+		ReceivedAmount: result.ReceivedAmount, ReceivedOrders: result.ReceivedOrders,
+		RefundedAmount: result.RefundedAmount, RefundedOrders: result.RefundedOrders,
+		Daily: daily,
 	}
 }
 

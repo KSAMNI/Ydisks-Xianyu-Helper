@@ -436,6 +436,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/analytics/sales": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1AnalyticsSales */
+        get: operations["getApiV1AnalyticsSales"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/automation-issues": {
         parameters: {
             query?: never;
@@ -3263,6 +3280,21 @@ export interface components {
             page_size: number;
             truncated: boolean;
         };
+        SalesStatsResponse: {
+            sales_amount: number;
+            sales_orders: number;
+            received_amount: number;
+            received_orders: number;
+            refunded_amount: number;
+            refunded_orders: number;
+            daily: {
+                date: string;
+                sales_amount: number;
+                received_amount: number;
+                refunded_amount: number;
+                order_count: number;
+            }[];
+        };
         SessionStatusResponse: {
             authenticated: boolean;
             initialized: boolean;
@@ -5442,6 +5474,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ValidOrdersResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1AnalyticsSales: {
+        parameters: {
+            query: {
+                start_date: string;
+                end_date: string;
+                timezone_offset_minutes?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SalesStatsResponse"];
                 };
             };
             /** @description 统一错误响应 */

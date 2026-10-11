@@ -90,3 +90,68 @@ func TestAnalyticsRepositoryQueries(t *testing.T) {
 	// _ 保存已创建卡券标识，明确测试数据确实进入了统计范围。
 	_ = cardID
 }
+
+// TestAnalyticsRepositorySalesQueries 覆盖销售统计适配器的按状态聚合与按日原始记录查询路径。
+func TestAnalyticsRepositorySalesQueries(t *testing.T) {
+	// store、cleanup 保存临时数据库及关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 限制本测试所有数据库操作的生命周期。
+	ctx := context.Background()
+	// owner、ownerErr 保存销售数据所属用户及查询错误。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// filter 保存按用户与销售相关状态（已发货/已完成/已取消）过滤的查询条件。
+	filter := analyticsapp.Filter{UserID: owner.ID, Statuses: []string{"shipped", "completed", "cancelled"}}
+	// repository 保存订单分析数据库适配器。
+	repository := NewAnalyticsRepository(store)
+
+	// shippedErr 保存已发货订单创建结果。
+	if shippedErr := store.Orders.Upsert(ctx, "sales-shipped", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item-1", BuyerID: "buyer-1", OrderStatus: "shipped", Amount: "10.50", Quantity: "1", CreatedAt: "2024-01-02 10:00:00"}); shippedErr != nil {
+		t.Fatal(shippedErr)
+	}
+	// completedErr 保存已完成订单创建结果。
+	if completedErr := store.Orders.Upsert(ctx, "sales-completed", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item-1", BuyerID: "buyer-2", OrderStatus: "completed", Amount: "8.00", Quantity: "1", CreatedAt: "2024-01-03 11:00:00"}); completedErr != nil {
+		t.Fatal(completedErr)
+	}
+	// cancelledErr 保存已取消（用户确认已退款）订单创建结果。
+	if cancelledErr := store.Orders.Upsert(ctx, "sales-cancelled", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item-1", BuyerID: "buyer-3", OrderStatus: "cancelled", Amount: "5.25", Quantity: "1", CreatedAt: "2024-01-04 12:00:00"}); cancelledErr != nil {
+		t.Fatal(cancelledErr)
+	}
+	// excludedErr 保存待发货订单创建结果；该状态不属于销售统计口径，应被过滤。
+	if excludedErr := store.Orders.Upsert(ctx, "sales-pending", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item-1", BuyerID: "buyer-4", OrderStatus: "paid", Amount: "99.00", Quantity: "1", CreatedAt: "2024-01-05 13:00:00"}); excludedErr != nil {
+		t.Fatal(excludedErr)
+	}
+
+	// statusRows、statusErr 保存按原始状态聚合的销售统计结果和数据库错误。
+	statusRows, statusErr := repository.QuerySalesStatus(ctx, filter)
+	if statusErr != nil || len(statusRows) != 3 {
+		t.Fatalf("sales statuses=%+v err=%v", statusRows, statusErr)
+	}
+	// statusAmounts 按状态归集金额，验证 SUM 数值清洗结果。
+	statusAmounts := make(map[string]float64)
+	// row 是当前原始状态聚合记录。
+	for _, row := range statusRows {
+		statusAmounts[row.Status] = row.Amount
+	}
+	if statusAmounts["shipped"] != 10.5 || statusAmounts["completed"] != 8 || statusAmounts["cancelled"] != 5.25 {
+		t.Fatalf("sales status amounts=%+v", statusAmounts)
+	}
+
+	// dailyRows、dailyErr 保存销售按日聚合原始订单记录和数据库错误。
+	dailyRows, dailyErr := repository.QuerySalesDaily(ctx, filter)
+	if dailyErr != nil || len(dailyRows) != 3 {
+		t.Fatalf("sales daily=%+v err=%v", dailyRows, dailyErr)
+	}
+	// dailyIDs 收集按日记录的订单标识，验证待发货订单被排除。
+	dailyIDs := make(map[string]bool)
+	// row 是当前销售按日原始记录。
+	for _, row := range dailyRows {
+		dailyIDs[row.OrderID] = true
+	}
+	if !dailyIDs["sales-shipped"] || !dailyIDs["sales-completed"] || !dailyIDs["sales-cancelled"] || dailyIDs["sales-pending"] {
+		t.Fatalf("sales daily ids=%+v", dailyIDs)
+	}
+}

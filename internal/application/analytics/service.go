@@ -13,6 +13,9 @@ import (
 // ValidOrderStatuses 是参与订单分析的有效状态候选集合。
 var ValidOrderStatuses = []string{"pending_ship", "paid", "2", "shipped", "3", "completed", "4", "11"}
 
+// salesStatuses 是销售统计需要纳入的订单状态候选集合（含历史数字码别名），覆盖已发货、已完成与已取消。
+var salesStatuses = []string{"shipped", "3", "completed", "4", "11", "cancelled", "6", "8", "10", "12"}
+
 // Stage 标识订单分析失败的查询阶段。
 type Stage string
 
@@ -31,6 +34,8 @@ const (
 	StageValidCount Stage = "valid_count"
 	// StageValidRows 表示有效订单明细查询失败。
 	StageValidRows Stage = "valid_rows"
+	// StageSales 表示销售统计查询失败。
+	StageSales Stage = "sales"
 )
 
 // StageError 保留查询阶段并包装底层错误，供传输层映射兼容消息。
@@ -253,6 +258,105 @@ func (svc *Service) ValidOrders(ctx context.Context, query Query, page, pageSize
 	return ValidOrders{Orders: orders, Total: total, Page: page, PageSize: pageSize, Truncated: offset+len(orders) < total}, nil
 }
 
+// SalesStats 查询指定时间范围内的销售额、已收货款与退货货款，三项分列展示、互不抵扣，订单按创建时间归属。
+// 口径：销售额=已发货+已完成；已收货款=已完成；退货货款=已取消（用户确认已取消即已退款）。
+func (svc *Service) SalesStats(ctx context.Context, query Query) (SalesStats, error) {
+	// filter 是按用户本地日期转换后的持久化查询条件，状态集合限定为销售相关状态。
+	filter := query.salesFilter()
+	// statusRecords 是数据库按原始状态返回的聚合结果。
+	statusRecords, err := svc.repository.QuerySalesStatus(ctx, filter)
+	if err != nil {
+		return SalesStats{}, &StageError{Stage: StageSales, Err: err}
+	}
+	// result 是累计中的销售统计结果。
+	result := SalesStats{}
+	// record 是当前原始状态聚合记录。
+	for _, record := range statusRecords {
+		// status 是兼容数字码转换后的归一化状态名称。
+		status := normalizeStatus(record.Status)
+		// amount 是该原始状态对应的金额合计（元）。
+		amount := record.Amount
+		switch status {
+		case "shipped", "completed":
+			result.SalesAmount += amount
+			result.SalesOrders += record.Count
+			if status == "completed" {
+				result.ReceivedAmount += amount
+				result.ReceivedOrders += record.Count
+			}
+		case "cancelled":
+			result.RefundedAmount += amount
+			result.RefundedOrders += record.Count
+		}
+	}
+	// dailyRecords 是按订单返回的销售按日聚合原始记录。
+	dailyRecords, err := svc.repository.QuerySalesDaily(ctx, filter)
+	if err != nil {
+		return SalesStats{}, &StageError{Stage: StageSales, Err: err}
+	}
+	// dailyMap 按用户本地日期累计三项指标与订单数。
+	dailyMap := make(map[string]*SalesDailyStats)
+	// record 是当前销售订单原始记录。
+	for _, record := range dailyRecords {
+		// created 是解析后的订单创建时间。
+		created := parseDBTime(record.CreatedAt)
+		if created.IsZero() {
+			continue
+		}
+		if query.Location != nil {
+			created = created.In(query.Location)
+		}
+		// date 是订单在用户时区中的日期。
+		date := created.Format("2006-01-02")
+		// day 是当前日期的累计统计值。
+		day, ok := dailyMap[date]
+		if !ok {
+			day = &SalesDailyStats{Date: date}
+			dailyMap[date] = day
+		}
+		// amount 是当前订单的数值金额（元）。
+		amount := parseAmount(record.Amount)
+		// status 是兼容数字码转换后的归一化状态名称。
+		status := normalizeStatus(record.Status)
+		day.OrderCount++
+		switch status {
+		case "shipped", "completed":
+			day.SalesAmount += amount
+			if status == "completed" {
+				day.ReceivedAmount += amount
+			}
+		case "cancelled":
+			day.RefundedAmount += amount
+		}
+	}
+	// dates 是待输出的日期列表。
+	dates := make([]string, 0, len(dailyMap))
+	// date 是当前待输出的日期键。
+	for date := range dailyMap {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+	// daily 是排序后的按日销售统计结果。
+	daily := make([]SalesDailyStats, 0, len(dates))
+	// date 是当前输出的日期键。
+	for _, date := range dates {
+		// day 是当前日期的累计统计值。
+		day := dailyMap[date]
+		daily = append(daily, SalesDailyStats{
+			Date:           date,
+			SalesAmount:    round2(day.SalesAmount),
+			ReceivedAmount: round2(day.ReceivedAmount),
+			RefundedAmount: round2(day.RefundedAmount),
+			OrderCount:     day.OrderCount,
+		})
+	}
+	result.SalesAmount = round2(result.SalesAmount)
+	result.ReceivedAmount = round2(result.ReceivedAmount)
+	result.RefundedAmount = round2(result.RefundedAmount)
+	result.Daily = daily
+	return result, nil
+}
+
 // ErrorMessage 将分析失败阶段映射为原有 HTTP 错误消息。
 func ErrorMessage(err error) string {
 	// stageErr 是带查询阶段的应用服务错误。
@@ -271,6 +375,8 @@ func ErrorMessage(err error) string {
 		return "查询城市统计失败"
 	case StageItem:
 		return "查询商品统计失败"
+	case StageSales:
+		return "查询销售统计失败"
 	default:
 		return "查询失败"
 	}
@@ -280,6 +386,13 @@ func ErrorMessage(err error) string {
 func (query Query) filter() Filter {
 	// statuses 是固定有效状态的独立副本，避免调用方修改全局集合。
 	statuses := append([]string(nil), ValidOrderStatuses...)
+	return Filter{UserID: query.UserID, StartAt: dateBoundary(query.StartDate, false, query.Location), EndBefore: dateBoundary(query.EndDate, true, query.Location), Statuses: statuses}
+}
+
+// salesFilter 将用户本地日期查询转换为数据库 UTC 范围，状态集合限定为销售相关状态（已发货/已完成/已取消及其数字码别名）。
+func (query Query) salesFilter() Filter {
+	// statuses 是销售统计状态的独立副本，避免调用方修改全局集合。
+	statuses := append([]string(nil), salesStatuses...)
 	return Filter{UserID: query.UserID, StartAt: dateBoundary(query.StartDate, false, query.Location), EndBefore: dateBoundary(query.EndDate, true, query.Location), Statuses: statuses}
 }
 

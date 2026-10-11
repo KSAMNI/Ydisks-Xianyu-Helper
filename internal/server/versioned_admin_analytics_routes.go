@@ -15,6 +15,7 @@ func (s *Server) mountVersionedAdminAnalyticsRoutes(r chi.Router) {
 		r.Get("/api/v1/analytics/dashboard", s.dashboardStats)
 		r.Get("/api/v1/analytics/orders", s.orderAnalytics)
 		r.Get("/api/v1/analytics/orders/valid", s.validOrders)
+		r.Get("/api/v1/analytics/sales", s.salesStats)
 	})
 
 	// 管理员资源保持旧入口的管理员权限边界。

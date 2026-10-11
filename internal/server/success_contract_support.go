@@ -658,6 +658,38 @@ type validOrderResponse struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// salesDailyStatsResponse 是销售统计按日聚合的具名 DTO。
+type salesDailyStatsResponse struct {
+	// Date 是用户本地日期。
+	Date string `json:"date"`
+	// SalesAmount 是当天销售额合计（元）。
+	SalesAmount float64 `json:"sales_amount"`
+	// ReceivedAmount 是当天已收货款合计（元）。
+	ReceivedAmount float64 `json:"received_amount"`
+	// RefundedAmount 是当天退货货款合计（元）。
+	RefundedAmount float64 `json:"refunded_amount"`
+	// OrderCount 是当天参与统计的订单数。
+	OrderCount int `json:"order_count"`
+}
+
+// salesStatsResponse 是销售统计接口的具名响应 DTO。
+type salesStatsResponse struct {
+	// SalesAmount 是销售额合计（元），包含已发货与已完成订单。
+	SalesAmount float64 `json:"sales_amount"`
+	// SalesOrders 是计入销售额的订单数。
+	SalesOrders int `json:"sales_orders"`
+	// ReceivedAmount 是已收货款合计（元），仅包含已完成订单。
+	ReceivedAmount float64 `json:"received_amount"`
+	// ReceivedOrders 是计入已收货款的订单数。
+	ReceivedOrders int `json:"received_orders"`
+	// RefundedAmount 是退货货款合计（元），仅包含已取消订单。
+	RefundedAmount float64 `json:"refunded_amount"`
+	// RefundedOrders 是计入退货货款的订单数。
+	RefundedOrders int `json:"refunded_orders"`
+	// Daily 是按用户本地日期聚合的销售明细。
+	Daily []salesDailyStatsResponse `json:"daily"`
+}
+
 // validOrdersResponse 是有效订单分页查询的具名响应 DTO。
 type validOrdersResponse struct {
 	// Orders 是当前页有效订单。

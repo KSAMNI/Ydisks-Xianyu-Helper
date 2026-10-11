@@ -273,6 +273,8 @@ type AnalyticsPort interface {
 	DashboardStats(context.Context, int64) (analyticsapp.DashboardStats, error)
 	OrderAnalytics(context.Context, analyticsapp.Query) (analyticsapp.OrderAnalytics, error)
 	ValidOrders(context.Context, analyticsapp.Query, int, int) (analyticsapp.ValidOrders, error)
+	// SalesStats 返回指定时间范围内的销售额、已收货款与退货货款统计。
+	SalesStats(context.Context, analyticsapp.Query) (analyticsapp.SalesStats, error)
 }
 
 // AutomationIssuesPort 定义自动化异常的查询和人工处理能力。

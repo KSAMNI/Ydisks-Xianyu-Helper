@@ -183,6 +183,40 @@ type ItemStats struct {
 	AvgAmount float64
 }
 
+// SalesStats 是按时间范围统计销售额、已收货款与退货货款的用例结果。
+// 口径：销售额含已发货与已完成订单；已收货款仅含已完成订单；退货货款仅含已取消订单（用户确认已取消即已退款）。
+// 三项分列展示，互不抵扣；订单按创建时间归入统计区间。
+type SalesStats struct {
+	// SalesAmount 是销售额合计（元），包含已发货与已完成订单的金额。
+	SalesAmount float64
+	// SalesOrders 是计入销售额的订单数。
+	SalesOrders int
+	// ReceivedAmount 是已收货款合计（元），仅包含已完成订单的金额。
+	ReceivedAmount float64
+	// ReceivedOrders 是计入已收货款的订单数。
+	ReceivedOrders int
+	// RefundedAmount 是退货货款合计（元），仅包含已取消订单的金额。
+	RefundedAmount float64
+	// RefundedOrders 是计入退货货款的订单数。
+	RefundedOrders int
+	// Daily 是按用户本地日期聚合的销售额/已收货款/退货货款明细。
+	Daily []SalesDailyStats
+}
+
+// SalesDailyStats 是单个本地日期的销售聚合结果。
+type SalesDailyStats struct {
+	// Date 是用户本地日期。
+	Date string
+	// SalesAmount 是当天销售额合计（元）。
+	SalesAmount float64
+	// ReceivedAmount 是当天已收货款合计（元）。
+	ReceivedAmount float64
+	// RefundedAmount 是当天退货货款合计（元）。
+	RefundedAmount float64
+	// OrderCount 是当天参与统计的订单数。
+	OrderCount int
+}
+
 // ValidOrders 是有效订单分页结果。
 type ValidOrders struct {
 	// Orders 是当前页的有效订单明细。
@@ -243,4 +277,20 @@ type Repository interface {
 	CountValidOrders(ctx context.Context, filter Filter) (int, error)
 	// ListValidOrders 返回有效订单分页明细。
 	ListValidOrders(ctx context.Context, filter Filter, limit, offset int) ([]ValidOrderRecord, error)
+	// QuerySalesStatus 返回销售统计所需的按原始状态聚合结果；filter.Statuses 由调用方传入销售相关状态集合。
+	QuerySalesStatus(ctx context.Context, filter Filter) ([]StatusRecord, error)
+	// QuerySalesDaily 返回销售统计按日聚合所需的原始订单记录（订单号、金额、状态、创建时间）。
+	QuerySalesDaily(ctx context.Context, filter Filter) ([]SalesDailyRecord, error)
+}
+
+// SalesDailyRecord 是销售按日聚合使用的单订单原始记录。
+type SalesDailyRecord struct {
+	// OrderID 是订单标识，用于按日去重计数。
+	OrderID string
+	// Amount 是数据库中的订单金额文本。
+	Amount string
+	// Status 是持久化的订单状态文本或数字码。
+	Status string
+	// CreatedAt 是数据库中的订单创建时间文本。
+	CreatedAt string
 }

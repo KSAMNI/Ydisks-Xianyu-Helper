@@ -113,6 +113,16 @@ func TestAnalyticsRepositoryCoversClosedDatabaseOperations(t *testing.T) {
 			_, err := repository.ListValidOrders(ctx, filter, 10, 0)
 			return err
 		}(),
+		func() error {
+			// err 表示销售按状态统计在关闭数据库后的底层错误。
+			_, err := repository.QuerySalesStatus(ctx, filter)
+			return err
+		}(),
+		func() error {
+			// err 表示销售按日统计在关闭数据库后的底层错误。
+			_, err := repository.QuerySalesDaily(ctx, filter)
+			return err
+		}(),
 	}
 	// operation 表示当前待验证的订单分析操作错误。
 	for _, operation := range operations {

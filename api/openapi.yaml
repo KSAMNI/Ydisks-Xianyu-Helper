@@ -1568,6 +1568,61 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/analytics/sales":
+    get:
+      operationId: getApiV1AnalyticsSales
+      summary: getApiV1AnalyticsSales
+      security: [{cookieAuth: []}]
+      parameters:
+        - name: start_date
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: end_date
+          in: query
+          required: true
+          schema: {type: string, format: date}
+        - name: timezone_offset_minutes
+          in: query
+          required: false
+          schema: {type: integer}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesStatsResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/automation-issues":
     get:
       operationId: getApiV1AutomationIssues
@@ -8914,6 +8969,17 @@ components:
         page: {type: integer}
         page_size: {type: integer}
         truncated: {type: boolean}
+    SalesStatsResponse:
+      type: object
+      required: [sales_amount, sales_orders, received_amount, received_orders, refunded_amount, refunded_orders, daily]
+      properties:
+        sales_amount: {type: number}
+        sales_orders: {type: integer}
+        received_amount: {type: number}
+        received_orders: {type: integer}
+        refunded_amount: {type: number}
+        refunded_orders: {type: integer}
+        daily: {type: array, items: {type: object, required: [date, sales_amount, received_amount, refunded_amount, order_count], properties: {date: {type: string}, sales_amount: {type: number}, received_amount: {type: number}, refunded_amount: {type: number}, order_count: {type: integer}}}}
     SessionStatusResponse:
       type: object
       required: [authenticated, initialized, is_admin]

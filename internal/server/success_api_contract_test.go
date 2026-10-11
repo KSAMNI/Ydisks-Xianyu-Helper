@@ -799,6 +799,25 @@ func TestAnalyticsAdminAndPublicSuccessResponseContracts(t *testing.T) {
 		t.Fatalf("valid orders response=%+v", validOrdersResponseValue)
 	}
 
+	// salesReq 是读取销售统计的请求。
+	salesReq := httptest.NewRequest(http.MethodGet, "/api/v1/analytics/sales?start_date=2026-08-14&end_date=2026-08-14", nil)
+	salesReq.AddCookie(sessionCookie)
+	// salesRecorder 是捕获销售统计响应的记录器。
+	salesRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(salesRecorder, salesReq)
+	if salesRecorder.Code != http.StatusOK {
+		t.Fatalf("sales stats status=%d body=%s", salesRecorder.Code, salesRecorder.Body.String())
+	}
+	// salesResponse 是销售统计具名响应 DTO。
+	var salesResponse salesStatsResponse
+	// salesDecodeErr 是销售统计响应 JSON 反序列化失败的原因。
+	if salesDecodeErr := json.Unmarshal(salesRecorder.Body.Bytes(), &salesResponse); salesDecodeErr != nil {
+		t.Fatalf("decode sales stats response: %v", salesDecodeErr)
+	}
+	if salesResponse.SalesOrders != 1 || salesResponse.ReceivedOrders != 1 || salesResponse.RefundedOrders != 0 {
+		t.Fatalf("sales stats response=%+v", salesResponse)
+	}
+
 	// 二维码生成使用测试专用平台替身。
 	setTestQRLogin(srv, &fakeQRLoginService{})
 	// qrReq 是生成扫码登录二维码的请求。

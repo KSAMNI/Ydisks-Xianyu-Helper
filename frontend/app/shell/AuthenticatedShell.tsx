@@ -43,6 +43,8 @@ const Dashboard = lazy(/* Dashboard 页面按路由激活时加载。 */ () => i
 const AccountList = lazy(/* AccountList 页面按路由激活时加载。 */ () => import('../features/accounts/pages/AccountList'));
 // OrderList 是按需加载的订单页面，避免首屏载入订单导入与刷新代码。
 const OrderList = lazy(/* OrderList 页面按路由激活时加载。 */ () => import('../features/orders/pages/OrderList'));
+// SalesStats 是按需加载的销售统计页面，避免首屏载入图表代码。
+const SalesStats = lazy(/* SalesStats 页面按路由激活时加载。 */ () => import('../features/sales/pages/SalesStats'));
 // CardList 是按需加载的卡密页面，避免首屏载入卡密批量处理代码。
 const CardList = lazy(/* CardList 页面按路由激活时加载。 */ () => import('../features/cards/pages/CardList'));
 // ItemList 是按需加载的商品页面，避免首屏载入商品发布编辑器代码。
@@ -107,6 +109,7 @@ export const AppContent: React.FC<AppContentProps> = ({
       case 'accounts': return <AccountList />;
       case 'chat': return <Chat />;
       case 'orders': return <OrderList />;
+      case 'sales': return <SalesStats />;
       case 'cards': return <CardList />;
       case 'items': return <ItemList onConfigureDelivery={handleConfigureDelivery} publishSpecsEditor={PublishSpecsEditor} publishImagesEditor={PublishImagesEditor} />;
       case 'rules': return <Rules

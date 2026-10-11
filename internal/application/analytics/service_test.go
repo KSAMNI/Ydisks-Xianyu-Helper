@@ -25,6 +25,8 @@ type analyticsRepositoryFake struct {
 	items []ItemRecord
 	// validOrders 保存有效订单原始记录。
 	validOrders []ValidOrderRecord
+	// salesDaily 保存销售按日聚合原始订单记录。
+	salesDaily []SalesDailyRecord
 	// total 保存有效订单总数。
 	total int
 	// err 保存所有测试 Port 调用返回的错误。
@@ -130,6 +132,22 @@ func (f *analyticsRepositoryFake) ListValidOrders(_ context.Context, _ Filter, l
 	return f.validOrders, f.err
 }
 
+// QuerySalesStatus 返回预置的销售按状态聚合记录。
+func (f *analyticsRepositoryFake) QuerySalesStatus(context.Context, Filter) ([]StatusRecord, error) {
+	if f.statusErr != nil {
+		return nil, f.statusErr
+	}
+	return f.statuses, f.err
+}
+
+// QuerySalesDaily 返回预置的销售按日聚合原始订单记录。
+func (f *analyticsRepositoryFake) QuerySalesDaily(context.Context, Filter) ([]SalesDailyRecord, error) {
+	if f.dailyErr != nil {
+		return nil, f.dailyErr
+	}
+	return f.salesDaily, f.err
+}
+
 // TestDashboardStatsUsesNarrowStockPort 验证仪表盘只依赖非敏感库存数量 Port。
 func TestDashboardStatsUsesNarrowStockPort(t *testing.T) {
 	// repository 是带有预置摘要和库存的测试 Port。
@@ -179,6 +197,81 @@ func TestOrderAnalyticsAggregatesAndConvertsLocalDate(t *testing.T) {
 	}
 	if repository.receivedFilter.UserID != 7 || repository.receivedFilter.StartAt != "2026-06-27 16:00:00" || repository.receivedFilter.EndBefore != "2026-06-28 16:00:00" {
 		t.Fatalf("筛选条件异常: %+v", repository.receivedFilter)
+	}
+}
+
+// TestSalesStatsSeparatesSalesReceivedAndRefunded 验证销售统计三项指标分列口径、数字码归一和按日时区聚合。
+func TestSalesStatsSeparatesSalesReceivedAndRefunded(t *testing.T) {
+	// repository 是带有已发货/已完成/已取消与无关状态聚合及按日原始记录的测试 Port。
+	repository := &analyticsRepositoryFake{
+		statuses: []StatusRecord{
+			{Status: "3", Count: 1, Amount: 10.5},
+			{Status: "shipped", Count: 1, Amount: 2},
+			{Status: "4", Count: 2, Amount: 16},
+			{Status: "cancelled", Count: 1, Amount: 5.25},
+			{Status: "paid", Count: 9, Amount: 99},
+		},
+		salesDaily: []SalesDailyRecord{
+			{OrderID: "one", Amount: "¥10.50", Status: "3", CreatedAt: "2026-06-27 16:30:00"},
+			{OrderID: "two", Amount: "8.00", Status: "completed", CreatedAt: "2026-06-27 17:00:00"},
+			{OrderID: "three", Amount: "5.25", Status: "cancelled", CreatedAt: "2026-06-27 18:00:00"},
+			{OrderID: "four", Amount: "bad", Status: "shipped", CreatedAt: "invalid-time"},
+		},
+	}
+	// service 是待验证的订单分析应用服务。
+	service := NewService(repository)
+	// location 是 UTC+8 的用户本地时区。
+	location := time.FixedZone("UTC+8", 8*60*60)
+	// result、err 是应用服务返回的销售统计结果和错误。
+	result, err := service.SalesStats(context.Background(), Query{UserID: 7, StartDate: "2026-06-28", EndDate: "2026-06-28", Location: location})
+	if err != nil {
+		t.Fatalf("销售统计失败: %v", err)
+	}
+	// 销售额=已发货(3→10.5 + shipped→2) + 已完成(4→16)；已收货款只含已完成；退货货款只含已取消。
+	if result.SalesAmount != 28.5 || result.SalesOrders != 4 {
+		t.Fatalf("销售额口径异常: %+v", result)
+	}
+	if result.ReceivedAmount != 16 || result.ReceivedOrders != 2 {
+		t.Fatalf("已收货款口径异常: %+v", result)
+	}
+	if result.RefundedAmount != 5.25 || result.RefundedOrders != 1 {
+		t.Fatalf("退货货款口径异常: %+v", result)
+	}
+	// 按日聚合在用户时区内归到 2026-06-28，非法时间的订单被跳过。
+	if len(result.Daily) != 1 || result.Daily[0].Date != "2026-06-28" {
+		t.Fatalf("按日聚合异常: %+v", result.Daily)
+	}
+	// day 是唯一日期的销售聚合结果。
+	day := result.Daily[0]
+	if day.SalesAmount != 18.5 || day.ReceivedAmount != 8 || day.RefundedAmount != 5.25 || day.OrderCount != 3 {
+		t.Fatalf("按日指标异常: %+v", day)
+	}
+}
+
+// TestSalesStatsKeepsQueryStageOnError 验证销售统计查询失败保留阶段错误语义。
+func TestSalesStatsKeepsQueryStageOnError(t *testing.T) {
+	// expected 是底层测试查询错误。
+	expected := errors.New("sales query failed")
+	// service 是返回按状态查询错误的订单分析应用服务。
+	service := NewService(&analyticsRepositoryFake{statusErr: expected})
+	// result、err 是应用服务返回的销售统计结果和错误。
+	result, err := service.SalesStats(context.Background(), Query{UserID: 1})
+	if err == nil || !errors.Is(err, expected) {
+		t.Fatalf("销售统计错误语义异常: err=%v", err)
+	}
+	// stageErr 是带查询阶段的应用服务错误。
+	var stageErr *StageError
+	if !errors.As(err, &stageErr) || stageErr.Stage != StageSales || ErrorMessage(err) != "查询销售统计失败" {
+		t.Fatalf("销售统计阶段错误异常: %+v", stageErr)
+	}
+	if result.SalesAmount != 0 || result.Daily != nil {
+		t.Fatalf("失败结果应为零值: %+v", result)
+	}
+	// dailyService 是按日查询失败的订单分析应用服务。
+	dailyService := NewService(&analyticsRepositoryFake{dailyErr: expected})
+	// dailyErr 是按日聚合查询失败时返回的底层错误，用于确认阶段错误包装保留原始语义。
+	if _, dailyErr := dailyService.SalesStats(context.Background(), Query{UserID: 1}); dailyErr == nil || !errors.Is(dailyErr, expected) {
+		t.Fatalf("按日查询错误语义异常: err=%v", dailyErr)
 	}
 }
 

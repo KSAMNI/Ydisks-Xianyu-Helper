@@ -193,6 +193,8 @@ type analyticsHandlerCoveragePort struct {
 	orderErr error
 	// validErr 保存有效订单查询错误。
 	validErr error
+	// salesErr 保存销售统计查询错误。
+	salesErr error
 	// gotPage 保存最近一次有效订单请求的页码。
 	gotPage int
 	// gotPageSize 保存最近一次有效订单请求的分页大小。
@@ -219,6 +221,15 @@ func (port *analyticsHandlerCoveragePort) OrderAnalytics(context.Context, analyt
 func (port *analyticsHandlerCoveragePort) ValidOrders(_ context.Context, _ analyticsapp.Query, page, pageSize int) (analyticsapp.ValidOrders, error) {
 	port.gotPage, port.gotPageSize = page, pageSize
 	return analyticsapp.ValidOrders{Page: page, PageSize: pageSize}, port.validErr
+}
+
+// SalesStats 返回覆盖字段的销售统计结果或预置错误。
+func (port *analyticsHandlerCoveragePort) SalesStats(context.Context, analyticsapp.Query) (analyticsapp.SalesStats, error) {
+	return analyticsapp.SalesStats{
+		SalesAmount: 100, SalesOrders: 2, ReceivedAmount: 80, ReceivedOrders: 1,
+		RefundedAmount: 20, RefundedOrders: 1,
+		Daily: []analyticsapp.SalesDailyStats{{Date: "2026-08-26", SalesAmount: 100, ReceivedAmount: 80, RefundedAmount: 20, OrderCount: 3}},
+	}, port.salesErr
 }
 
 // TestAnalyticsHandlersCoverSuccessPaginationAndErrors 验证分析 handler 的响应映射、分页归一和应用错误分支。
