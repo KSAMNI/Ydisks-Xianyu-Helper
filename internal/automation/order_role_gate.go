@@ -151,16 +151,22 @@ func isZeroEvidenceReminder(task Task) bool {
 }
 
 // shouldDiscardZeroEvidenceReminder 判断一个未通过卖家核验的事件是否应被静默丢弃而不是延期核验。
-// 仅当事件不含任何身份事实（isZeroEvidenceReminder）且本地按会话已确认无任何待发货候选
-// （reason == no_pending_order_candidate）时成立：真实订单必在本地有待发货记录，
-// resolvePaidTaskOrder 已先按会话查询，会话查无候选说明该提醒与当前账号卖家身份无关。
-// 只要事件带订单号等锚点，或本地仍有候选，都必须保留延期核验，不得在此丢弃。
+// 仅当事件不含任何身份事实（isZeroEvidenceReminder）且拒绝原因证明它与当前账号卖家身份无关时成立：
+//   - no_pending_order_candidate：本地按会话已确认无任何待发货候选，真实订单必在本地有待发货记录；
+//   - missing_item_id：订单创建事件连商品号都为空，不可能是当前账号的商品被拍下（真实拍下卡片必带商品号）。
+//
+// 只要事件带订单号、商品号或买家号等任何锚点，就必须保留延期核验，不得在此丢弃。
 func (c *Center) shouldDiscardZeroEvidenceReminder(task Task, rejectReason string) bool {
-	if !isZeroEvidenceReminder(task) || rejectReason != "no_pending_order_candidate" {
+	if !isZeroEvidenceReminder(task) {
+		return false
+	}
+	// discardable 标记该拒绝原因是否足以证明事件与卖家身份无关；其它原因一律保留延期核验。
+	discardable := rejectReason == "no_pending_order_candidate" || rejectReason == "missing_item_id"
+	if !discardable {
 		return false
 	}
 	if c.logger != nil {
-		c.logger.Info("忽略本地无对应待发货订单的待办提醒，与当前账号卖家身份无关", "account", task.AccountID, "trigger", task.TriggerType, "chat_id", task.ChatID, "reason", rejectReason)
+		c.logger.Info("忽略与当前账号卖家身份无关的待办提醒", "account", task.AccountID, "trigger", task.TriggerType, "chat_id", task.ChatID, "reason", rejectReason)
 	}
 	return true
 }

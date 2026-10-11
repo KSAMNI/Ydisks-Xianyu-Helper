@@ -21,7 +21,8 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 		// task 是无真实凭证的测试交易事件。
 		task Task
 	}{
-		{name: "缺商品号", reason: "missing_item_id", task: Task{TriggerType: TriggerOrderCreated}},
+		// 缺商品号用例带买家标识，避免被零事实静默丢弃拦截，专注于验证缺商品号时的延期退避链路。
+		{name: "缺商品号", reason: "missing_item_id", task: Task{TriggerType: TriggerOrderCreated, BuyerID: "buyer"}},
 		{name: "缺商品事实", reason: "missing_local_item", task: Task{TriggerType: TriggerOrderCreated, ItemID: "item"}},
 		{name: "缺会话标识", reason: "missing_chat_id", task: Task{TriggerType: TriggerOrderPaid}},
 		// 无待发货候选用例带买家标识，避免被零事实静默丢弃拦截，专注于验证无候选时的延期退避链路。

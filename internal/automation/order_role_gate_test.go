@@ -434,4 +434,51 @@ func TestZeroEvidenceReminderDiscarded(t *testing.T) {
 			t.Fatalf("带订单号事件应保留延期核验: pending=%d", got)
 		}
 	})
+
+	// t.Run 子测试三：零事实的“等待买家付款”订单创建红点提醒也被静默丢弃，不产生延期任务。
+	t.Run("零事实订单创建静默丢弃", func(t *testing.T) {
+		// store、cleanup 提供无订单无商品的隔离数据库。
+		store, cleanup := newAutomationTestStore(t)
+		defer cleanup()
+		// sender 不应收到消息；center 走真实门禁。
+		sender := &testSender{}
+		// center 是真实提取与门禁协调器。
+		center := New(store, testSenderProvider{sender: sender}, nil)
+		// createdRaw 构造与生产一致的“等待买家付款”红点简化通知：只有会话号和一句提醒。
+		createdRaw := map[string]any{"1": "67917217565@goofish", "2": 1, "3": map[string]any{"redReminder": "等待买家付款", "redReminderStyle": "1"}, "4": 1791677278572}
+		// task 经真实 WS 提取，确认它被识别为订单创建事件。
+		task := ExtractTaskFromWS("cid", "", createdRaw)
+		if task == nil || task.TriggerType != TriggerOrderCreated {
+			t.Fatalf("红点提醒未被识别为订单创建事件: %+v", task)
+		}
+		// handleErr 保存静默丢弃结果；不应返回错误。
+		if handleErr := center.HandleTask(context.Background(), *task); handleErr != nil {
+			t.Fatalf("零事实订单创建提醒应静默丢弃而非报错: %v", handleErr)
+		}
+		// got 保存静默丢弃后的延期任务数。
+		if got := pendingCount(t, store); got != 0 || len(sender.texts) != 0 {
+			t.Fatalf("零事实订单创建提醒产生了延期任务或外部消息: pending=%d sends=%d", got, len(sender.texts))
+		}
+	})
+
+	// t.Run 子测试四：带商品号的真实拍下事件即使商品暂未同步，也保留延期核验（不静默丢弃）。
+	t.Run("带商品号订单创建保留延期", func(t *testing.T) {
+		// store、cleanup 提供无商品的隔离数据库。
+		store, cleanup := newAutomationTestStore(t)
+		defer cleanup()
+		// sender 不应收到消息；center 走真实门禁。
+		sender := &testSender{}
+		// center 是真实门禁协调器。
+		center := New(store, testSenderProvider{sender: sender}, nil)
+		// task 是带商品号但本地未同步商品的未知角色拍下事件。
+		task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderCreated, ItemID: "new-item", ChatID: "chat", Text: "等待买家付款"}
+		// handleErr 保存带商品号事件的延期处理结果。
+		if handleErr := center.HandleTask(context.Background(), task); handleErr != nil {
+			t.Fatalf("带商品号订单创建延期失败: %v", handleErr)
+		}
+		// got 保存延期处理后的队列任务数。
+		if got := pendingCount(t, store); got != 1 {
+			t.Fatalf("带商品号订单创建应保留延期核验: pending=%d", got)
+		}
+	})
 }
