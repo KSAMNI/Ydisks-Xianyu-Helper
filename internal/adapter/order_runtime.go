@@ -270,7 +270,9 @@ func (r *OrderRuntime) CredentialAvailable(detail *orderapp.PlatformRuntimeData)
 	return detail != nil && strings.TrimSpace(detail.Value) != ""
 }
 
-// FetchOrderDetail 调用平台详情接口并收集 Cookie 会话变化。
+// FetchOrderDetail 调用平台详情接口并收集 Cookie 会话变化，供管理端单笔订单刷新使用。
+// 用户主动刷新必须反映当前平台事实，因此这里走强制取新路径，跳过协调器的成功结果复用窗口；
+// 账号级限流与同订单并发合并仍然生效，不会绕过平台风控节奏。
 func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.PlatformRuntimeData, orderID string) (orderapp.RefreshDetailFetchResult, error) {
 	// fetcher、available 保存详情接口实现及其可用状态。
 	fetcher, available := r.mtopClient().(orderDetailMTop)
@@ -283,7 +285,7 @@ func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.Pl
 	// requestCtx、session 保存带 Cookie 快照的平台上下文及响应会话。
 	requestCtx, session := withOrderCookieSnapshot(ctx, platformRuntimeDataForOrder(detail))
 	// result、callErr 保存共享限流和同订单去重后的平台详情响应及错误。
-	result, callErr := r.orderDetails.Fetch(requestCtx, detail.ID, orderID, detail.Value, fetcher)
+	result, callErr := r.orderDetails.FetchFresh(requestCtx, detail.ID, orderID, detail.Value, fetcher)
 	// cookieUpdate 保存平台详情请求观察到的 Cookie 会话变化。
 	cookieUpdate := orderCookieUpdate(detail, session)
 	if callErr != nil {

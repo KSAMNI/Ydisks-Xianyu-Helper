@@ -122,6 +122,35 @@ func TestOrderDetailCoordinatorReusesRecentSuccess(t *testing.T) {
 	}
 }
 
+// TestOrderDetailCoordinatorFetchFreshBypassesRecentSuccess 验证强制取新会忽略尚未过期的成功快照并重新访问平台。
+func TestOrderDetailCoordinatorFetchFreshBypassesRecentSuccess(t *testing.T) {
+	// coordinator 使用零限流和默认成功缓存窗口，隔离本测试对强制取新语义的验证。
+	coordinator := newOrderDetailCoordinator(0, 0, nil)
+	// fetcher 统计真正进入平台边界的次数。
+	fetcher := &coordinatedOrderDetailFake{}
+	// cachedResult、cachedErr 保存首次读取并写入复用窗口的订单详情结果和错误。
+	cachedResult, cachedErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	if cachedErr != nil || cachedResult == nil {
+		t.Fatalf("首次订单详情失败 result=%+v err=%v", cachedResult, cachedErr)
+	}
+	// freshResult、freshErr 保存强制取新后的订单详情结果和错误，它不得复用上一步写入的快照。
+	freshResult, freshErr := coordinator.FetchFresh(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	if freshErr != nil || freshResult == nil {
+		t.Fatalf("强制取新订单详情失败 result=%+v err=%v", freshResult, freshErr)
+	}
+	if fetcher.calls.Load() != 2 {
+		t.Fatalf("强制取新后平台访问次数=%d，期望 2", fetcher.calls.Load())
+	}
+	// reusedResult、reusedErr 保存强制取新之后普通调用复用的结果，用于证明新快照已进入复用窗口。
+	reusedResult, reusedErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	if reusedErr != nil || reusedResult == nil {
+		t.Fatalf("强制取新后的复用失败 result=%+v err=%v", reusedResult, reusedErr)
+	}
+	if fetcher.calls.Load() != 2 {
+		t.Fatalf("强制取新后的复用访问了平台，次数=%d，期望 2", fetcher.calls.Load())
+	}
+}
+
 // TestOrderDetailCoordinatorSpacesSameAccountRequests 验证同账号不同订单至少按配置间隔访问平台。
 func TestOrderDetailCoordinatorSpacesSameAccountRequests(t *testing.T) {
 	// minimumGap 是本测试要求的同账号最小请求间隔。

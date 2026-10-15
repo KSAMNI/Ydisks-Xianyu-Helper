@@ -119,8 +119,24 @@ func newOrderDetailCoordinatorWithLogger(logger *slog.Logger, minGap, maxJitter 
 }
 
 // Fetch 在账号级限流后调用订单详情客户端；同一账号、同一订单的并发调用等待首个调用完成并复用其结果。
+// 尚未过期的成功结果会在短时窗口内直接复用，适用于重复 WS 投递等可接受旧快照的调用方。
 // ctx 仅控制当前等待者和首个调用的平台请求；cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
 func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	return c.fetch(ctx, accountID, orderID, cookies, fetcher, true)
+}
+
+// FetchFresh 在账号级限流后强制访问平台并跳过成功结果复用窗口，供管理端用户主动刷新单笔订单使用；
+// 否则手动刷新会被尚未过期的旧快照静默满足，界面看不到任何变化。
+// 并发合并、账号限流和成功结果写入与 Fetch 完全一致，随后到达的自动化调用仍可复用本次新结果。
+// ctx、accountID、orderID、cookies、fetcher 的语义同 Fetch。
+func (c *OrderDetailCoordinator) FetchFresh(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	return c.fetch(ctx, accountID, orderID, cookies, fetcher, false)
+}
+
+// fetch 是 Fetch 与 FetchFresh 的唯一实现；reuseSuccess 为真时允许复用尚未过期的成功结果，为假时强制访问平台。
+// accountID、orderID、cookies、fetcher 语义与 Fetch 相同；ctx 仅控制当前等待者和首个调用的平台请求，
+// cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
+func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop, reuseSuccess bool) (*mtop.OrderDetailResult, error) {
 	if c == nil {
 		return nil, errors.New("订单详情协调器未初始化")
 	}
@@ -137,11 +153,12 @@ func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, 
 	c.mu.Lock()
 	// cached、cachedOK 保存尚未过期的成功结果；错误不进入缓存，确保凭证恢复可立即重新发起受限请求。
 	if cached, cachedOK := c.successes[key]; cachedOK {
-		if time.Now().Before(cached.expiresAt) {
+		if time.Now().Before(cached.expiresAt) && reuseSuccess {
 			c.mu.Unlock()
 			c.logger.Debug("复用短时有效的订单详情结果", "account", normalizedAccount, "order_id", normalizedOrder)
 			return cloneOrderDetailResult(cached.result), nil
 		}
+		// 过期结果或被强制取新时都必须移除旧快照，使本次调用与随后到达的并发调用只等待新的平台结果。
 		delete(c.successes, key)
 	}
 	if // existing 表示已由其他协程发起的平台调用；后到调用方不得额外访问平台。

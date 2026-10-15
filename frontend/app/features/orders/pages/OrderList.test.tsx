@@ -79,6 +79,8 @@ const orderFixture: Order = {
   item_image: '',
   item_price: '10.00',
   buyer_id: 'buyer-1',
+  spec_name: '颜色',
+  spec_value: '红',
   quantity: 2,
   amount: '20.00',
   status: 'pending_ship',
@@ -141,6 +143,20 @@ describe('OrderList 页面组合行为', /* 当前回调验证订单筛选、编
     await waitFor(/* updateAssertion 等待订单编辑 API 完成。 */ () => expect(orderListMocks.updateOrder).toHaveBeenCalled());
     expect(orderListMocks.updateOrder).toHaveBeenCalledWith('order-1', expect.objectContaining({ order_status: 'pending_ship', buyer_id: 'buyer-2', amount: '30.00' }));
     expect(orderListMocks.loadOrders).toHaveBeenCalled();
+  });
+
+  test('订单列表与详情弹窗展示平台规格，规格为空时隐藏该行', /* 验证单笔同步写入的规格对用户可见且不留空标签。 */ () => {
+    render(<OrderList />);
+    expect(screen.getAllByText(/颜色 \/ 红/).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByTitle('查看详情'));
+    expect(screen.getByText('规格')).toBeTruthy();
+
+    cleanup();
+    // emptySpecOrder 是没有平台规格的同一订单，用于验证规格行不会显示空标签。
+    const emptySpecOrder: Order = { ...orderFixture, spec_name: '', spec_value: '' };
+    orderListMocks.orders = [emptySpecOrder];
+    render(<OrderList />);
+    expect(screen.queryByText(/^规格/)).toBeNull();
   });
 
   test('发货、单笔同步和删除操作分别调用对应 API', /* 当前回调验证订单行动作和结果收束。 */ async () => {

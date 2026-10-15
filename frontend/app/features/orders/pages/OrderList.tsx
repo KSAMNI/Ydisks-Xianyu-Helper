@@ -6,6 +6,7 @@ import type { OrderStatus } from '../api';
 import { OrderFilterBar } from '../components/OrderFilterBar';
 import { useOrderQuery } from '../hooks';
 import { useOrderActions } from '../orderActions';
+import { formatOrderSpec } from '../orderSpec';
 
 // StatusBadge 渲染订单状态徽标。
 const StatusBadge: React.FC<{ /** status 表示状态。 */ status: OrderStatus }> = ({ status }) => {
@@ -152,6 +153,9 @@ const OrderList: React.FC = () => {
                         </div>
                         <div className="text-xs text-gray-500 mt-1 font-medium">订单ID: {order.order_id}</div>
                         <div className="text-xs text-gray-400 mt-0.5">数量: {order.quantity} • {formatLocalDateTime(order.created_at)}</div>
+                        {formatOrderSpec(order) && (
+                          <div className="text-xs text-gray-400 mt-0.5">规格: {formatOrderSpec(order)}</div>
+                        )}
                       </div>
                     </div>
                   </td>
@@ -307,6 +311,13 @@ const OrderList: React.FC = () => {
                     <div className="text-xs text-gray-500 mb-1">数量</div>
                     <div className="font-bold text-gray-900">{selectedOrder.quantity}</div>
                   </div>
+
+                  {formatOrderSpec(selectedOrder) && (
+                    <div>
+                      <div className="text-xs text-gray-500 mb-1">规格</div>
+                      <div className="font-bold text-gray-900">{formatOrderSpec(selectedOrder)}</div>
+                    </div>
+                  )}
                   <div className="col-span-2">
                     <div className="text-xs text-gray-500 mb-1">创建时间</div>
                     <div className="text-sm font-medium text-gray-700">{formatLocalDateTime(selectedOrder.created_at)}</div>

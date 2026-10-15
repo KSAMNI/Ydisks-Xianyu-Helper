@@ -113,6 +113,10 @@ export interface Order {
   item_price?: string;
   /** 买家平台标识。 */
   buyer_id: string;
+  /** 商品规格名称，由单笔订单同步从平台详情写入；为空表示平台未返回或该订单尚未单笔同步。 */
+  spec_name?: string;
+  /** 商品规格值，与 spec_name 成对出现；为空表示平台未返回或该订单尚未单笔同步。 */
+  spec_value?: string;
   /** 购买数量。 */
   quantity: number;
   /** 订单金额文本。 */
