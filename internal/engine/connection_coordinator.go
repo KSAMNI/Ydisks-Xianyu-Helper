@@ -14,6 +14,15 @@ import (
 // recorder 的单次数据库 I/O 已使用同一数量级的超时；该预算避免不响应取消的底层实现永久阻塞 Run。
 const connectionShutdownJoinTimeout = WSRecordWriteTimeout
 
+// tokenFailureLoginStatusTimeout 是 token 获取失败后、接口续期前执行轻量登录态检查的总预算。
+// 单次 loginuser.get 请求自带二十秒上限，最坏情况下可能连续两次请求；该预算保证重连循环不被
+// 慢速平台响应长时间占住，同时仍允许检查在账号停止时立即随 Context 取消退出。
+const tokenFailureLoginStatusTimeout = 45 * time.Second
+
+// connectionRecoveryRetryDelay 是登录态预检用新 Cookie 恢复后、重新连接前的固定短暂等待。
+// 平台可能连续下发新的签名 Cookie，缺少该间隔会让重连循环紧贴平台请求，因此与既有恢复路径保持一致。
+const connectionRecoveryRetryDelay = 2 * time.Second
+
 // connectionCoordinator 拥有单账号 WebSocket 拨号、注册、重连和会话轮换编排。
 // account 是构造完成后固定的 facade；协调器不单独启动 goroutine，所有任务都继承
 // Account.Run 创建的 Context，并在返回前使用有限预算等待 recorder 与迟到续期任务收束。
@@ -233,8 +242,6 @@ func (c *connectionCoordinator) markConnectionOnline(ctx context.Context, conn W
 	a.conn = conn
 	a.connStartedAt = time.Now()
 	a.connFailures = 0
-	a.networkFailures = 0
-	a.authExpiredAlerted = false
 	// shouldRecovered 表示本次连接是否结束了一个已经通知用户的离线周期。
 	shouldRecovered := a.offlineNotified
 	// offlineSince 保存该离线周期起始时间，用于恢复通知中的持续时长诊断。
@@ -277,6 +284,35 @@ func (c *connectionCoordinator) handleTokenAcquisitionFailure(ctx context.Contex
 		return false, tokenErr
 	}
 	if mtop.IsSessionExpiredErr(tokenErr) {
+		// checkCtx、checkCancel 为预检提供独立于账号生命周期的有限预算，避免慢速平台响应长时间占住重连循环。
+		checkCtx, checkCancel := context.WithTimeout(ctx, tokenFailureLoginStatusTimeout)
+		// loginStatus 保存接口续期前的低成本登录态检查结论：loginuser.get 可能仅凭响应头下发新的
+		// 签名 Cookie（无需完整续期即可恢复），也能在提交续期请求前识别风控，避免对已被风控拦截的
+		// 账号反复发起续期。检查失败或运行时未实现该能力时返回零值，调用方必须落回原有续期路径。
+		loginStatus := a.tryLoginStatusCheck(checkCtx)
+		checkCancel()
+		if loginStatus.riskRequired {
+			// 风控优先于续期：风控账号的续期请求只会继续失败并可能加重平台风控；
+			// 运行状态已由登录态检查置为“要求安全验证”，这里只补日志与用户可见告警。
+			a.logger.Warn("登录态检查命中风控验证，停止续期并等待人工验证")
+			a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证",
+				fmt.Sprintf("账号 %s 登录态检查命中风控验证，需要完成人工验证后再重试。", a.CookieID))
+			return false, tokenErr
+		}
+		if loginStatus.recovered {
+			// 预检已用平台下发的签名 Cookie 恢复登录态，本次不再执行完整接口续期。
+			a.logger.Info("登录态检查已恢复签名 Cookie，跳过接口续期")
+			a.resetFailures()
+			a.setRuntimeState(RuntimeConnecting, "登录凭证已刷新，正在重新连接")
+			// sleepErr 保存恢复等待被账号停止或预算取消的原因；取消时必须终止账号循环。
+			if sleepErr := sleepCtx(ctx, connectionRecoveryRetryDelay); sleepErr != nil {
+				return false, sleepErr
+			}
+			return true, nil
+		}
+		// 预检未恢复凭证时继续原有续期路径；session_expired 只用于诊断日志，不改变续期决策，
+		// 因为到达本分支时 token API 已判定会话失效，零值结论必须按原语义继续续期。
+		a.logger.Warn("登录态检查未恢复凭证，继续接口续期", "session_expired", loginStatus.sessionExpired, "err", tokenErr)
 		// reason 是登录态恢复期间写入运行状态与通知的用户可见原因。
 		reason := "登录凭证已失效，正在立即续期"
 		a.logger.Warn("token API 检测到 Session 过期，停止重试并开始即时续期", "err", tokenErr)

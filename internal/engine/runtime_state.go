@@ -15,8 +15,6 @@ type accountRuntimeState struct {
 
 	// connFailures 是连续连接或认证失败次数。
 	connFailures int
-	// networkFailures 是网络断线累计次数。
-	networkFailures int
 	// shortDisconnects 保存短连接断开的时间窗口。
 	shortDisconnects []time.Time
 	// lastMsgReceived 是最近收到平台消息的时间。
@@ -31,8 +29,6 @@ type accountRuntimeState struct {
 	conn WSConn
 	// connStartedAt 是当前 WebSocket 连接建立时间。
 	connStartedAt time.Time
-	// authExpiredAlerted 表示当前凭证失效是否已经发送过告警。
-	authExpiredAlerted bool
 	// offlineNotified 表示当前离线周期是否已经发送过离线通知。
 	offlineNotified bool
 	// offlineSince 是当前离线周期的起始时间。

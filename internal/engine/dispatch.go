@@ -696,9 +696,6 @@ func (a *Account) CurrentCookieStr() string {
 
 // ---- 小工具 ----
 
-// contains 封装contains业务协调。
-func contains(s, sub string) bool { return strings.Contains(strings.ToLower(s), strings.ToLower(sub)) }
-
 // toString 封装toString业务协调。
 func toString(v any) string {
 	switch // x 用于本次流程后续判断的x

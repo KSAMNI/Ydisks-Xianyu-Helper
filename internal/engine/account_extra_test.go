@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"xianyu-go/internal/automation"
-	"xianyu-go/internal/db"
 	"xianyu-go/internal/xianyu"
 	"xianyu-go/internal/xianyu/cookierefresh"
 	"xianyu-go/internal/xianyu/mtop"
@@ -658,43 +657,6 @@ func TestRefreshTokenSuccessResetsTokenFetchFailures(t *testing.T) {
 	}
 }
 
-// TestRetryDelay_FailureClampsAtOne connFailures=0 时按 1 计算。
-func TestRetryDelay_FailureClampsAtOne(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
-	acc, _, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	acc.connFailures = 0
-	// close-frame：min(2^1,30)=2s。
-	expectDelayRange(t, acc.retryDelay("no close frame received or sent"), 2*time.Second)
-	// timeout：min(2*2^1,90)=4s。
-	expectDelayRange(t, acc.retryDelay("timeout reading"), 4*time.Second)
-	// default：min(2^1,45)=2s。
-	expectDelayRange(t, acc.retryDelay("random error"), 2*time.Second)
-}
-
-// TestRetryDelay_TimeoutVariant "timeout" 关键词分支。
-func TestRetryDelay_TimeoutVariant(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
-	acc, _, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	acc.connFailures = 3
-	// min(2*2^3,90)=16s。
-	expectDelayRange(t, acc.retryDelay("dial timeout"), 16*time.Second)
-	acc.connFailures = 10
-	expectDelayRange(t, acc.retryDelay("timeout"), 90*time.Second)
-}
-
-// TestNetworkRetryDelayMatchesReferenceBackoff 封装TestNetwork重试延迟MatchesReferenceBackoff业务协调。
-func TestNetworkRetryDelayMatchesReferenceBackoff(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
-	acc, _, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	acc.networkFailures = 1
-	expectDelayRange(t, acc.networkRetryDelay(), 4*time.Second)
-	acc.networkFailures = 10
-	expectDelayRange(t, acc.networkRetryDelay(), 60*time.Second)
-}
-
 // TestEstablishedNetworkErrorClassification 封装TestEstablishedNetwork错误Classification业务协调。
 func TestEstablishedNetworkErrorClassification(t *testing.T) {
 	// err 表示当前遍历过程中的err
@@ -733,132 +695,11 @@ func TestRecordShortDisconnectDisablesAtFiveWithinWindow(t *testing.T) {
 	}
 }
 
-// TestHandleMaxFailures_RecentMessageStillRunsRecovery 消息冷却只约束 Token/Cookie
-// 刷新，不约束达到认证失败阈值后的恢复链。
-// TestHandleMaxFailures_RecentMessageStillRunsRecovery 封装TestHandleMaxFailuresRecent消息Still运行记录Recovery业务协调。
-func TestHandleMaxFailures_RecentMessageStillRunsRecovery(t *testing.T) {
-	// acc、h、cleanup 用于本次流程后续判断的acc、h、cleanup
-	acc, h, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-	// ctx 用于本次流程后续判断的ctx
-	ctx := context.Background()
-
-	// 设最近收到消息（在 MessageCooldown 内）。
-	acc.mu.Lock()
-	acc.lastMsgReceived = time.Now()
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-
-	// cctx、cancel 用于本次流程后续判断的cctx、cancel
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
-	defer cancel()
-	// err 用于本次流程后续判断的err
-	err := acc.handleMaxFailures(cctx)
-	if err != cctx.Err() {
-		t.Fatalf("成功恢复后的等待应响应 ctx 取消，got %v want %v", err, cctx.Err())
-	}
-	if h.refresh != 1 {
-		t.Errorf("应触发一次恢复链，got %d", h.refresh)
-	}
-	if acc.connFailures != 0 {
-		t.Errorf("应重置失败计数，got %d", acc.connFailures)
-	}
-}
-
-// TestHandleMaxFailures_PasswordLoginSuccess 密码登录刷新成功：重置失败计数、状态置 connecting、cookie 更新。
-func TestHandleMaxFailures_PasswordLoginSuccess(t *testing.T) {
-	// acc、h、store、cleanup 用于本次流程后续判断的acc、h、store、cleanup
-	acc, h, store, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-	// ctx 用于本次流程后续判断的ctx
-	ctx := context.Background()
-
-	// 无最近消息、未在密码登录冷却中。
-	acc.mu.Lock()
-	acc.lastMsgReceived = time.Time{}
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-
-	// handler.OnPasswordLoginRefresh 返回 true → 成功路径。
-	// store.Cookies.GetDetails 返回新 cookie，应触发 replaceCookieStr。
-	// newCookie 用于本次流程后续判断的new登录凭证
-	newCookie := "unb=999; _m_h5_tk=tk_new;"
-	// admin、err 用于本次流程后续判断的admin、err
-	admin, err := store.Users.GetByUsername(ctx, "admin")
-	if err != nil {
-		t.Fatalf("GetByUsername: %v", err)
-	}
-	if // err 用于本次流程后续判断的err
-	err := store.Cookies.Save(ctx, "cid", newCookie, admin.ID); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	// 确认 GetDetails 能读到新值（排除 Save 静默失败）。
-	d, err := store.Cookies.GetDetails(ctx, "cid")
-	if err != nil || d.Value != newCookie {
-		t.Fatalf("GetDetails 未返回新 cookie: d=%+v err=%v", d, err)
-	}
-
-	// 用一个延迟取消的 ctx：GetDetails 能成功完成，sleepCtx(2s) 会在取消时返回 ctx.Err()。
-	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	err = acc.handleMaxFailures(cctx)
-	// 成功刷新后进入 sleepCtx(2s)，超时 ctx 让其返回 ctx.Err()。
-	if err != cctx.Err() {
-		t.Fatalf("成功路径 sleepCtx 应返回 ctx.Err()，got %v want %v", err, cctx.Err())
-	}
-	if h.refresh != 1 {
-		t.Errorf("应调用一次 OnPasswordLoginRefresh，got %d", h.refresh)
-	}
-	if acc.connFailures != 0 {
-		t.Errorf("应重置失败计数，got %d", acc.connFailures)
-	}
-	if // s 用于本次流程后续判断的s
-	s := acc.RuntimeStatus(); s.State != RuntimeConnecting {
-		t.Errorf("状态应为 connecting，got %q", s.State)
-	}
-	// replaceCookieStr 应已更新 cookie。
-	if got := acc.currentCookieStr(); got != newCookie {
-		t.Errorf("cookie 未更新: got %q want %q", got, newCookie)
-	}
-}
-
 // failingRefreshHandler OnPasswordLoginRefresh 返回 false 的 handler，记录告警。
 type failingRefreshHandler struct {
 	alerts []string
 	events []string
 }
-
-// lockAwareRefreshHandler 在外部恢复回调内重新获取账号凭证锁，用于验证锁边界。
-type lockAwareRefreshHandler struct {
-	// store 提供测试账号凭证锁。
-	store *db.Store
-	// acquired 表示回调是否成功获取并释放凭证锁。
-	acquired bool
-}
-
-// HandleChatMessage 满足 Engine Handler 接口的聊天处理方法。
-func (h *lockAwareRefreshHandler) HandleChatMessage(context.Context, ChatMessage) error { return nil }
-
-// HandleSystemEvent 满足 Engine Handler 接口的系统事件处理方法。
-func (h *lockAwareRefreshHandler) HandleSystemEvent(context.Context, automation.Task) error {
-	return nil
-}
-
-// OnPasswordLoginRefresh 在恢复回调中获取凭证锁，证明调用方未跨外部 I/O 持锁。
-func (h *lockAwareRefreshHandler) OnPasswordLoginRefresh(context.Context, string) bool {
-	// unlock 释放恢复回调取得的账号凭证锁。
-	unlock := h.store.LockAccountCredentials("cid")
-	unlock()
-	h.acquired = true
-	return false
-}
-
-// OnAccountAlert 满足 Engine Handler 接口的告警处理方法。
-func (h *lockAwareRefreshHandler) OnAccountAlert(context.Context, string, string, string, string) {}
 
 // HandleChatMessage 处理聊天消息。
 func (f *failingRefreshHandler) HandleChatMessage(context.Context, ChatMessage) error { return nil }
@@ -880,65 +721,6 @@ func (f *failingRefreshHandler) OnAccountAlert(_ context.Context, _, level, _, _
 func (f *failingRefreshHandler) OnAccountEvent(_ context.Context, _, eventType, level, _, _ string) {
 	f.events = append(f.events, eventType)
 	f.alerts = append(f.alerts, level)
-}
-
-// TestHandleMaxFailuresReleasesCredentialLockBeforeExternalRecovery 验证外部凭证恢复回调执行时账号锁已释放。
-func TestHandleMaxFailuresReleasesCredentialLockBeforeExternalRecovery(t *testing.T) {
-	// acc、store、cleanup 保存账号运行时、凭证存储及清理函数。
-	acc, _, store, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-	// handler 保存会尝试重新获取账号锁的恢复回调。
-	handler := &lockAwareRefreshHandler{store: store}
-	acc.handler = handler
-	// ctx 保存本测试共用的上下文。
-	ctx := context.Background()
-	acc.mu.Lock()
-	acc.lastMsgReceived = time.Time{}
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-	// err 保存连续失败恢复流程返回的错误。
-	if err := acc.handleMaxFailures(ctx); err == nil || !strings.Contains(err.Error(), "自动恢复失败") {
-		t.Fatalf("恢复失败应返回终止错误: %v", err)
-	}
-	if !handler.acquired {
-		t.Fatal("外部恢复回调未成功获取账号凭证锁")
-	}
-}
-
-// TestHandleMaxFailures_PasswordLoginFailure 密码登录刷新失败后终止账号主循环。
-func TestHandleMaxFailures_PasswordLoginFailure(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
-	acc, _, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-
-	acc.mu.Lock()
-	acc.lastMsgReceived = time.Time{}
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-
-	// handler 返回 false → 刷新失败。
-	h := &failingRefreshHandler{}
-	acc.handler = h
-
-	// err 用于本次流程后续判断的err
-	err := acc.handleMaxFailures(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "自动恢复失败") {
-		t.Fatalf("刷新失败应返回终止主循环的错误，got %v", err)
-	}
-	if // s 用于本次流程后续判断的s
-	s := acc.RuntimeStatus(); s.State != RuntimeAuthExpired {
-		t.Errorf("状态应为 auth_expired，got %q", s.State)
-	}
-	if len(h.alerts) != 2 || h.alerts[0] != AlertLevelWarn || h.alerts[1] != AlertLevelCritical {
-		t.Errorf("应先触发掉线 warn，再触发恢复失败 critical，got %+v", h.alerts)
-	}
-	if len(h.events) != 2 || h.events[0] != EventAccountOffline || h.events[1] != EventAccountOffline {
-		t.Errorf("事件类型应为账号掉线通知，got %+v", h.events)
-	}
 }
 
 // TestReplaceCookieStr_UpdateUserIDAndDeviceID 更新 cookie 不得改变永久 deviceID。
@@ -1473,40 +1255,6 @@ func TestPersistRenewFlatCookieExcludesLoginSecrets(t *testing.T) {
 	}
 	if !strings.Contains(runtimeData.MetadataJSON, `"other":true`) {
 		t.Fatalf("扁平 Cookie 写回应保留其他 metadata: %s", runtimeData.MetadataJSON)
-	}
-}
-
-// TestHandleMaxFailuresUsesValueWithoutLoginSecrets 验证恢复回调只读取 Cookie 明文，不解密登录密码。
-func TestHandleMaxFailuresUsesValueWithoutLoginSecrets(t *testing.T) {
-	t.Setenv("XIANYU_DATA_KEY", "engine-max-failures-query-key")
-	// acc、handler 和 store 是本测试的账号、恢复回调记录器及数据库。
-	acc, handler, store, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-	// ctx 是测试数据库和恢复流程共用的上下文。
-	ctx := context.Background()
-	// corruptErr 表示写入故意损坏的登录密码密文失败的原因。
-	if _, corruptErr := store.DB.ExecContext(ctx,
-		`UPDATE cookies SET username=?,password=? WHERE id=?`,
-		"engine-max-failures-user", "not-a-password-ciphertext", "cid"); corruptErr != nil {
-		t.Fatalf("corrupt password: %v", corruptErr)
-	}
-	// 将账号置于最大连接失败状态，确保进入密码登录成功后的 Cookie 写回分支。
-	acc.mu.Lock()
-	acc.lastMsgReceived = time.Time{}
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-	// cctx 让成功恢复后的固定等待快速结束，避免测试实际等待两秒。
-	cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-	defer cancel()
-	// handleErr 是最大失败恢复流程的结果。
-	handleErr := acc.handleMaxFailures(cctx)
-	if handleErr != cctx.Err() {
-		t.Fatalf("恢复成功后的等待应返回 ctx.Err(): got %v want %v", handleErr, cctx.Err())
-	}
-	if handler.refresh != 1 || acc.currentCookieStr() != "unb=123; _m_h5_tk=tk_1;" {
-		t.Fatalf("恢复回调或 Cookie 异常: refresh=%d cookie=%q", handler.refresh, acc.currentCookieStr())
 	}
 }
 

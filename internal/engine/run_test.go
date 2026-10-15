@@ -590,15 +590,13 @@ func TestRun_EstablishedNetworkErrorReconnectsWithFreshToken(t *testing.T) {
 	waitForDialCalls(t, dialer, 2)
 	waitForRegisteredToken(t, second, "tok-1")
 	acc.mu.Lock()
-	// currentToken 用于本次流程后续判断的current令牌
+	// currentToken 是网络断线重连后实际使用的连接令牌快照。
 	currentToken := acc.currentToken
-	// networkFailures 用于本次流程后续判断的networkFailures
-	networkFailures := acc.networkFailures
 	acc.mu.Unlock()
-	if networkFailures != 0 || currentToken != "tok-1" {
+	if currentToken != "tok-1" {
 		cancel()
 		<-done
-		t.Fatalf("网络断线后应立即用新凭证恢复连接: failures=%d token=%q", networkFailures, currentToken)
+		t.Fatalf("网络断线后应立即用新凭证恢复连接: token=%q", currentToken)
 	}
 	if // cached、err 用于本次流程后续判断的cached、err
 	cached, err := store.Tokens.Get(context.Background(), "cid"); err != nil || cached.AccessToken != "tok-1" {

@@ -321,44 +321,6 @@ func TestTryLoginStatusCheck_RiskRequired(t *testing.T) {
 	}
 }
 
-// TestHandleMaxFailuresRunsLoginStatusCheckBeforeProtocolRenew 封装TestHandleMaxFailures运行记录登录状态CheckBeforeProtocolRenew业务协调。
-func TestHandleMaxFailuresRunsLoginStatusCheckBeforeProtocolRenew(t *testing.T) {
-	// newCookie 用于本次流程后续判断的new登录凭证
-	newCookie := "unb=123; _m_h5_tk=loginuser_recovered; sgcookie=abc"
-	// mtopClient 用于本次流程后续判断的mtopClient
-	mtopClient := &statusMtop{
-		fakeRunMtop: fakeRunMtop{token: "tok-1"},
-		result: &mtop.LoginStatusResult{
-			Status:         mtop.LoginStatusTokenRefreshed,
-			UpdatedCookies: newCookie,
-			Message:        "令牌已刷新",
-		},
-	}
-	// acc、handler、cleanup 用于本次流程后续判断的acc、handler、cleanup
-	acc, handler, _, cleanup := newRunAccount(t, mtopClient)
-	defer cleanup()
-	acc.mu.Lock()
-	acc.connFailures = MaxConnectionFailures
-	acc.mu.Unlock()
-	// ctx、cancel 用于本次流程后续判断的ctx、cancel
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if // err 用于本次流程后续判断的err
-	err := acc.handleMaxFailures(ctx); err != ctx.Err() {
-		t.Fatalf("登录态恢复后的等待应响应上下文取消: %v", err)
-	}
-	if handler.refresh != 0 {
-		t.Fatalf("loginuser.get 已恢复时不应继续协议续期，calls=%d", handler.refresh)
-	}
-	if // got 用于本次流程后续判断的got
-	got := acc.currentCookieStr(); got != newCookie {
-		t.Fatalf("登录态检查恢复 Cookie=%q want %q", got, newCookie)
-	}
-	if acc.connFailures != 0 {
-		t.Fatalf("登录态恢复后失败计数=%d want 0", acc.connFailures)
-	}
-}
-
 // TestReloadCookieFromDB_AdoptsNewCookieAndClearsCache DB cookie 变更时采纳新 cookie 并清旧 token 缓存。
 func TestReloadCookieFromDB_AdoptsNewCookieAndClearsCache(t *testing.T) {
 	// acc、store、cleanup 用于本次流程后续判断的acc、store、cleanup
@@ -381,32 +343,6 @@ func TestReloadCookieFromDB_AdoptsNewCookieAndClearsCache(t *testing.T) {
 	// 普通 Cookie Jar 更新不等于页面 reload：旧 token 清除，device ID 保持。
 	if tk, err := store.Tokens.Get(context.Background(), "cid"); err != nil || tk.AccessToken != "" || tk.DeviceID != oldDeviceID || acc.deviceID != oldDeviceID {
 		t.Fatalf("cookie 变更后应清 token 并保持运行时 device ID: runtime=%q tk=%+v err=%v", acc.deviceID, tk, err)
-	}
-}
-
-// TestHandleMaxFailures_AlertOnce 连续两次进入 false 终止路径只告警一次。
-func TestHandleMaxFailures_AlertOnce(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
-	acc, _, _, cleanup := newAccountForTest(t)
-	defer cleanup()
-	// 登录态夹具明确返回 Session 过期，保持本用例对真实账号恢复的验证。
-	acc.mtop = &statusMtop{result: &mtop.LoginStatusResult{Status: mtop.LoginStatusSessionExpired}}
-	// h 用于本次流程后续判断的h
-	h := &failingRefreshHandler{}
-	acc.handler = h
-
-	// call 用于本次流程后续判断的call
-	call := func() {
-		acc.mu.Lock()
-		acc.lastMsgReceived = time.Time{}
-		acc.connFailures = MaxConnectionFailures
-		acc.mu.Unlock()
-		_ = acc.handleMaxFailures(context.Background())
-	}
-	call()
-	call()
-	if len(h.alerts) != 2 || h.alerts[0] != AlertLevelWarn || h.alerts[1] != AlertLevelCritical {
-		t.Fatalf("两次 handleMaxFailures 应只发一次掉线 warn 和一次恢复失败 critical，got %+v", h.alerts)
 	}
 }
 
