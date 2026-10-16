@@ -26,6 +26,7 @@ import (
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
+	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	orderapp "xianyu-go/internal/application/orders"
 	settingsapp "xianyu-go/internal/application/settings"
@@ -129,6 +130,8 @@ type Services struct {
 	settings *settingsapp.Service
 	// admin 是管理员用户管理与全局统计应用服务。
 	admin *adminapp.Service
+	// runtimeLogs 是管理员运行日志查询用例。
+	runtimeLogs *logsapp.Service
 }
 
 // LifecycleContext 返回已启动协调器拥有的进程生命周期 Context，供组合层 transport adapter 注册后台 worker。
@@ -339,6 +342,8 @@ type TransportPorts struct {
 	Keywords               *keywordsapp.Service
 	Settings               *settingsapp.Service
 	Admin                  *adminapp.Service
+	// RuntimeLogs 是管理员运行日志查询用例。
+	RuntimeLogs            *logsapp.Service
 }
 
 // TransportPorts 返回已完成构造的只读服务引用；调用方不得在运行期替换任何字段。
@@ -359,7 +364,7 @@ func (services *Services) TransportPorts() TransportPorts {
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
 		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
 		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
-		Keywords: services.keywords, Settings: services.settings, Admin: services.admin,
+		Keywords: services.keywords, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
 	}
 }
 
@@ -530,6 +535,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		keywords:               dependencies.TransportApplications.Keywords,
 		settings:               dependencies.TransportApplications.Settings,
 		admin:                  dependencies.TransportApplications.Admin,
+		runtimeLogs:            dependencies.TransportApplications.RuntimeLogs,
 	}
 	// authentication、authenticationErr 分别是认证应用服务及其构造错误。
 	authentication, authenticationErr := accountapp.NewAuthenticationService(dependencies.AccountDependencies.NewAuthenticationRepository())

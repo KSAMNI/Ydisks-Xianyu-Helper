@@ -1202,6 +1202,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/logs/runtime": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1LogsRuntime */
+        get: operations["getApiV1LogsRuntime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/notifications/accounts/{cid}/bindings": {
         parameters: {
             query?: never;
@@ -3335,6 +3352,45 @@ export interface components {
             unb: string;
             account_id?: string;
             is_new_account?: boolean;
+        };
+        RuntimeLogDetail: {
+            key: string;
+            value: string;
+        };
+        RuntimeLogEntry: {
+            /** Format: int64 */
+            seq: number;
+            time: string;
+            /** @enum {string} */
+            level: "debug" | "info" | "warn" | "error";
+            /** @enum {string} */
+            source: "http" | "mtop" | "automation" | "engine" | "notify" | "ws" | "renewal" | "other";
+            message: string;
+            method?: string;
+            path?: string;
+            status?: number;
+            /** Format: int64 */
+            duration_ms?: number;
+            request_id?: string;
+            api?: string;
+            category?: string;
+            ret?: string;
+            error?: string;
+            account_id?: string;
+            item_id?: string;
+            order_id?: string;
+            chat_id?: string;
+            details?: components["schemas"]["RuntimeLogDetail"][];
+        };
+        RuntimeLogPageResponse: {
+            entries: components["schemas"]["RuntimeLogEntry"][];
+            /** Format: int64 */
+            next_cursor: number;
+            /** Format: int64 */
+            oldest_seq: number;
+            /** Format: int64 */
+            dropped: number;
+            capacity: number;
         };
         ErrorResponse: {
             code: string;
@@ -9759,6 +9815,70 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1LogsRuntime: {
+        parameters: {
+            query?: {
+                /** @description 排他游标；零值表示读取服务端保留的最近 limit 条记录，大于服务端末尾时按零值处理 */
+                since?: number;
+                /** @description 单次返回条数上限，默认 200 */
+                limit?: number;
+                level?: "debug" | "info" | "warn" | "error";
+                source?: string;
+                keyword?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeLogPageResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

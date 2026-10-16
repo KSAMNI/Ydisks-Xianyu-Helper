@@ -125,7 +125,7 @@ func (c *ClientImpl) logInfo(message string, args ...any) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Info(message, args...)
+	logger.Info(message, append([]any{"log_source", "mtop"}, args...)...)
 }
 
 // loggingTransport 用于本次流程后续判断的loggingTransport
@@ -143,11 +143,11 @@ func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	// started 用于本次流程后续判断的started
 	started := time.Now()
-	logger.Debug("MTOP 请求开始", "method", req.Method, "path", req.URL.Path)
+	logger.Debug("MTOP 请求开始", "log_source", "mtop", "method", req.Method, "path", req.URL.Path)
 	// resp、err 用于本次流程后续判断的resp、err
 	resp, err := t.base.RoundTrip(req)
 	// attrs 用于本次流程后续判断的attrs
-	attrs := []any{"method", req.Method, "path", req.URL.Path, "duration", time.Since(started).Round(time.Millisecond)}
+	attrs := []any{"log_source", "mtop", "method", req.Method, "path", req.URL.Path, "duration", time.Since(started).Round(time.Millisecond)}
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			logger.Debug("MTOP 请求取消", append(attrs, "err", err)...)
@@ -429,7 +429,7 @@ func (c *ClientImpl) mtopResponseFailureWithCause(api string, status int, ret []
 	if logger == nil {
 		logger = slog.Default()
 	}
-	logger.Error("MTOP 响应失败", "api", api, "category", string(kind), "http_status", status, "ret", formatMTopRet(ret), "detail", sanitizeMTopText(detail))
+	logger.Error("MTOP 响应失败", "log_source", "mtop", "api", api, "category", string(kind), "http_status", status, "ret", formatMTopRet(ret), "detail", sanitizeMTopText(detail))
 	return failure
 }
 

@@ -119,6 +119,8 @@ func Open(ctx context.Context, cfg Config, logger *slog.Logger) (*Conn, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// 统一附加子系统标记，使运行日志可以按来源区分 WebSocket 连接诊断。
+	logger = logger.With("subsys", "ws")
 	logger.Info("正在连接闲鱼 WebSocket", "url", WSURL)
 	return openBatch(ctx, WSURL, cfg, logger)
 }

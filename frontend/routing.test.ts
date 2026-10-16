@@ -226,4 +226,18 @@ describe('frontend navigation routing', () => {
     expect(accounts).toContain('账号已触发平台风控，需要完成人脸识别');
     expect(accounts).not.toContain('result.verification_url');
   } /* 测试回调断言已登录应用的路由、访问控制或延迟加载契约。 */);
+
+  test('runtime log entry is gated to administrators', /* 当前回调断言运行日志入口与后端管理员权限保持一致。 */ () => {
+    const app = readFrontendFile('app/router/AppRouter.tsx'); /* app 表示认证后路由组合器源码。 */
+    const shell = readFrontendFile('app/shell/AuthenticatedShell.tsx'); /* shell 表示认证后应用壳源码。 */
+    const sidebar = readFrontendFile('shared/ui/Sidebar.tsx'); /* sidebar 表示侧边栏源码。 */
+    const routes = readFrontendFile('app/router/routes.ts'); /* routes 表示业务路由表源码。 */
+
+    expect(routes).toContain("'/app/logs': 'logs'");
+    expect(app).toContain("activeRoute === 'logs'");
+    expect(app).toContain("route === 'logs'");
+    expect(shell).toContain("case 'logs': return isAdmin ? <RuntimeLogs /> : <Dashboard />;");
+    expect(sidebar).toContain("{ id: 'logs', icon: ScrollText, label: '运行日志' }");
+    expect(sidebar).toContain("...(isAdmin ? [{ id: 'settings'");
+  } /* 测试回调断言运行日志页面只对管理员开放。 */);
 } /* 测试套件回调汇总路由装配与访问边界契约。 */);

@@ -217,6 +217,11 @@ func (s *Server) authMiddleware(h http.Handler) http.Handler {
 // requestLogger 记录请求完成状态、耗时和 chi request_id。
 func (s *Server) requestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 运行日志查询接口自身的轮询请求不写入日志，避免前端刷新日志时产生自我刷屏。
+		if r.URL.Path == runtimeLogsPath {
+			next.ServeHTTP(w, r)
+			return
+		}
 		// start 用于本次流程后续判断的开始
 		start := time.Now()
 		// ww 用于本次流程后续判断的ww
@@ -244,6 +249,7 @@ func (s *Server) requestLogger(next http.Handler) http.Handler {
 			slog.String("request_id", middleware.GetReqID(r.Context())),
 			slog.String("remote", r.RemoteAddr),
 			slog.Bool("legacy_api", isLegacyAPIRequest(r.Method, r.URL.Path)),
+			slog.String("log_source", "http"),
 		)
 	})
 }

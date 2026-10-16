@@ -31,7 +31,8 @@ func NewLogger(w io.Writer, format string) *slog.Logger {
 	} else {
 		handler = slog.NewTextHandler(w, opts)
 	}
-	return slog.New(newRedactingHandler(handler))
+	// 脱敏处理器位于缓冲处理器之外，保证写入运行时缓冲的属性已完成凭证清理。
+	return slog.New(newRedactingHandler(&runtimeBufferHandler{next: handler}))
 }
 
 // redactingHandler 在底层 slog 处理器前统一移除日志中的平台凭证和诊断秘密。

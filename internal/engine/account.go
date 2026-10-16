@@ -366,7 +366,7 @@ func New(cfg Config) *Account {
 			},
 			pendingRenewal: pendingRenewalCoordinator{},
 		},
-		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger)),
+		accountDependencies: newAccountDependencies(cfg.Store, mtopClient, renewer, wsDialer, cfg.Handler, logger.With("account", cfg.CookieID, "subsys", "engine"), nil, newWSRecorder(cfg.Store, cfg.CookieID, logger.With("account", cfg.CookieID, "subsys", "ws"))),
 	}
 	// echoTracker 保存当前账号自动化出站消息的回显等待项；其生命周期与账号 facade 一致。
 	echoTracker := newOutgoingEchoTracker()

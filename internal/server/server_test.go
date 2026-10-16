@@ -21,6 +21,7 @@ import (
 	"xianyu-go/internal/composition"
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/engine"
+	"xianyu-go/internal/logging"
 	"xianyu-go/internal/notify"
 	"xianyu-go/internal/xianyu/mtop"
 )
@@ -86,6 +87,7 @@ func newTestServer(t *testing.T) (*Server, *db.Store, func()) { // newTestServer
 		AdminSettingsDependencies: adminSettingsDependencies,
 		AccountTaskRunner:         adapter.NewAccountTaskRunner(nil),
 		ModelClient:               adapter.NewAIModelClient(),
+		RuntimeLogSource:          adapter.NewRuntimeLogSource(logging.CurrentRuntimeBuffer()),
 	})
 	if transportApplicationsErr != nil {
 		t.Fatalf("NewTransportApplicationServices: %v", transportApplicationsErr)
@@ -193,6 +195,7 @@ func newUninitializedTestServer(t *testing.T) (*Server, *db.Store, func()) {
 		AdminSettingsDependencies: adminSettingsDependencies,
 		AccountTaskRunner:         adapter.NewAccountTaskRunner(nil),
 		ModelClient:               adapter.NewAIModelClient(),
+		RuntimeLogSource:          adapter.NewRuntimeLogSource(logging.CurrentRuntimeBuffer()),
 	})
 	if transportApplicationsErr != nil {
 		t.Fatalf("NewTransportApplicationServices: %v", transportApplicationsErr)
@@ -372,7 +375,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, Cards: ports.Cards,
 		DeliveryTemplates:      ports.DeliveryTemplates,
 		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, Keywords: ports.Keywords,
-		Settings: ports.Settings, Admin: ports.Admin,
+		Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs,
 	})}
 }
 

@@ -91,11 +91,12 @@ func NewScheduler(store *db.Store, starter AccountStarter, refresher PasswordRef
 	if len(notifiers) > 0 {
 		notifier = notifiers[0]
 	}
+	// 注入的 logger 统一附加子系统标记，使运行日志可以按来源区分续期任务诊断。
 	return &Scheduler{
 		store:     store,
 		starter:   starter,
 		refresher: refresher,
-		logger:    logger,
+		logger:    logger.With("subsys", "renewal"),
 		mtop:      mtop.NewClient(),
 		api:       apirenew.Service{},
 		cooldown:  GlobalCooldown,

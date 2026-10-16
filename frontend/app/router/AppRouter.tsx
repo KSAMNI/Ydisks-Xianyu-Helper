@@ -26,7 +26,7 @@ export const AppRouter: React.FC = () => {
 
   /** effect 在权限变化时将设置页改写为仪表盘，防止地址栏绕过客户端展示限制。 */
   useEffect(/* authorizationEffect 负责将失效的管理员页面安全回退。 */ () => {
-    if (isLoggedIn && !isAdmin && activeRoute === 'settings') {
+    if (isLoggedIn && !isAdmin && (activeRoute === 'settings' || activeRoute === 'logs')) {
       window.history.replaceState({}, '', pathByRoute.dashboard);
       setActiveRoute('dashboard');
     }
@@ -35,7 +35,7 @@ export const AppRouter: React.FC = () => {
   /** navigate 由侧边栏用户操作触发，写入规范 URL 并更新当前路由。 */
   const navigate = (route: AppRoute): void => {
     // permittedRoute 是应用当前权限允许的最终路由。
-    const permittedRoute = route === 'settings' && !isAdmin ? 'dashboard' : route;
+    const permittedRoute = (route === 'settings' || route === 'logs') && !isAdmin ? 'dashboard' : route;
     // nextPath 是最终路由对应的规范浏览器地址。
     const nextPath = pathByRoute[permittedRoute];
     if (nextPath !== window.location.pathname) window.history.pushState({}, '', nextPath);

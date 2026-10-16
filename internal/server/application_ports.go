@@ -15,6 +15,7 @@ import (
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	orderapp "xianyu-go/internal/application/orders"
 	settingsapp "xianyu-go/internal/application/settings"
@@ -378,6 +379,12 @@ type AdminPort interface {
 	Stats(context.Context) (adminapp.Stats, error)
 }
 
+// RuntimeLogsPort 定义管理员运行日志查询用例；它只读取进程内已脱敏日志，不接触数据库。
+type RuntimeLogsPort interface {
+	// Query 按条件读取运行日志；无效等级过滤返回 logsapp.ErrInvalidLevel。
+	Query(logsapp.Query) (logsapp.Page, error)
+}
+
 // ApplicationPorts 是构造期注入 HTTP transport 的不可变应用 Port 集合。
 // 它不包含 adapter、数据库、平台 client、账号 Manager 或 worker 生命周期拥有权。
 type ApplicationPorts struct {
@@ -459,6 +466,8 @@ type ApplicationPorts struct {
 	settings SettingsPort
 	// admin 是管理员用户与统计用例。
 	admin AdminPort
+	// runtimeLogs 是管理员运行日志查询用例。
+	runtimeLogs RuntimeLogsPort
 }
 
 // ApplicationPortsInput 是组合根向 HTTP transport 交付的完整应用 Port 快照。
@@ -497,6 +506,8 @@ type ApplicationPortsInput struct {
 	AutomationRules             AutomationRulesPort
 	DeliveryTemplates           DeliveryTemplatesPort
 	Cards                       CardsPort
+	// RuntimeLogs 是管理员运行日志查询用例。
+	RuntimeLogs                 RuntimeLogsPort
 	APIRequestTester            APIRequestTesterPort
 	PublishAutomationRules      PublishAutomationRulesPort
 	DefaultReplies              DefaultRepliesPort
@@ -521,7 +532,7 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
 		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
 		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
-		keywords: input.Keywords, settings: input.Settings, admin: input.Admin,
+		keywords: input.Keywords, settings: input.Settings, admin: input.Admin, runtimeLogs: input.RuntimeLogs,
 	}
 }
 
@@ -550,6 +561,7 @@ func (ports *ApplicationPorts) validate() error {
 		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues},
 		{"automation_rules", ports.automationRules}, {"cards", ports.cards}, {"publish_automation_rules", ports.publishAutomationRules},
 		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
+		{"runtime_logs", ports.runtimeLogs},
 	}
 	// requiredPort 是当前必须在 Server 构造前绑定的应用 Port 名称。
 	for _, requiredPort := range required {

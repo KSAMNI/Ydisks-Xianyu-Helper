@@ -4399,6 +4399,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/logs/runtime":
+    get:
+      operationId: getApiV1LogsRuntime
+      summary: getApiV1LogsRuntime
+      parameters:
+          - name: since
+            in: query
+            required: false
+            description: 排他游标；零值表示读取服务端保留的最近 limit 条记录，大于服务端末尾时按零值处理
+            schema:
+              type: integer
+              format: int64
+              minimum: 0
+          - name: limit
+            in: query
+            required: false
+            description: 单次返回条数上限，默认 200
+            schema:
+              type: integer
+              minimum: 1
+              maximum: 500
+          - name: level
+            in: query
+            required: false
+            schema:
+              type: string
+              enum: [debug, info, warn, error]
+          - name: source
+            in: query
+            required: false
+            schema:
+              type: string
+          - name: keyword
+            in: query
+            required: false
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeLogPageResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/notifications/accounts/{cid}/bindings":
     get:
       operationId: getApiV1NotificationsAccountsBycidBindings
@@ -9073,6 +9142,85 @@ components:
           type: string
         is_new_account:
           type: boolean
+    RuntimeLogDetail:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+    RuntimeLogEntry:
+      type: object
+      required: [seq, time, level, source, message]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          minimum: 0
+        time:
+          type: string
+        level:
+          type: string
+          enum: [debug, info, warn, error]
+        source:
+          type: string
+          enum: [http, mtop, automation, engine, notify, ws, renewal, other]
+        message:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        status:
+          type: integer
+        duration_ms:
+          type: integer
+          format: int64
+        request_id:
+          type: string
+        api:
+          type: string
+        category:
+          type: string
+        ret:
+          type: string
+        error:
+          type: string
+        account_id:
+          type: string
+        item_id:
+          type: string
+        order_id:
+          type: string
+        chat_id:
+          type: string
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeLogDetail'
+    RuntimeLogPageResponse:
+      type: object
+      required: [entries, next_cursor, oldest_seq, dropped, capacity]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeLogEntry'
+        next_cursor:
+          type: integer
+          format: int64
+          minimum: 0
+        oldest_seq:
+          type: integer
+          format: int64
+          minimum: 0
+        dropped:
+          type: integer
+          format: int64
+          minimum: 0
+        capacity:
+          type: integer
     ErrorResponse:
       type: object
       required: [code, message]
