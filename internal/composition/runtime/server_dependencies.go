@@ -125,9 +125,9 @@ func (transport orderRefreshJobsTransport) CancelForUser(ctx context.Context, us
 	return transport.service.CancelForUser(ctx, userID, jobID)
 }
 
-// RefreshSingle 转发单订单刷新用例。
-func (transport ordersTransport) RefreshSingle(ctx context.Context, userID int64, orderID string) (orderapp.SingleRefreshResult, error) {
-	return transport.services.Refresh.RefreshSingle(ctx, userID, orderID)
+// RefreshSingle 转发单订单刷新用例；forced 由 HTTP 层按用户明确确认传递，应用层据此跳过本地账号间隔。
+func (transport ordersTransport) RefreshSingle(ctx context.Context, userID int64, orderID string, forced bool) (orderapp.SingleRefreshResult, error) {
+	return transport.services.Refresh.RefreshSingle(ctx, userID, orderID, forced)
 }
 
 // Refresh 转发批量订单刷新用例。

@@ -3120,6 +3120,10 @@ export interface components {
         OrderSingleRefreshResponse: {
             success: boolean;
             message: string;
+            /** @description 本次刷新因账号级限流真实等待的毫秒数；零值表示未等待，前端据此说明等待原因。 */
+            throttle_wait_ms?: number;
+            /** @description 本次刷新是否按用户确认的强制获取跳过了本地账号刷新间隔。 */
+            forced?: boolean;
             order: components["schemas"]["OrderRefreshDetail"];
         };
         OrderRefreshResult: {
@@ -10859,7 +10863,10 @@ export interface operations {
     };
     postApiV1OrdersByorder_idRefresh: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description 用户在界面上确认强制获取后传 true，本次跳过本地账号刷新间隔；省略或 false 时按账号限流排队。 */
+                force?: boolean;
+            };
             header?: never;
             path: {
                 order_id: string;
@@ -10906,6 +10913,15 @@ export interface operations {
             };
             /** @description 统一错误响应 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 平台要求风控验证或访问频率受限 */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

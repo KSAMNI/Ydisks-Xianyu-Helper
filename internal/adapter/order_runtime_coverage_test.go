@@ -58,7 +58,7 @@ func TestOrderRuntimeNilInfrastructurePaths(t *testing.T) {
 		t.Fatal("订单凭证可用性判断异常")
 	}
 	// _, detailErr 保存缺少平台详情接口时的刷新错误。
-	if _, detailErr := runtime.FetchOrderDetail(ctx, validDetail, "order"); detailErr == nil {
+	if _, detailErr := runtime.FetchOrderDetail(ctx, validDetail, "order", orderapp.RefreshDetailModeFresh); detailErr == nil {
 		t.Fatal("缺少详情接口应返回错误")
 	}
 	// _, soldErr 保存缺少平台订单列表接口时的刷新错误。
@@ -107,7 +107,7 @@ func TestOrderRuntimeAdapterDelegatesNilRuntimePaths(t *testing.T) {
 		t.Fatal("空订单适配器不应恢复会话")
 	}
 	// _, detailErr 保存空运行时详情刷新错误。
-	if _, detailErr := adapter.FetchOrderDetail(ctx, nil, "order"); detailErr == nil {
+	if _, detailErr := adapter.FetchOrderDetail(ctx, nil, "order", orderapp.RefreshDetailModeFresh); detailErr == nil {
 		t.Fatal("空订单适配器应返回详情刷新错误")
 	}
 	// _, soldErr 保存空运行时订单列表刷新错误。

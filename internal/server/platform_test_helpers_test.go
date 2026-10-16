@@ -74,9 +74,9 @@ func (transport testOrderRefreshJobsTransport) CancelForUser(ctx context.Context
 	return transport.service.CancelForUser(ctx, userID, jobID)
 }
 
-// RefreshSingle 转发测试的单订单刷新用例。
-func (transport testOrdersTransport) RefreshSingle(ctx context.Context, userID int64, orderID string) (orderapp.SingleRefreshResult, error) {
-	return transport.services.Refresh.RefreshSingle(ctx, userID, orderID)
+// RefreshSingle 转发测试的单订单刷新用例；forced 由 HTTP 层按 force 参数解析后传入应用服务。
+func (transport testOrdersTransport) RefreshSingle(ctx context.Context, userID int64, orderID string, forced bool) (orderapp.SingleRefreshResult, error) {
+	return transport.services.Refresh.RefreshSingle(ctx, userID, orderID, forced)
 }
 
 // Refresh 转发测试的批量订单刷新用例。

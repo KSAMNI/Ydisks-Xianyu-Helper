@@ -169,12 +169,17 @@ describe('OrderList 页面组合行为', /* 当前回调验证订单筛选、编
     expect(orderListMocks.loadOrders).toHaveBeenCalled();
 
     fireEvent.click(screen.getByTitle('同步订单'));
-    await waitFor(/* singleSyncAssertion 等待单笔订单同步 API 完成。 */ () => expect(orderListMocks.syncSingleOrder).toHaveBeenCalledWith('order-1'));
+    await waitFor(/* singleSyncAssertion 等待单笔订单同步 API 完成。 */ () => expect(orderListMocks.syncSingleOrder).toHaveBeenCalledWith('order-1', { force: false }));
     expect(orderListMocks.loadOrders).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByTitle('强制获取详情（跳过账号刷新间隔）'));
+    await waitFor(/* forceFetchAssertion 等待强制获取详情 API 完成。 */ () => expect(orderListMocks.syncSingleOrder).toHaveBeenCalledWith('order-1', { force: true }));
+    expect(orderListMocks.loadOrders).toHaveBeenCalledTimes(3);
 
     fireEvent.click(screen.getByTitle('删除订单'));
     await waitFor(/* deleteAssertion 等待订单删除 API 完成。 */ () => expect(orderListMocks.deleteOrder).toHaveBeenCalledWith('order-1'));
-    expect(orderListMocks.loadOrders).toHaveBeenCalledTimes(2);
+    // 单笔同步与强制获取各刷新一次列表；删除当前页唯一订单时改为回退页码而不重新加载。
+    expect(orderListMocks.loadOrders).toHaveBeenCalledTimes(3);
     expect(orderListMocks.setPage).toHaveBeenCalledWith(expect.any(Function));
   });
 

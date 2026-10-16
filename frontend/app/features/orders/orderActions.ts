@@ -1,7 +1,7 @@
 import { useCallback,useEffect,useRef,useState,type Dispatch,type SetStateAction } from 'react';
 import type { Order } from './api';
-import { deleteOrder,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './api';
-import { formatOrderSyncResult } from './syncResult';
+import { deleteOrder,manualShipOrder,orderSyncErrorMessage,syncOrders,syncSingleOrder,updateOrder } from './api';
+import { formatOrderSyncResult,formatSingleSyncResult } from './syncResult';
 
 // OrderShipMode 表示订单发货操作的两种业务模式。
 export type OrderShipMode = 'status_only' | 'full_delivery';
@@ -50,8 +50,12 @@ export interface OrderActionsState {
   shipLoading: boolean;
   // shipResult 保存最近一次发货操作结果。
   shipResult: OrderShipResult | null;
-  // syncingOrderId 保存当前正在单笔同步的订单号。
+  // syncingOrderId 保存当前正在单笔同步或强制获取的订单号。
   syncingOrderId: string | null;
+  // syncNotice 保存单笔同步与强制获取的用户可见提示；等待账号刷新间隔时也会写入解释文案。
+  syncNotice: string | null;
+  // setSyncNotice 允许页面在用户确认后清除提示条，不改变正在执行的请求。
+  setSyncNotice: Dispatch<SetStateAction<string | null>>;
   // deletingOrderId 保存当前正在删除的订单号。
   deletingOrderId: string | null;
   // handleSync 同步当前筛选条件下的订单。
@@ -68,8 +72,10 @@ export interface OrderActionsState {
   handleSaveEdit: () => Promise<void>;
   // updateEditingOrder 更新当前订单编辑草稿的局部字段。
   updateEditingOrder: (patch: Partial<Order>) => void;
-  // handleSyncSingle 同步指定的单笔订单。
-  handleSyncSingle: (orderId: string) => Promise<void>;
+  // handleSyncSingle 同步指定的单笔订单；forced 为真时按用户确认跳过本地账号刷新间隔。
+  handleSyncSingle: (orderId: string, forced?: boolean) => Promise<void>;
+  // handleForceFetchDetail 在用户确认后强制获取指定订单的最新平台详情。
+  handleForceFetchDetail: (orderId: string) => Promise<void>;
   // handleDelete 删除指定订单并处理分页回退。
   handleDelete: (orderId: string) => Promise<void>;
   // closeDetailModal 关闭订单详情弹窗。
@@ -80,8 +86,8 @@ export interface OrderActionsState {
   closeShipModal: () => void;
 }
 
-// orderErrorMessage 将未知异常转换为稳定的订单动作提示。
-const orderErrorMessage = (error: unknown, fallback: string): string => error instanceof Error ? error.message : fallback;
+// orderErrorMessage 将未知异常转换为稳定的订单动作提示；统一错误码的语义由 feature API adapter 解释。
+const orderErrorMessage = (error: unknown, fallback: string): string => orderSyncErrorMessage(error, fallback);
 
 // useOrderActions 集中管理订单同步、发货、编辑、删除和弹窗生命周期。
 export const useOrderActions = ({ orders, page, accountFilter, filter, searchText = '', setPage, loadOrders }: OrderActionsOptions): OrderActionsState => {
@@ -100,9 +106,12 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, searchTex
   // shipLoading 表示发货请求是否正在执行。
   const [shipLoading, setShipLoading] = useState(false);
   // shipResult 保存最近一次发货操作结果。
+  // shipResult 保存最近一次发货操作结果。
   const [shipResult, setShipResult] = useState<OrderShipResult | null>(null);
-  // syncingOrderId 保存当前正在单笔同步的订单号。
+  // syncingOrderId 保存当前正在单笔同步或强制获取的订单号。
   const [syncingOrderId, setSyncingOrderId] = useState<string | null>(null);
+  // syncNotice 保存单笔同步或强制获取的结果与等待说明，让用户看到限流而不是静默等待。
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   // deletingOrderId 保存当前正在删除的订单号。
   const [deletingOrderId, setDeletingOrderId] = useState<string | null>(null);
   // syncGeneration 区分连续发起的批量刷新，旧任务完成后不得覆盖最新一次用户操作的列表和提示。
@@ -235,24 +244,33 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, searchTex
     }
   }, [editingOrder, loadOrders]);
 
-  // handleSyncSingle 同步指定的单笔订单并刷新列表。
-  const handleSyncSingle = useCallback(/* singleSyncAction 执行单笔订单同步。 */ async (orderId: string) => {
+  // handleSyncSingle 同步或强制获取指定订单的最新详情并刷新列表。
+  // forced 为真表示用户在界面上确认跳过本地账号刷新间隔；请求发出前先提示等待原因，避免按钮转圈期间没有任何说明。
+  const handleSyncSingle = useCallback(/* singleSyncAction 执行单笔订单同步或强制获取。 */ async (orderId: string, forced = false) => {
     setSyncingOrderId(orderId);
+    setSyncNotice(forced ? '正在强制获取最新订单详情（跳过本地账号刷新间隔）…' : '正在同步订单详情；若该账号刚刷新过，需等待账号刷新间隔…');
     try {
-      // result 保存单笔订单同步接口响应。
-      const result = await syncSingleOrder(orderId);
+      // result 保存单笔订单同步接口响应，含服务端上报的限流等待时长。
+      const result = await syncSingleOrder(orderId, { force: forced });
+      setSyncNotice(formatSingleSyncResult(result, forced ? 'force' : 'sync'));
       if (result.success) {
         await loadOrders();
-      } else {
-        alert(result.message || '同步失败');
       }
-    } catch (/* error 表示单笔订单同步请求异常。 */ error: unknown) {
+    } catch (/* error 表示单笔订单同步请求异常；平台风控会以 429 错误码返回。 */ error: unknown) {
       console.error('同步订单失败:', error);
-      alert(orderErrorMessage(error, '同步失败，请重试'));
+      // message 优先使用服务端统一错误说明，保留“平台要求完成风控验证”等可操作信息。
+      const message = orderSyncErrorMessage(error, '同步失败，请重试');
+      setSyncNotice(message);
     } finally {
       setSyncingOrderId(null);
     }
   }, [loadOrders]);
+
+  // handleForceFetchDetail 在用户明确确认后强制获取订单详情；确认提示说明该操作会跳过本地限流并提高平台风控概率。
+  const handleForceFetchDetail = useCallback(/* forceFetchAction 经用户确认后强制获取订单最新详情。 */ async (orderId: string) => {
+    if (!confirm('强制获取会跳过本地账号刷新间隔，立即访问闲鱼平台。\n频繁使用可能触发平台风控，是否继续？')) return;
+    await handleSyncSingle(orderId, true);
+  }, [handleSyncSingle]);
 
   // handleDelete 删除指定订单并在当前页为空时回退页码。
   const handleDelete = useCallback(/* deleteAction 删除订单并处理分页回退。 */ async (orderId: string) => {
@@ -299,6 +317,8 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, searchTex
     shipLoading,
     shipResult,
     syncingOrderId,
+    syncNotice,
+    setSyncNotice,
     deletingOrderId,
     handleSync,
     handleShip,
@@ -308,6 +328,7 @@ export const useOrderActions = ({ orders, page, accountFilter, filter, searchTex
     handleSaveEdit,
     updateEditingOrder,
     handleSyncSingle,
+    handleForceFetchDetail,
     handleDelete,
     closeDetailModal,
     closeEditModal,

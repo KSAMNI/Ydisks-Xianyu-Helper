@@ -39,6 +39,27 @@ type orderDetailSuccess struct {
 	expiresAt time.Time
 }
 
+// OrderDetailFetchMode 表示管理端或自动化路径请求订单详情时可选择的复用与限流策略。
+type OrderDetailFetchMode uint8
+
+const (
+	// OrderDetailFetchReuse 复用尚未过期的成功快照并遵守账号级限流间隔，适用于可接受旧快照的自动化路径。
+	OrderDetailFetchReuse OrderDetailFetchMode = iota
+	// OrderDetailFetchFresh 跳过成功快照复用并强制访问平台，但仍遵守账号级限流间隔，适用于管理端普通刷新。
+	OrderDetailFetchFresh
+	// OrderDetailFetchForced 由用户在界面上确认后触发，跳过成功快照复用和账号级限流间隔，仍保留同订单并发合并。
+	OrderDetailFetchForced
+)
+
+// OrderDetailFetchOutcome 是一次订单详情请求的终态与可观测限流信息，供上层生成准确的用户提示。
+type OrderDetailFetchOutcome struct {
+	// Result 保存平台成功解析的订单详情；平台失败或空响应时为空。
+	Result *mtop.OrderDetailResult
+	// ThrottleWait 是本次调用因账号级限流真实等待的时长，零值表示未等待；被合并到在途请求的调用同样为零。
+	ThrottleWait time.Duration
+	// Forced 表示本次调用是否按强制模式跳过了账号级限流；它只描述本次调用，不描述被复用的在途请求。
+	Forced bool
+}
 // OrderDetailCoordinator 统一协调订单详情 MTOP 请求。
 // mu 保护 nextAllowed、requests 与 successes；锁内只管理内存状态，绝不执行定时等待或平台 I/O。
 // 同一账号按最短间隔限流，同一账号同一订单的并发请求和短暂成功结果均可复用。
@@ -118,45 +139,37 @@ func newOrderDetailCoordinatorWithLogger(logger *slog.Logger, minGap, maxJitter 
 	}
 }
 
-// Fetch 在账号级限流后调用订单详情客户端；同一账号、同一订单的并发调用等待首个调用完成并复用其结果。
-// 尚未过期的成功结果会在短时窗口内直接复用，适用于重复 WS 投递等可接受旧快照的调用方。
-// ctx 仅控制当前等待者和首个调用的平台请求；cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
-func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
-	return c.fetch(ctx, accountID, orderID, cookies, fetcher, true)
-}
-
-// FetchFresh 在账号级限流后强制访问平台并跳过成功结果复用窗口，供管理端用户主动刷新单笔订单使用；
-// 否则手动刷新会被尚未过期的旧快照静默满足，界面看不到任何变化。
-// 并发合并、账号限流和成功结果写入与 Fetch 完全一致，随后到达的自动化调用仍可复用本次新结果。
-// ctx、accountID、orderID、cookies、fetcher 的语义同 Fetch。
-func (c *OrderDetailCoordinator) FetchFresh(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
-	return c.fetch(ctx, accountID, orderID, cookies, fetcher, false)
-}
-
-// fetch 是 Fetch 与 FetchFresh 的唯一实现；reuseSuccess 为真时允许复用尚未过期的成功结果，为假时强制访问平台。
-// accountID、orderID、cookies、fetcher 语义与 Fetch 相同；ctx 仅控制当前等待者和首个调用的平台请求，
-// cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
-func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop, reuseSuccess bool) (*mtop.OrderDetailResult, error) {
+// FetchWithMode 按 mode 执行一次订单详情请求，并返回可直接用于用户提示的限流等待信息。
+// OrderDetailFetchReuse 允许复用短时成功快照；OrderDetailFetchFresh 跳过快照复用但保留账号级限流；
+// OrderDetailFetchForced 由用户在界面上明确确认后触发，跳过快照复用与账号级限流，仍保留同订单并发合并。
+// 成功结果始终在完成后写入短时复用窗口，因此随后到达的自动化调用仍可复用本次结果。
+// ctx 只控制当前等待者和首个调用的平台请求；cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
+func (c *OrderDetailCoordinator) FetchWithMode(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop, mode OrderDetailFetchMode) (OrderDetailFetchOutcome, error) {
 	if c == nil {
-		return nil, errors.New("订单详情协调器未初始化")
+		return OrderDetailFetchOutcome{}, errors.New("订单详情协调器未初始化")
 	}
 	if fetcher == nil {
-		return nil, errors.New("订单详情 MTOP 客户端未配置")
+		return OrderDetailFetchOutcome{}, errors.New("订单详情 MTOP 客户端未配置")
 	}
 	// normalizedAccount、normalizedOrder 是去除空白后的非敏感路由标识；为空时禁止建立会互相污染的共享键。
 	normalizedAccount, normalizedOrder := strings.TrimSpace(accountID), strings.TrimSpace(orderID)
 	if normalizedAccount == "" || normalizedOrder == "" {
-		return nil, errors.New("订单详情请求缺少账号或订单标识")
+		return OrderDetailFetchOutcome{}, errors.New("订单详情请求缺少账号或订单标识")
 	}
 	// key 唯一标识一个账号对一笔订单的在途请求，分隔符不能出现在已规范化的业务标识中。
 	key := normalizedAccount + "\x00" + normalizedOrder
+	// reuseSuccess、skipGap 把获取模式转换为两个独立开关，避免后续分支重复解释模式语义。
+	// reuseSuccess 表示本次是否允许复用尚未过期的成功快照；只有自动化路径需要旧快照。
+	reuseSuccess := mode == OrderDetailFetchReuse
+	// skipGap 表示本次是否跳过账号级限流间隔；只有用户在界面上确认的强制获取会跳过。
+	skipGap := mode == OrderDetailFetchForced
 	c.mu.Lock()
 	// cached、cachedOK 保存尚未过期的成功结果；错误不进入缓存，确保凭证恢复可立即重新发起受限请求。
 	if cached, cachedOK := c.successes[key]; cachedOK {
 		if time.Now().Before(cached.expiresAt) && reuseSuccess {
 			c.mu.Unlock()
 			c.logger.Debug("复用短时有效的订单详情结果", "account", normalizedAccount, "order_id", normalizedOrder)
-			return cloneOrderDetailResult(cached.result), nil
+			return OrderDetailFetchOutcome{Result: cloneOrderDetailResult(cached.result)}, nil
 		}
 		// 过期结果或被强制取新时都必须移除旧快照，使本次调用与随后到达的并发调用只等待新的平台结果。
 		delete(c.successes, key)
@@ -167,9 +180,10 @@ func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, 
 		c.logger.Debug("订单详情请求已在执行，等待复用结果", "account", normalizedAccount, "order_id", normalizedOrder)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return OrderDetailFetchOutcome{}, ctx.Err()
 		case <-existing.done:
-			return cloneOrderDetailResult(existing.result), existing.err
+			// 被合并的调用方没有跳过限流，也没有自己等待限流时隙，因此等待时长和强制标记都保持零值。
+			return OrderDetailFetchOutcome{Result: cloneOrderDetailResult(existing.result)}, existing.err
 		}
 	}
 	// request 是当前调用拥有的唯一平台访问权，完成时负责删除并关闭 done。
@@ -179,8 +193,8 @@ func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, 
 
 	// startedAt 记录本次平台请求从协调器开始执行的时刻，用于输出可检索的耗时日志。
 	startedAt := time.Now()
-	// result、callErr 保存限流后唯一一次平台访问的结果；所有等待者通过 request 读取同一终态。
-	result, callErr := c.fetchAfterAccountGap(ctx, normalizedAccount, normalizedOrder, cookies, fetcher)
+	// result、waited、callErr 保存限流后唯一一次平台访问的结果、限流等待时长和错误；所有等待者通过 request 读取同一终态。
+	result, waited, callErr := c.fetchAfterAccountGap(ctx, normalizedAccount, normalizedOrder, cookies, fetcher, skipGap)
 	// elapsed 表示本次等待限流和平台访问的总耗时。
 	elapsed := time.Since(startedAt).Round(time.Millisecond)
 	c.mu.Lock()
@@ -196,25 +210,31 @@ func (c *OrderDetailCoordinator) fetch(ctx context.Context, accountID, orderID, 
 	if callErr != nil {
 		c.logger.Warn("订单详情请求失败", "account", normalizedAccount, "order_id", normalizedOrder, "elapsed", elapsed, "err", callErr)
 	} else {
-		c.logger.Debug("订单详情请求完成", "account", normalizedAccount, "order_id", normalizedOrder, "elapsed", elapsed)
+		c.logger.Debug("订单详情请求完成", "account", normalizedAccount, "order_id", normalizedOrder, "elapsed", elapsed, "throttle_wait", waited.Round(time.Millisecond), "forced", skipGap)
 	}
-	return result, callErr
+	return OrderDetailFetchOutcome{Result: result, ThrottleWait: waited, Forced: skipGap}, callErr
 }
 
 // fetchAfterAccountGap 等待账号的下一个可用时隙后执行一次平台请求；请求起点而非完成时间决定下一次允许时间。
-func (c *OrderDetailCoordinator) fetchAfterAccountGap(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+// skipGap 为真表示调用方已在界面上确认强制获取，本次不再等待既有间隔，但仍占用该账号的下一时隙。
+// 返回值依次是平台详情、本次因账号级限流真实等待的累计时长和平台错误。
+func (c *OrderDetailCoordinator) fetchAfterAccountGap(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop, skipGap bool) (*mtop.OrderDetailResult, time.Duration, error) {
+	// waited 累计本次调用因账号级限流真实睡过的时长；跳过限流时保持零值，用于向用户解释等待原因。
+	waited := time.Duration(0)
 	for {
 		// now、allowedAt 分别表示当前观察时间和该账号最近一次请求设定的下一时隙。
 		now := time.Now()
 		c.mu.Lock()
 		// allowedAt 是当前账号因先前请求而受到的下一次可访问平台时间。
 		allowedAt := c.nextAllowed[accountID]
-		if !now.Before(allowedAt) {
+		if skipGap || !now.Before(allowedAt) {
 			// nextGap 是基础间隔加受控随机抖动，保障同账号不会形成固定的一秒重试节奏。
 			nextGap := c.minGap + c.jitter()
 			c.nextAllowed[accountID] = now.Add(nextGap)
 			c.mu.Unlock()
-			return fetcher.FetchOrderDetail(ctx, cookies, orderID)
+			// result、callErr 保存本次唯一一次平台访问的结果和错误；限流等待时长不受平台响应耗时影响。
+			result, callErr := fetcher.FetchOrderDetail(ctx, cookies, orderID)
+			return result, waited, callErr
 		}
 		c.mu.Unlock()
 		// waitFor 表示当前账号距离下一次允许发起订单详情请求还需等待的时长。
@@ -230,8 +250,10 @@ func (c *OrderDetailCoordinator) fetchAfterAccountGap(ctx context.Context, accou
 				default:
 				}
 			}
-			return nil, ctx.Err()
+			return nil, waited, ctx.Err()
 		case <-timer.C:
+			// 只有真实睡过的限流时间才计入提示时长，避免把平台响应耗时算作限流等待。
+			waited += waitFor
 		}
 	}
 }

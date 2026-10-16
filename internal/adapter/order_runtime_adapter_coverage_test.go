@@ -38,7 +38,7 @@ func TestOrderRuntimeAdapterNilRuntimePaths(t *testing.T) {
 		t.Fatal("nil runtime recovery should report false")
 	}
 	// _, detailErr 保存未装配运行时的订单详情读取错误。
-	if _, detailErr := adapter.FetchOrderDetail(ctx, nil, "order"); detailErr == nil {
+	if _, detailErr := adapter.FetchOrderDetail(ctx, nil, "order", orderapp.RefreshDetailModeFresh); detailErr == nil {
 		t.Fatal("nil runtime detail fetch should fail")
 	}
 	// _, soldErr 保存未装配运行时的已售订单读取错误。

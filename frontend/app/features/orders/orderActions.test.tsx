@@ -13,13 +13,18 @@ const orderActionMocks = vi.hoisted(/* orderActionMockFactory 创建订单动作
   updateOrder: vi.fn(),
 }));
 
-vi.mock('./api', /* orderApiMockFactory 提供订单动作 API 替身。 */ () => ({
-  deleteOrder: orderActionMocks.deleteOrder,
-  manualShipOrder: orderActionMocks.manualShipOrder,
-  syncOrders: orderActionMocks.syncOrders,
-  syncSingleOrder: orderActionMocks.syncSingleOrder,
-  updateOrder: orderActionMocks.updateOrder,
-}));
+vi.mock('./api', /* orderApiMockFactory 提供订单动作 API 替身，并保留真实的错误文案归一实现。 */ async importOriginal => {
+  // original 保存订单 API 模块的原始导出，用于复用不参与替身的纯函数。
+  const original = await importOriginal<typeof import('./api')>();
+  return {
+    deleteOrder: orderActionMocks.deleteOrder,
+    manualShipOrder: orderActionMocks.manualShipOrder,
+    orderSyncErrorMessage: original.orderSyncErrorMessage,
+    syncOrders: orderActionMocks.syncOrders,
+    syncSingleOrder: orderActionMocks.syncSingleOrder,
+    updateOrder: orderActionMocks.updateOrder,
+  };
+});
 
 // orderFixture 表示订单动作 Hook 使用的最小订单。
 const orderFixture: Order = {
@@ -75,10 +80,30 @@ describe('useOrderActions 订单动作协调器', /* 当前回调验证订单动
     await act(/* syncAction 执行失败的订单批量同步。 */ async () => hook.result.current.handleSync());
     expect(window.alert).toHaveBeenCalledWith('批量同步失败');
 
-    orderActionMocks.syncSingleOrder.mockResolvedValueOnce({ success: false, message: '单笔同步失败' });
+    orderActionMocks.syncSingleOrder.mockResolvedValueOnce({ success: false, message: '单笔同步失败', throttle_wait_ms: 0, forced: false, order: { quantity: '1', spec_name: '', spec_value: '', order_status: 'pending_ship', amount: '1.00' } });
     await act(/* singleSyncAction 执行失败的单笔同步。 */ async () => hook.result.current.handleSyncSingle('order-1'));
-    expect(window.alert).toHaveBeenCalledWith('单笔同步失败');
+    expect(hook.result.current.syncNotice).toBe('单笔同步失败');
     expect(hook.result.current.syncingOrderId).toBeNull();
+  });
+
+  test('单笔同步提示限流等待，强制获取需确认并跳过本地间隔', /* 当前回调验证限流可见化与强制获取的确认边界。 */ async () => {
+    // actionContext 保存订单动作 Hook 和刷新依赖。
+    const { hook } = createActionHook();
+    orderActionMocks.syncSingleOrder.mockResolvedValueOnce({ success: true, message: '订单刷新完成', throttle_wait_ms: 4200, forced: false, order: { quantity: '1', spec_name: '', spec_value: '', order_status: 'pending_ship', amount: '1.00' } });
+    await act(/* limitedSyncAction 执行需要等待账号限流的普通同步。 */ async () => hook.result.current.handleSyncSingle('order-1'));
+    expect(orderActionMocks.syncSingleOrder).toHaveBeenCalledWith('order-1', { force: false });
+    expect(hook.result.current.syncNotice).toContain('4.2 秒');
+
+    // confirmMock 先拒绝强制获取，再允许一次，用于验证取消不会发起请求。
+    const confirmMock = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await act(/* cancelledForceAction 在用户取消确认时不得发起请求。 */ async () => hook.result.current.handleForceFetchDetail('order-2'));
+    expect(orderActionMocks.syncSingleOrder).toHaveBeenCalledTimes(1);
+
+    orderActionMocks.syncSingleOrder.mockResolvedValueOnce({ success: true, message: '订单刷新完成', throttle_wait_ms: 0, forced: true, order: { quantity: '1', spec_name: '', spec_value: '', order_status: 'pending_ship', amount: '1.00' } });
+    await act(/* forcedAction 执行用户确认后的强制获取。 */ async () => hook.result.current.handleForceFetchDetail('order-2'));
+    expect(orderActionMocks.syncSingleOrder).toHaveBeenLastCalledWith('order-2', { force: true });
+    expect(hook.result.current.syncNotice).toContain('已强制获取最新订单详情');
+    confirmMock.mockRestore();
   });
 
   test('晚到的旧批量同步结果不会覆盖最新请求的列表刷新和提示', /* 当前回调验证重复点击同步时旧任务响应的代次隔离。 */ async () => {

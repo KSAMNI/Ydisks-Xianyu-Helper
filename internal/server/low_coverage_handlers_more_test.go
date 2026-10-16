@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -170,7 +171,7 @@ func assertRefreshSingleHandlerStatus(t *testing.T, server *Server, result order
 	// refreshSingleResult、refreshSingleErr 保存本次测试预置的应用层结果和错误。
 	refreshSingleResult, refreshSingleErr := result, returnedErr
 	// server应用订单 Port 返回本次测试预置的刷新结果。
-	server.applications.orders = orderAdapterPortFake{refreshSingleFn: func(context.Context, int64, string) (orderapp.SingleRefreshResult, error) {
+	server.applications.orders = orderAdapterPortFake{refreshSingleFn: func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error) {
 		return refreshSingleResult, refreshSingleErr
 	}}
 	// request、recorder 保存直接调用订单刷新 Handler 的请求和响应。
@@ -203,6 +204,7 @@ func TestRefreshSingleOrderHandlerCoversAllErrorMappings(t *testing.T) {
 		{name: "forbidden", returnedErr: orderapp.ErrForbidden, wantStatus: http.StatusForbidden},
 		{name: "unsupported", returnedErr: orderapp.ErrRefreshDetailUnsupported, wantStatus: http.StatusServiceUnavailable},
 		{name: "credential changed", returnedErr: orderapp.ErrRefreshCredentialChanged, wantStatus: http.StatusConflict},
+		{name: "risk control", returnedErr: orderapp.ErrRefreshRiskControl, wantStatus: http.StatusTooManyRequests},
 		{name: "generic", returnedErr: errors.New("refresh failed"), wantStatus: http.StatusBadGateway},
 		{name: "unsuccessful result", result: orderapp.SingleRefreshResult{Success: false}, wantStatus: http.StatusInternalServerError},
 		{name: "success", result: orderapp.SingleRefreshResult{Success: true, Message: "ok"}, wantStatus: http.StatusOK},
@@ -212,5 +214,57 @@ func TestRefreshSingleOrderHandlerCoversAllErrorMappings(t *testing.T) {
 		t.Run(refreshCase.name, func(t *testing.T) {
 			assertRefreshSingleHandlerStatus(t, server, refreshCase.result, refreshCase.returnedErr, refreshCase.wantStatus)
 		})
+	}
+}
+
+// TestRefreshSingleOrderHandlerParsesForceAndReturnsThrottle 验证 force 参数解析、非法取值拒绝以及限流等待字段透传。
+func TestRefreshSingleOrderHandlerParsesForceAndReturnsThrottle(t *testing.T) {
+	// server、cleanup 保存订单刷新 Handler 使用的测试服务器。
+	server, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// forcedArgs 保存应用层实际收到的 forced 参数，用于验证 HTTP 层解析结果。
+	forcedArgs := make([]bool, 0, 2)
+	// server应用订单 Port 记录 forced 并返回带限流等待信息的成功结果。
+	server.applications.orders = orderAdapterPortFake{refreshSingleFn: func(_ context.Context, _ int64, _ string, forced bool) (orderapp.SingleRefreshResult, error) {
+		forcedArgs = append(forcedArgs, forced)
+		return orderapp.SingleRefreshResult{Success: true, Message: "订单刷新完成", ThrottleWaitMs: 4200, Forced: forced}, nil
+	}}
+	// limitedRequest 是不带 force 的普通刷新请求，必须按未强制处理并透传等待时长。
+	limitedRequest := requestWithServerSession(http.MethodPost, "/api/orders/o1/refresh?force=false", map[string]string{"order_id": "o1"})
+	// limitedRecorder 保存普通刷新响应。
+	limitedRecorder := httptest.NewRecorder()
+	server.refreshSingleOrder(limitedRecorder, limitedRequest)
+	if limitedRecorder.Code != http.StatusOK {
+		t.Fatalf("普通刷新 status=%d body=%s", limitedRecorder.Code, limitedRecorder.Body.String())
+	}
+	// limitedPayload 保存解析后的限流等待字段，用于断言前端可解释等待原因。
+	var limitedPayload orderSingleRefreshResponse
+	// decodeErr 表示响应体无法解析为具名刷新 DTO 的原因。
+	if decodeErr := json.Unmarshal(limitedRecorder.Body.Bytes(), &limitedPayload); decodeErr != nil {
+		t.Fatalf("解析普通刷新响应失败: %v", decodeErr)
+	}
+	if limitedPayload.ThrottleWaitMs != 4200 || limitedPayload.Forced {
+		t.Fatalf("普通刷新响应异常: %+v", limitedPayload)
+	}
+
+	// forcedRequest 是用户确认后的强制获取请求。
+	forcedRequest := requestWithServerSession(http.MethodPost, "/api/orders/o1/refresh?force=true", map[string]string{"order_id": "o1"})
+	// forcedRecorder 保存强制获取响应。
+	forcedRecorder := httptest.NewRecorder()
+	server.refreshSingleOrder(forcedRecorder, forcedRequest)
+	if forcedRecorder.Code != http.StatusOK {
+		t.Fatalf("强制获取 status=%d body=%s", forcedRecorder.Code, forcedRecorder.Body.String())
+	}
+	if len(forcedArgs) != 2 || forcedArgs[0] || !forcedArgs[1] {
+		t.Fatalf("force 参数解析异常: %v", forcedArgs)
+	}
+
+	// invalidRequest 是非法 force 取值，必须返回 400 而不是静默按普通刷新处理。
+	invalidRequest := requestWithServerSession(http.MethodPost, "/api/orders/o1/refresh?force=maybe", map[string]string{"order_id": "o1"})
+	// invalidRecorder 保存非法参数响应。
+	invalidRecorder := httptest.NewRecorder()
+	server.refreshSingleOrder(invalidRecorder, invalidRequest)
+	if invalidRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("非法 force 参数 status=%d body=%s", invalidRecorder.Code, invalidRecorder.Body.String())
 	}
 }

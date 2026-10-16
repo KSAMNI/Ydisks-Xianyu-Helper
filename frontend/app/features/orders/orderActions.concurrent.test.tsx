@@ -7,7 +7,11 @@ import { useOrderActions } from './orderActions';
 import { deleteOrder, manualShipOrder } from './api';
 
 // API 替身仅控制订单请求完成时机，不发起远端动作。
-vi.mock('./api', () => ({ deleteOrder: vi.fn(), manualShipOrder: vi.fn(), syncOrders: vi.fn(), syncSingleOrder: vi.fn(), updateOrder: vi.fn() }));
+vi.mock('./api', async importOriginal => {
+  // original 保存订单 API 模块的原始导出，用于复用真实的错误文案归一实现。
+  const original = await importOriginal<typeof import('./api')>();
+  return { deleteOrder: vi.fn(), manualShipOrder: vi.fn(), orderSyncErrorMessage: original.orderSyncErrorMessage, syncOrders: vi.fn(), syncSingleOrder: vi.fn(), updateOrder: vi.fn() };
+});
 // order 是分页只剩一条记录时的真实模型夹具。
 const order: Order = { id: 'row', order_id: 'a', cookie_id: 'a', item_id: 'item', item_title: '商品', buyer_id: 'buyer', quantity: 1, amount: '1', status: 'pending_ship' };
 

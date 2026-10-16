@@ -15,9 +15,10 @@ type orderHTTPAdapter struct {
 }
 
 // RefreshSingle 刷新单个订单详情并转换为兼容 HTTP 响应模型。
-func (a *orderHTTPAdapter) RefreshSingle(ctx context.Context, userID int64, orderID string) (orderSingleRefreshResponse, error) {
+// forced 为真表示用户已在界面上确认强制获取，请求将跳过本地账号刷新间隔；value 中的限流等待信息原样返回给前端。
+func (a *orderHTTPAdapter) RefreshSingle(ctx context.Context, userID int64, orderID string, forced bool) (orderSingleRefreshResponse, error) {
 	// result、err 保存应用层单订单刷新结果和错误。
-	result, err := a.services.RefreshSingle(ctx, userID, orderID)
+	result, err := a.services.RefreshSingle(ctx, userID, orderID, forced)
 	if errors.Is(err, orderapp.ErrNotFound) {
 		return orderSingleRefreshResponse{}, orderapp.ErrNotFound
 	}
@@ -33,7 +34,7 @@ func (a *orderHTTPAdapter) RefreshSingle(ctx context.Context, userID int64, orde
 	if err != nil {
 		return orderSingleRefreshResponse{}, err
 	}
-	return orderSingleRefreshResponse{Success: result.Success, Message: result.Message, Order: orderRefreshDetailResponse{Quantity: result.Detail.Quantity, SpecName: result.Detail.SpecName, SpecValue: result.Detail.SpecValue, OrderStatus: orderapp.NormalizeOrderStatus(result.Detail.OrderStatus), Amount: result.Detail.Amount}}, nil
+	return orderSingleRefreshResponse{Success: result.Success, Message: result.Message, ThrottleWaitMs: result.ThrottleWaitMs, Forced: result.Forced, Order: orderRefreshDetailResponse{Quantity: result.Detail.Quantity, SpecName: result.Detail.SpecName, SpecValue: result.Detail.SpecValue, OrderStatus: orderapp.NormalizeOrderStatus(result.Detail.OrderStatus), Amount: result.Detail.Amount}}, nil
 }
 
 // Refresh 由 a 调用订单用例，ctx 传递请求取消，userID 限定用户，cookieID、status 限定筛选；

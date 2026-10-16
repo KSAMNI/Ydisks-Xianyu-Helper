@@ -1,4 +1,4 @@
-import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,PackageCheck,RefreshCw,Save,Trash2,Truck,User as UserIcon,X } from 'lucide-react';
+import { ChevronLeft,ChevronRight,Edit,ExternalLink,Eye,PackageCheck,RefreshCw,Save,Trash2,Truck,User as UserIcon,X,Zap } from 'lucide-react';
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { formatLocalDateTime } from '../../../../dateTime';
@@ -57,6 +57,8 @@ const OrderList: React.FC = () => {
     shipLoading,
     shipResult,
     syncingOrderId,
+    syncNotice,
+    setSyncNotice,
     deletingOrderId,
     handleSync,
     handleShip,
@@ -66,6 +68,7 @@ const OrderList: React.FC = () => {
     handleSaveEdit,
     updateEditingOrder,
     handleSyncSingle,
+    handleForceFetchDetail,
     handleDelete,
     closeDetailModal,
     closeEditModal,
@@ -106,6 +109,20 @@ const OrderList: React.FC = () => {
             </button>
         </div>
       </div>
+
+      {/* 同步与强制获取提示条：让用户看到限流等待原因，而不是按钮长时间无说明地转圈。 */}
+      {syncNotice && (
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-medium text-blue-800">
+          <span className="whitespace-pre-line">{syncNotice}</span>
+          <button
+            onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setSyncNotice(null)}
+            className="shrink-0 rounded-lg p-1 text-blue-500 hover:bg-blue-100 hover:text-blue-700 transition-colors"
+            aria-label="关闭同步提示"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       <div className="ios-card rounded-xl overflow-hidden shadow-lg border-0 bg-white">
         <OrderFilterBar
@@ -228,6 +245,14 @@ const OrderList: React.FC = () => {
                       title="同步订单"
                     >
                       <RefreshCw className={`w-4 h-4 ${syncingOrderId === order.order_id ? 'animate-spin' : ''}`} />
+                    </button>
+                    <button
+                      onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleForceFetchDetail(order.order_id)}
+                      disabled={syncingOrderId === order.order_id}
+                      className="mr-2 text-gray-400 hover:text-amber-600 p-2 rounded-xl hover:bg-amber-50 transition-colors disabled:opacity-50"
+                      title="强制获取详情（跳过账号刷新间隔）"
+                    >
+                      <Zap className={`w-4 h-4 ${syncingOrderId === order.order_id ? 'animate-pulse' : ''}`} />
                     </button>
                     <button
                       onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleDelete(order.order_id)}
@@ -381,6 +406,14 @@ const OrderList: React.FC = () => {
                   className="flex-1 px-6 py-3 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold transition-colors"
                 >
                   关闭
+                </button>
+                <button
+                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => handleForceFetchDetail(selectedOrder.order_id)}
+                  disabled={syncingOrderId === selectedOrder.order_id}
+                  className="flex-1 px-6 py-3 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold transition-colors disabled:opacity-50"
+                  title="跳过本地账号刷新间隔，立即获取平台最新详情"
+                >
+                  强制获取详情
                 </button>
                 {selectedOrder.status === 'pending_ship' && (
                   <button

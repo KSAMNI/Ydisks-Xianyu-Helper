@@ -396,8 +396,10 @@ func (a *Adapter) fetchOrderDetailAttempt(ctx context.Context, cookieID, orderID
 	// 账号凭证快照已读取完成；慢速 MTOP 请求不得继续持有共享凭证锁。
 	credentialUnlock()
 	credentialLocked = false
-	// detail、fetchErr 保存共享限流和同订单去重后的平台详情结果及错误。
-	detail, fetchErr := a.orderDetails.Fetch(requestCtx, cookieID, orderID, cookieStr, a.orderMTop)
+	// detailOutcome、fetchErr 保存共享限流和同订单去重后的平台详情终态及错误；自动发货允许复用短时快照，不参与强制获取。
+	detailOutcome, fetchErr := a.orderDetails.FetchWithMode(requestCtx, cookieID, orderID, cookieStr, a.orderMTop, OrderDetailFetchReuse)
+	// detail 是本次详情请求的平台结果，可能为空；自动发货只在调用成功时使用其字段。
+	detail := detailOutcome.Result
 	// authoritativeCookies、authoritativeSnapshot、sessionChanged 用于本次流程后续判断的authoritativeCookies、authoritativeSnapshot、sessionChanged
 	authoritativeCookies, authoritativeSnapshot, sessionChanged := cookieSession.State()
 	// credentialUnlock 保存重新进入凭证提交临界区的释放函数。

@@ -323,6 +323,12 @@ type refreshRuntimeFake struct {
 	chatRefresh func(context.Context, string) error
 	// chatRefreshCalls 保存按需刷新聊天联系人的调用次数。
 	chatRefreshCalls int
+	// modes 保存每次详情请求使用的获取模式，供调用方断言普通刷新与强制获取的差异。
+	modes []RefreshDetailMode
+	// forcedCalls 统计以强制模式发起的详情请求次数。
+	forcedCalls int
+	// riskControl 表示详情错误是否属于平台风控，用于验证应用层的风控错误分类。
+	riskControl bool
 }
 
 // DetailAvailable 返回详情接口可用状态。
@@ -337,7 +343,12 @@ func (f *refreshRuntimeFake) CredentialAvailable(detail *PlatformRuntimeData) bo
 }
 
 // FetchOrderDetail 返回预置订单详情结果。
-func (f *refreshRuntimeFake) FetchOrderDetail(context.Context, *PlatformRuntimeData, string) (RefreshDetailFetchResult, error) {
+func (f *refreshRuntimeFake) FetchOrderDetail(_ context.Context, _ *PlatformRuntimeData, _ string, mode RefreshDetailMode) (RefreshDetailFetchResult, error) {
+	// modes 记录每次详情请求使用的获取模式；forcedCalls 统计强制获取次数，供调用方断言普通刷新与强制获取的区别。
+	f.modes = append(f.modes, mode)
+	if mode == RefreshDetailModeForced {
+		f.forcedCalls++
+	}
 	// index 保存本次详情请求在预置序列中的位置。
 	index := f.detailCalls
 	f.detailCalls++
@@ -385,6 +396,9 @@ func (f *refreshRuntimeFake) RecoverExpiredSession(context.Context, string, erro
 // IsSessionExpired 返回预置会话过期标记。
 func (f *refreshRuntimeFake) IsSessionExpired(error) bool { return f.expired }
 
+// IsRiskControl 返回预置风控标记，供单订单刷新的 429 分类用例使用。
+func (f *refreshRuntimeFake) IsRiskControl(error) bool { return f.riskControl }
+
 // RefreshChatConversations 执行测试预置的聊天联系人刷新回调。
 func (f *refreshRuntimeFake) RefreshChatConversations(ctx context.Context, cookieID string) error {
 	f.chatRefreshCalls++
@@ -401,7 +415,7 @@ func TestRefreshSingleSuccess(t *testing.T) {
 	// runtime 保存本用例的平台运行时依赖。
 	runtime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "2", Quantity: "2", Amount: "12.00"}}}
 	// result、err 保存单订单刷新结果和错误。
-	result, err := NewRefreshService(repository, runtime, 1).RefreshSingle(context.Background(), 7, "order-1")
+	result, err := NewRefreshService(repository, runtime, 1).RefreshSingle(context.Background(), 7, "order-1", false)
 	if err != nil || !result.Success || repository.upsertCount != 1 || result.Detail.OrderStatus != "pending_ship" {
 		t.Fatalf("单订单刷新结果异常: result=%+v err=%v", result, err)
 	}
@@ -414,7 +428,7 @@ func TestRefreshSingleRejectsUnsupportedAndCredentialChanges(t *testing.T) {
 	// unsupportedRuntime 保存不支持详情接口的运行时依赖。
 	unsupportedRuntime := &refreshRuntimeFake{}
 	// err 保存详情接口不支持错误。
-	if _, err := NewRefreshService(baseRepository, unsupportedRuntime, 1).RefreshSingle(context.Background(), 7, "order-1"); !errors.Is(err, ErrRefreshDetailUnsupported) {
+	if _, err := NewRefreshService(baseRepository, unsupportedRuntime, 1).RefreshSingle(context.Background(), 7, "order-1", false); !errors.Is(err, ErrRefreshDetailUnsupported) {
 		t.Fatalf("未返回详情接口不支持错误: %v", err)
 	}
 	// credentialRepository 保存用户不匹配的持久化依赖。
@@ -422,8 +436,51 @@ func TestRefreshSingleRejectsUnsupportedAndCredentialChanges(t *testing.T) {
 	// credentialRuntime 保存可用详情接口运行时依赖。
 	credentialRuntime := &refreshRuntimeFake{detailAvailable: true}
 	// err 保存凭证变化错误。
-	if _, err := NewRefreshService(credentialRepository, credentialRuntime, 1).RefreshSingle(context.Background(), 7, "order-1"); !errors.Is(err, ErrRefreshCredentialChanged) {
+	if _, err := NewRefreshService(credentialRepository, credentialRuntime, 1).RefreshSingle(context.Background(), 7, "order-1", false); !errors.Is(err, ErrRefreshCredentialChanged) {
 		t.Fatalf("未返回凭证变化错误: %v", err)
+	}
+}
+
+// TestRefreshSingleAppliesForcedModeAndReportsThrottle 验证普通刷新使用排队模式并透传限流等待，强制获取使用跳过模式。
+func TestRefreshSingleAppliesForcedModeAndReportsThrottle(t *testing.T) {
+	// service 保存绑定可观测运行时替身的单订单刷新服务。
+	service := func(runtime *refreshRuntimeFake) *RefreshService {
+		// repository 保存每次调用独立的持久化替身，避免状态跨断言泄漏。
+		repository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, order: &Order{OrderID: "order-1", CookieID: "cookie-1", OrderStatus: "processing"}, detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}}
+		return NewRefreshService(repository, runtime, 1)
+	}
+	// limitedRuntime 保存报告账号级限流等待的运行时替身。
+	limitedRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "2", Quantity: "1", Amount: "9.90"}, ThrottleWaitMs: 4200}}
+	// limitedResult、limitedErr 保存普通刷新结果和错误。
+	limitedResult, limitedErr := service(limitedRuntime).RefreshSingle(context.Background(), 7, "order-1", false)
+	if limitedErr != nil || !limitedResult.Success || limitedResult.ThrottleWaitMs != 4200 || limitedResult.Forced {
+		t.Fatalf("普通刷新限流信息异常: result=%+v err=%v", limitedResult, limitedErr)
+	}
+	if len(limitedRuntime.modes) != 1 || limitedRuntime.modes[0] != RefreshDetailModeFresh {
+		t.Fatalf("普通刷新未使用排队取新模式: modes=%v", limitedRuntime.modes)
+	}
+	// forcedRuntime 保存强制获取使用的运行时替身。
+	forcedRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "2", Quantity: "1", Amount: "9.90"}}}
+	// forcedResult、forcedErr 保存强制获取结果和错误。
+	forcedResult, forcedErr := service(forcedRuntime).RefreshSingle(context.Background(), 7, "order-1", true)
+	if forcedErr != nil || !forcedResult.Success || !forcedResult.Forced || forcedResult.ThrottleWaitMs != 0 {
+		t.Fatalf("强制获取结果异常: result=%+v err=%v", forcedResult, forcedErr)
+	}
+	if forcedRuntime.forcedCalls != 1 || len(forcedRuntime.modes) != 1 || forcedRuntime.modes[0] != RefreshDetailModeForced {
+		t.Fatalf("强制获取未使用跳过限流模式: modes=%v forced=%d", forcedRuntime.modes, forcedRuntime.forcedCalls)
+	}
+}
+
+// TestRefreshSingleClassifiesRiskControl 验证平台风控错误被转换为独立错误类别，供 HTTP 层返回 429。
+func TestRefreshSingleClassifiesRiskControl(t *testing.T) {
+	// repository 保存风控用例的持久化替身。
+	repository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, order: &Order{OrderID: "order-1", CookieID: "cookie-1"}, detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}}
+	// runtime 保存返回风控分类错误的运行时替身。
+	runtime := &refreshRuntimeFake{detailAvailable: true, fetchErr: errors.New("FAIL_SYS_USER_VALIDATE"), riskControl: true}
+	// err 保存应用层转换后的风控错误。
+	_, err := NewRefreshService(repository, runtime, 1).RefreshSingle(context.Background(), 7, "order-1", false)
+	if !errors.Is(err, ErrRefreshRiskControl) {
+		t.Fatalf("未返回风控错误类别: %v", err)
 	}
 }
 

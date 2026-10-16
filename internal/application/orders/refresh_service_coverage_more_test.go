@@ -10,7 +10,7 @@ import (
 func assertRefreshSingleError(t *testing.T, service *RefreshService, want error) {
 	t.Helper()
 	// result、err 保存本次单订单刷新结果及错误。
-	result, err := service.RefreshSingle(context.Background(), 7, "order-1")
+	result, err := service.RefreshSingle(context.Background(), 7, "order-1", false)
 	if !errors.Is(err, want) {
 		t.Fatalf("单订单刷新错误异常: result=%+v got=%v want=%v", result, err, want)
 	}
@@ -49,7 +49,7 @@ func TestRefreshSingleCoversGuardsAndPersistenceErrors(t *testing.T) {
 	// nilDetailRuntime 保存不返回详情实体的运行时。
 	nilDetailRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: nil}}
 	// nilDetailResult、nilDetailErr 保存不返回详情实体的刷新结果。
-	nilDetailResult, nilDetailErr := (&RefreshService{repository: fetchRepository, runtime: nilDetailRuntime}).RefreshSingle(context.Background(), 7, "order-1")
+	nilDetailResult, nilDetailErr := (&RefreshService{repository: fetchRepository, runtime: nilDetailRuntime}).RefreshSingle(context.Background(), 7, "order-1", false)
 	if nilDetailErr == nil || nilDetailErr.Error() != "订单详情接口未返回结果" {
 		t.Fatalf("空详情结果异常: result=%+v err=%v", nilDetailResult, nilDetailErr)
 	}
@@ -61,14 +61,14 @@ func TestRefreshSingleCoversGuardsAndPersistenceErrors(t *testing.T) {
 	// invalidStatusRuntime 保存不可编辑状态，服务应沿用本地状态。
 	invalidStatusRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "not-editable"}}}
 	// result、err 保存不可编辑状态下的写入错误结果。
-	result, err := (&RefreshService{repository: upsertRepository, runtime: invalidStatusRuntime}).RefreshSingle(context.Background(), 7, "order-1")
+	result, err := (&RefreshService{repository: upsertRepository, runtime: invalidStatusRuntime}).RefreshSingle(context.Background(), 7, "order-1", false)
 	if !errors.Is(err, upsertErr) || result.Success {
 		t.Fatalf("订单写入错误分支异常: result=%+v err=%v", result, err)
 	}
 	// emptyService 保存没有任何订单刷新依赖的服务。
 	emptyService := &RefreshService{}
 	// emptyResult、emptyErr 保存空服务的保护性返回。
-	emptyResult, emptyErr := emptyService.RefreshSingle(context.Background(), 7, "order-1")
+	emptyResult, emptyErr := emptyService.RefreshSingle(context.Background(), 7, "order-1", false)
 	if emptyErr == nil || emptyResult.Success {
 		t.Fatalf("空服务保护分支异常: result=%+v err=%v", emptyResult, emptyErr)
 	}
@@ -83,7 +83,7 @@ func TestRefreshSingleCoversCookieAndCredentialRaceBranches(t *testing.T) {
 	// runtime 保存不接管完整 Cookie Jar 的运行时。
 	runtime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: detail}, persistConfigured: true, persistHandled: false}
 	// result、err 保存扁平 Cookie 提交成功结果。
-	result, err := (&RefreshService{repository: repository, runtime: runtime}).RefreshSingle(context.Background(), 7, "order-1")
+	result, err := (&RefreshService{repository: repository, runtime: runtime}).RefreshSingle(context.Background(), 7, "order-1", false)
 	if err != nil || !result.Success || runtime.updatedCookie != "new-cookie" {
 		t.Fatalf("扁平 Cookie 更新分支异常: result=%+v err=%v cookie=%q", result, err, runtime.updatedCookie)
 	}
@@ -94,7 +94,7 @@ func TestRefreshSingleCoversCookieAndCredentialRaceBranches(t *testing.T) {
 	updateRepository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, order: repository.order, detail: &PlatformRuntimeData{UserID: 7, Value: "old-cookie"}, loadDetails: []*PlatformRuntimeData{{UserID: 7, Value: "old-cookie"}, {UserID: 7, Value: "old-cookie"}}, updateCookieErr: updateErr}
 	// updateRuntime 保存不接管完整 Cookie Jar 的运行时。
 	updateRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: detail}, persistConfigured: true, persistHandled: false}
-	result, err = (&RefreshService{repository: updateRepository, runtime: updateRuntime}).RefreshSingle(context.Background(), 7, "order-1")
+	result, err = (&RefreshService{repository: updateRepository, runtime: updateRuntime}).RefreshSingle(context.Background(), 7, "order-1", false)
 	if err != nil || !result.Success {
 		t.Fatalf("扁平 Cookie 保存错误不应阻断详情成功: result=%+v err=%v", result, err)
 	}
@@ -104,7 +104,7 @@ func TestRefreshSingleCoversCookieAndCredentialRaceBranches(t *testing.T) {
 	// emptyValueRuntime 保存 handled 且变化并返回新 Cookie 文本的运行时。
 	emptyValueRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: detail}, persistConfigured: true, persistHandled: true, persistChanged: true, persistValue: "new-cookie"}
 	// emptyValueResult、emptyValueErr 保存完整 Cookie 接管结果。
-	emptyValueResult, emptyValueErr := (&RefreshService{repository: emptyValueRepository, runtime: emptyValueRuntime}).RefreshSingle(context.Background(), 7, "order-1")
+	emptyValueResult, emptyValueErr := (&RefreshService{repository: emptyValueRepository, runtime: emptyValueRuntime}).RefreshSingle(context.Background(), 7, "order-1", false)
 	if emptyValueErr != nil || !emptyValueResult.Success || emptyValueRuntime.updatedCookie != "new-cookie" {
 		t.Fatalf("空 Cookie 值分支异常: result=%+v err=%v cookie=%q", emptyValueResult, emptyValueErr, emptyValueRuntime.updatedCookie)
 	}

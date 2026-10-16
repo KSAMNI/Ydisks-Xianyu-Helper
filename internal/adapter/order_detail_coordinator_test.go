@@ -40,6 +40,13 @@ func (f *coordinatedOrderDetailFake) FetchOrderDetail(ctx context.Context, _, _ 
 	return &mtop.OrderDetailResult{Quantity: "1", Amount: "9.90"}, nil
 }
 
+// fetchReuse 以复用短时快照的模式调用协调器，供本文件内不关注获取模式的用例保持原有语义。
+func fetchReuse(ctx context.Context, coordinator *OrderDetailCoordinator, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	// outcome、err 保存协调器的终态与限流可观测信息；本辅助函数只暴露平台详情，供既有断言继续使用。
+	outcome, err := coordinator.FetchWithMode(ctx, accountID, orderID, cookies, fetcher, OrderDetailFetchReuse)
+	return outcome.Result, err
+}
+
 // TestOrderDetailCoordinatorCoalescesSameOrder 验证同账号同订单的并发调用只访问一次平台，并向等待者返回独立结果副本。
 func TestOrderDetailCoordinatorCoalescesSameOrder(t *testing.T) {
 	// coordinator 使用零等待的确定性策略，隔离本测试对同订单并发去重的验证。
@@ -56,7 +63,8 @@ func TestOrderDetailCoordinatorCoalescesSameOrder(t *testing.T) {
 	firstDone := make(chan struct{})
 	go func() {
 		// result、err 保存首个调用从协调器返回的平台事实及错误。
-		result, err := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+		// result、err 保存首个调用从协调器返回的平台事实及错误。
+		result, err := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 		firstResult, firstErr = result, err
 		close(firstDone)
 	}()
@@ -73,7 +81,8 @@ func TestOrderDetailCoordinatorCoalescesSameOrder(t *testing.T) {
 	secondDone := make(chan struct{})
 	go func() {
 		// result、err 保存第二个调用复用的订单事实及错误。
-		result, err := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+		// result、err 保存第二个调用复用的订单事实及错误。
+		result, err := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 		secondResult, secondErr = result, err
 		close(secondDone)
 	}()
@@ -108,12 +117,12 @@ func TestOrderDetailCoordinatorReusesRecentSuccess(t *testing.T) {
 	// fetcher 统计真正进入平台边界的次数。
 	fetcher := &coordinatedOrderDetailFake{}
 	// firstResult、firstErr 保存首次订单详情读取结果和错误。
-	firstResult, firstErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	firstResult, firstErr := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 	if firstErr != nil || firstResult == nil {
 		t.Fatalf("首次订单详情失败 result=%+v err=%v", firstResult, firstErr)
 	}
 	// secondResult、secondErr 保存同一订单短暂重复事件复用的结果和错误。
-	secondResult, secondErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	secondResult, secondErr := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 	if secondErr != nil || secondResult == nil || firstResult == secondResult {
 		t.Fatalf("成功详情缓存复用异常 first=%+v second=%+v err=%v", firstResult, secondResult, secondErr)
 	}
@@ -122,32 +131,79 @@ func TestOrderDetailCoordinatorReusesRecentSuccess(t *testing.T) {
 	}
 }
 
-// TestOrderDetailCoordinatorFetchFreshBypassesRecentSuccess 验证强制取新会忽略尚未过期的成功快照并重新访问平台。
+// TestOrderDetailCoordinatorFetchFreshBypassesRecentSuccess 验证普通刷新会忽略尚未过期的成功快照并重新访问平台。
 func TestOrderDetailCoordinatorFetchFreshBypassesRecentSuccess(t *testing.T) {
 	// coordinator 使用零限流和默认成功缓存窗口，隔离本测试对强制取新语义的验证。
 	coordinator := newOrderDetailCoordinator(0, 0, nil)
 	// fetcher 统计真正进入平台边界的次数。
 	fetcher := &coordinatedOrderDetailFake{}
 	// cachedResult、cachedErr 保存首次读取并写入复用窗口的订单详情结果和错误。
-	cachedResult, cachedErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	cachedResult, cachedErr := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 	if cachedErr != nil || cachedResult == nil {
 		t.Fatalf("首次订单详情失败 result=%+v err=%v", cachedResult, cachedErr)
 	}
-	// freshResult、freshErr 保存强制取新后的订单详情结果和错误，它不得复用上一步写入的快照。
-	freshResult, freshErr := coordinator.FetchFresh(context.Background(), "account-a", "order-1", "cookie", fetcher)
-	if freshErr != nil || freshResult == nil {
-		t.Fatalf("强制取新订单详情失败 result=%+v err=%v", freshResult, freshErr)
+	// freshOutcome、freshErr 保存普通刷新后的终态，它不得复用上一步写入的快照。
+	freshOutcome, freshErr := coordinator.FetchWithMode(context.Background(), "account-a", "order-1", "cookie", fetcher, OrderDetailFetchFresh)
+	if freshErr != nil || freshOutcome.Result == nil {
+		t.Fatalf("普通刷新订单详情失败 outcome=%+v err=%v", freshOutcome, freshErr)
 	}
 	if fetcher.calls.Load() != 2 {
-		t.Fatalf("强制取新后平台访问次数=%d，期望 2", fetcher.calls.Load())
+		t.Fatalf("普通刷新后平台访问次数=%d，期望 2", fetcher.calls.Load())
 	}
-	// reusedResult、reusedErr 保存强制取新之后普通调用复用的结果，用于证明新快照已进入复用窗口。
-	reusedResult, reusedErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	// reusedResult、reusedErr 保存普通刷新之后复用调用读取的结果，用于证明新快照已进入复用窗口。
+	reusedResult, reusedErr := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 	if reusedErr != nil || reusedResult == nil {
-		t.Fatalf("强制取新后的复用失败 result=%+v err=%v", reusedResult, reusedErr)
+		t.Fatalf("普通刷新后的复用失败 result=%+v err=%v", reusedResult, reusedErr)
 	}
 	if fetcher.calls.Load() != 2 {
-		t.Fatalf("强制取新后的复用访问了平台，次数=%d，期望 2", fetcher.calls.Load())
+		t.Fatalf("普通刷新后的复用访问了平台，次数=%d，期望 2", fetcher.calls.Load())
+	}
+}
+
+// TestOrderDetailCoordinatorForcedSkipsGapAndReportsWait 验证强制模式跳过账号间隔且不报告等待，普通刷新仍如实报告限流等待时长。
+func TestOrderDetailCoordinatorForcedSkipsGapAndReportsWait(t *testing.T) {
+	// minimumGap 是本测试要求的同账号最小请求间隔，用量级清晰的短间隔隔离等待时长断言。
+	minimumGap := 120 * time.Millisecond
+	// coordinator 使用固定零抖动，确保等待时长断言不依赖随机数。
+	coordinator := newOrderDetailCoordinator(minimumGap, 0, nil)
+	// fetcher 立即返回固定订单详情，不引入额外耗时。
+	fetcher := &coordinatedOrderDetailFake{}
+	// firstOutcome、firstErr 保存首笔请求的终态；首笔请求不会等待限流。
+	firstOutcome, firstErr := coordinator.FetchWithMode(context.Background(), "account-a", "order-1", "cookie", fetcher, OrderDetailFetchFresh)
+	if firstErr != nil || firstOutcome.Result == nil || firstOutcome.ThrottleWait != 0 {
+		t.Fatalf("首笔普通刷新异常 outcome=%+v err=%v", firstOutcome, firstErr)
+	}
+	// throttleStartedAt 保存普通刷新开始等待前的时刻，用于验证等待时长落在最低间隔附近。
+	throttleStartedAt := time.Now()
+	// secondOutcome、secondErr 保存被限流的普通刷新终态，它必须如实报告本次等待时长。
+	secondOutcome, secondErr := coordinator.FetchWithMode(context.Background(), "account-a", "order-2", "cookie", fetcher, OrderDetailFetchFresh)
+	if secondErr != nil || secondOutcome.Result == nil {
+		t.Fatalf("受限普通刷新异常 outcome=%+v err=%v", secondOutcome, secondErr)
+	}
+	// waitedElapsed 是受限普通刷新的真实墙钟耗时，与上报的限流等待时长应基本一致。
+	waitedElapsed := time.Since(throttleStartedAt)
+	if secondOutcome.ThrottleWait < minimumGap-5*time.Millisecond || secondOutcome.ThrottleWait > waitedElapsed {
+		t.Fatalf("限流等待时长异常 throttle_wait=%s elapsed=%s 期望至少 %s", secondOutcome.ThrottleWait, waitedElapsed, minimumGap)
+	}
+	if secondOutcome.Forced {
+		t.Fatal("普通刷新不得标记为强制获取")
+	}
+	// forcedStartedAt 保存强制获取开始前的时刻，用于证明它没有等待剩余账号间隔。
+	forcedStartedAt := time.Now()
+	// forcedOutcome、forcedErr 保存强制获取终态，它必须跳过账号间隔并保持零等待。
+	forcedOutcome, forcedErr := coordinator.FetchWithMode(context.Background(), "account-a", "order-3", "cookie", fetcher, OrderDetailFetchForced)
+	if forcedErr != nil || forcedOutcome.Result == nil {
+		t.Fatalf("强制获取订单详情失败 outcome=%+v err=%v", forcedOutcome, forcedErr)
+	}
+	// forcedElapsed 是强制获取的真实墙钟耗时，必须小于账号最小间隔以证明限流被跳过。
+	if forcedElapsed := time.Since(forcedStartedAt); forcedElapsed >= minimumGap {
+		t.Fatalf("强制获取耗时=%s，仍被账号限流阻塞", forcedElapsed)
+	}
+	if forcedOutcome.ThrottleWait != 0 || !forcedOutcome.Forced {
+		t.Fatalf("强制获取终态异常 outcome=%+v", forcedOutcome)
+	}
+	if fetcher.calls.Load() != 3 {
+		t.Fatalf("平台访问次数=%d，期望 3", fetcher.calls.Load())
 	}
 }
 
@@ -160,12 +216,12 @@ func TestOrderDetailCoordinatorSpacesSameAccountRequests(t *testing.T) {
 	// fetcher 记录两次平台访问真正开始的时间。
 	fetcher := &coordinatedOrderDetailFake{startedAt: make(chan time.Time, 2)}
 	// firstResult、firstErr 保存首笔订单详情结果和错误。
-	firstResult, firstErr := coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", fetcher)
+	firstResult, firstErr := fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", fetcher)
 	if firstErr != nil || firstResult == nil {
 		t.Fatalf("首笔订单详情失败 result=%+v err=%v", firstResult, firstErr)
 	}
 	// secondResult、secondErr 保存第二笔订单详情结果和错误。
-	secondResult, secondErr := coordinator.Fetch(context.Background(), "account-a", "order-2", "cookie", fetcher)
+	secondResult, secondErr := fetchReuse(context.Background(), coordinator, "account-a", "order-2", "cookie", fetcher)
 	if secondErr != nil || secondResult == nil {
 		t.Fatalf("第二笔订单详情失败 result=%+v err=%v", secondResult, secondErr)
 	}
@@ -191,7 +247,7 @@ func TestOrderDetailCoordinatorDoesNotBlockOtherAccounts(t *testing.T) {
 	accountADone := make(chan struct{})
 	go func() {
 		// result、err 丢弃账号 A 的固定成功结果；测试只验证其慢请求不会阻塞账号 B。
-		_, _ = coordinator.Fetch(context.Background(), "account-a", "order-1", "cookie", accountAFetcher)
+		_, _ = fetchReuse(context.Background(), coordinator, "account-a", "order-1", "cookie", accountAFetcher)
 		close(accountADone)
 	}()
 	select {
@@ -200,7 +256,7 @@ func TestOrderDetailCoordinatorDoesNotBlockOtherAccounts(t *testing.T) {
 		t.Fatal("账号 A 请求未开始")
 	}
 	// accountBResult、accountBErr 保存账号 B 不应被账号 A 阻塞的结果和错误。
-	accountBResult, accountBErr := coordinator.Fetch(context.Background(), "account-b", "order-1", "cookie", accountBFetcher)
+	accountBResult, accountBErr := fetchReuse(context.Background(), coordinator, "account-b", "order-1", "cookie", accountBFetcher)
 	if accountBErr != nil || accountBResult == nil {
 		t.Fatalf("账号 B 被错误阻塞或请求失败 result=%+v err=%v", accountBResult, accountBErr)
 	}

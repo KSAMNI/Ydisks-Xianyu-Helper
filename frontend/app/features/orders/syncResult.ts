@@ -1,4 +1,4 @@
-import type { OrderRefreshResponse } from './models';
+import type { OrderRefreshResponse,OrderSingleRefreshResponse as OrderSingleRefreshResult } from './models';
 
 /** 将 result 转成同步完成提示；失败以结构化标记和计数为准，成功保留原消息并追加恢复修正统计。 */
 export const formatOrderSyncResult = (result: OrderRefreshResponse): string => {
@@ -22,4 +22,19 @@ export const formatOrderSyncResult = (result: OrderRefreshResponse): string => {
     lines.push(`${identity ? `${identity}：` : ''}${detail || '未提供失败原因'}`);
   }
   return lines.join('\n');
+};
+
+/**
+ * 将单笔同步结果转成用户可见提示；等待提示按下单前的服务端上报时长说明限流原因。
+ * result 是归一化后的单笔刷新 UI 模型；action 说明本次是普通同步还是强制获取，失败时返回失败原因。
+ */
+export const formatSingleSyncResult = (result: OrderSingleRefreshResult, action: 'sync' | 'force' = 'sync'): string => {
+  // label 是本次操作的展示名称，强制获取与普通同步的提示必须可区分。
+  const label = action === 'force' ? '强制获取' : '同步';
+  if (!result.success) return result.message || `${label}失败`;
+  // waited 是服务端上报的限流等待毫秒数；为零时说明本次未排队等待。
+  const waited = result.throttle_wait_ms ?? 0;
+  if (action === 'force' && result.forced) return `已强制获取最新订单详情（跳过本地账号刷新间隔）`;
+  if (waited > 0) return `${label}完成：已按账号限流等待 ${(waited / 1000).toFixed(1)} 秒后获取最新详情`;
+  return result.message || `${label}完成`;
 };

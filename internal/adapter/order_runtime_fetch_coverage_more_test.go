@@ -56,7 +56,7 @@ func TestOrderRuntimeFetchesDetailAndSoldOrders(t *testing.T) {
 		t.Fatal("详情和已售订单能力应被识别为可用")
 	}
 	// detailResult、detailErr 保存详情应用模型和错误。
-	detailResult, detailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1")
+	detailResult, detailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1", orderapp.RefreshDetailModeFresh)
 	if detailErr != nil || detailResult.Detail == nil || detailResult.Detail.Quantity != "2" || detailResult.Detail.SpecValue != "蓝" {
 		t.Fatalf("详情映射异常 result=%+v err=%v", detailResult, detailErr)
 	}
@@ -68,7 +68,7 @@ func TestOrderRuntimeFetchesDetailAndSoldOrders(t *testing.T) {
 	// detailFake.detailErr 保存详情平台错误。
 	detailFake.detailErr = errors.New("detail failed")
 	// failedDetail、failedDetailErr 保存详情错误传播结果。
-	failedDetail, failedDetailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1")
+	failedDetail, failedDetailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1", orderapp.RefreshDetailModeFresh)
 	if failedDetail.Detail != nil || !errors.Is(failedDetailErr, detailFake.detailErr) {
 		t.Fatalf("详情错误传播异常 result=%+v err=%v", failedDetail, failedDetailErr)
 	}
@@ -76,7 +76,7 @@ func TestOrderRuntimeFetchesDetailAndSoldOrders(t *testing.T) {
 	detailFake.detail = nil
 	detailFake.detailErr = nil
 	// emptyDetail、emptyDetailErr 保存平台空详情结果的错误。
-	emptyDetail, emptyDetailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1")
+	emptyDetail, emptyDetailErr := runtime.FetchOrderDetail(ctx, &orderapp.PlatformRuntimeData{ID: "cid", Value: "sid=old"}, "o1", orderapp.RefreshDetailModeFresh)
 	if emptyDetail.Detail != nil || emptyDetailErr == nil {
 		t.Fatalf("空详情结果未报错 result=%+v err=%v", emptyDetail, emptyDetailErr)
 	}

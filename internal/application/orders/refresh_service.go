@@ -15,6 +15,9 @@ var ErrRefreshDetailUnsupported = errors.New("当前 Go MTOP 客户端不支持�
 // ErrRefreshCredentialChanged 表示刷新期间账号凭证无法通过一致性复核。
 var ErrRefreshCredentialChanged = errors.New("账号凭证已变化，请重试")
 
+// ErrRefreshRiskControl 表示平台在本次订单详情请求中要求风控验证，调用方应提示用户稍后重试而不是持续重试。
+var ErrRefreshRiskControl = errors.New("平台要求完成风控验证，请稍后重试")
+
 // RefreshDetail 是平台返回的订单详情字段。
 type RefreshDetail struct {
 	// Quantity 是订单购买数量。
@@ -65,7 +68,22 @@ type RefreshDetailFetchResult struct {
 	Detail *RefreshDetail
 	// CookieUpdate 是请求期间观察到的 Cookie 会话变化。
 	CookieUpdate RefreshCookieUpdate
+	// ThrottleWaitMs 是本次请求因账号级限流真实等待的毫秒数；零值表示未等待。
+	// 被合并到同订单在途请求的调用同样为零，因此前端只能据此解释等待，不能据此推断绕过限流。
+	ThrottleWaitMs int64
 }
+
+// RefreshDetailMode 描述应用层请求订单详情时选择的复用与限流策略，由平台适配器解释为具体协调模式。
+type RefreshDetailMode uint8
+
+const (
+	// RefreshDetailModeReuse 允许复用短时成功快照并遵守账号级限流间隔；自动化路径使用该模式。
+	RefreshDetailModeReuse RefreshDetailMode = iota
+	// RefreshDetailModeFresh 跳过快照复用但仍遵守账号级限流间隔；管理端普通刷新使用该模式。
+	RefreshDetailModeFresh
+	// RefreshDetailModeForced 由用户确认后跳过账号级限流间隔，仍保留同订单并发合并。
+	RefreshDetailModeForced
+)
 
 // RefreshSoldFetchResult 是一次订单列表请求及其 Cookie 会话结果。
 type RefreshSoldFetchResult struct {
@@ -167,6 +185,11 @@ type SingleRefreshResult struct {
 	Message string
 	// Detail 是刷新后的订单详情。
 	Detail RefreshDetail
+	// ThrottleWaitMs 是刷新过程中因账号级限流真实等待的毫秒数；零值表示立即访问平台。
+	// 前端据此向用户说明“正在等待账号刷新间隔”，避免长时间无提示的静默等待。
+	ThrottleWaitMs int64
+	// Forced 表示本次刷新由用户在界面上确认后跳过本地账号刷新间隔。
+	Forced bool
 }
 
 // RefreshRepository 定义订单刷新用例所需的最小持久化能力。
@@ -214,8 +237,8 @@ type RefreshRuntime interface {
 	SoldAvailable() bool
 	// CredentialAvailable 判断账号是否有可用平台凭证。
 	CredentialAvailable(detail *PlatformRuntimeData) bool
-	// FetchOrderDetail 请求单个订单详情。
-	FetchOrderDetail(ctx context.Context, detail *PlatformRuntimeData, orderID string) (RefreshDetailFetchResult, error)
+	// FetchOrderDetail 按 mode 请求单个订单详情；mode 决定是否复用短时快照以及是否跳过账号级限流间隔。
+	FetchOrderDetail(ctx context.Context, detail *PlatformRuntimeData, orderID string, mode RefreshDetailMode) (RefreshDetailFetchResult, error)
 	// FetchSoldOrders 请求账号全部已售订单列表。
 	FetchSoldOrders(ctx context.Context, detail *PlatformRuntimeData) (RefreshSoldFetchResult, error)
 	// PersistCookieSession 在凭证锁内保存完整 Cookie 会话。
@@ -226,6 +249,8 @@ type RefreshRuntime interface {
 	RecoverExpiredSession(ctx context.Context, cookieID string, err error) bool
 	// IsSessionExpired 判断错误是否表示平台会话过期。
 	IsSessionExpired(err error) bool
+	// IsRiskControl 判断错误是否表示平台要求风控验证；单订单刷新据此返回 429 而不是持续重试。
+	IsRiskControl(err error) bool
 }
 
 // RefreshService 承载订单单笔和批量刷新的应用编排，构造后不可复制。
@@ -270,8 +295,10 @@ func (s *RefreshService) RefreshRuntimeAccount(ctx context.Context, cookieID str
 	return s.Refresh(ctx, ownerID, normalizedCookieID, "")
 }
 
-// RefreshSingle 刷新单个订单详情并写回本地订单。
-func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderID string) (SingleRefreshResult, error) {
+// RefreshSingle 刷新单个订单详情并写回本地订单；forced 为真时按用户在界面上确认的强制获取执行。
+// forced 只跳过本地账号刷新间隔（同时仍跳过快照复用），不跳过同账号同订单的并发合并，也不改变凭证复核顺序。
+// 返回值中的 ThrottleWaitMs 与 Forced 用于向用户如实说明本次是否因限流等待以及是否使用了强制获取。
+func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderID string, forced bool) (SingleRefreshResult, error) {
 	if s == nil || s.repository == nil || s.runtime == nil {
 		return SingleRefreshResult{}, errors.New("订单刷新依赖未初始化")
 	}
@@ -318,9 +345,13 @@ func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderI
 	defer cancel()
 	// unlockBeforeFetch 保存外部请求前释放凭证锁的动作。
 	unlock()
-	locked = false
+	// mode 把 forced 映射为平台获取策略：普通刷新排队等待账号间隔，强制获取跳过该间隔。
+	mode := RefreshDetailModeFresh
+	if forced {
+		mode = RefreshDetailModeForced
+	}
 	// fetchResult、callErr 保存远端详情结果及错误。
-	fetchResult, callErr := s.runtime.FetchOrderDetail(refreshCtx, latest, orderID)
+	fetchResult, callErr := s.runtime.FetchOrderDetail(refreshCtx, latest, orderID, mode)
 	// unlockAfterFetch 保存外部请求完成后重新获取凭证锁的释放函数。
 	unlockAfterFetch := s.repository.LockCredentials(cookieID)
 	// latestAfterFetch、reloadErr 保存外部请求后的凭证视图及重读错误。
@@ -351,6 +382,10 @@ func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderI
 	}
 	if callErr != nil {
 		s.runtime.RecoverExpiredSession(ctx, cookieID, callErr)
+		// 平台明确要求风控验证时转换为独立错误类别，避免 HTTP 层把它当作未知网关闭包错误。
+		if s.runtime.IsRiskControl(callErr) {
+			return SingleRefreshResult{}, fmt.Errorf("%w: %v", ErrRefreshRiskControl, callErr)
+		}
 		return SingleRefreshResult{}, callErr
 	}
 	if fetchResult.Detail == nil {
@@ -365,7 +400,7 @@ func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderI
 	if err := s.repository.UpsertOrder(ctx, orderID, UpsertOptions{CookieID: cookieID, OrderStatus: status, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, Quantity: fetchResult.Detail.Quantity, Amount: fetchResult.Detail.Amount}); err != nil {
 		return SingleRefreshResult{}, err
 	}
-	return SingleRefreshResult{Success: true, Message: "订单刷新完成", Detail: RefreshDetail{Quantity: fetchResult.Detail.Quantity, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, OrderStatus: NormalizeOrderStatus(fetchResult.Detail.OrderStatus), Amount: fetchResult.Detail.Amount}}, nil
+	return SingleRefreshResult{Success: true, Message: "订单刷新完成", Detail: RefreshDetail{Quantity: fetchResult.Detail.Quantity, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, OrderStatus: NormalizeOrderStatus(fetchResult.Detail.OrderStatus), Amount: fetchResult.Detail.Amount}, ThrottleWaitMs: fetchResult.ThrottleWaitMs, Forced: forced}, nil
 }
 
 // Refresh 执行当前用户订单的已售列表发现、字段写回和缺失清理。
@@ -561,8 +596,8 @@ func (s *RefreshService) refreshDetailChunk(ctx context.Context, userID int64, c
 	var sessionErr error
 	// target 是当前详情请求目标。
 	for _, target := range targets {
-		// fetchResult、fetchErr 保存当前订单详情结果及错误。
-		fetchResult, fetchErr := s.runtime.FetchOrderDetail(detailCtx, latest, target.OrderID)
+		// fetchResult、fetchErr 保存当前订单详情结果及错误；批量兜底详情补全允许复用短时快照，且必须继续遵守账号级限流间隔。
+		fetchResult, fetchErr := s.runtime.FetchOrderDetail(detailCtx, latest, target.OrderID, RefreshDetailModeReuse)
 		if fetchResult.CookieUpdate.Changed || fetchResult.CookieUpdate.Handled {
 			lastUpdate = fetchResult.CookieUpdate
 		}

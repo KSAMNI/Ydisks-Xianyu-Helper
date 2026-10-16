@@ -12,7 +12,7 @@ OrderSingleRefreshResponse,
 PaginatedResponse
 } from './models';
 import { contractClient,  runContractRequest } from '../../../shared/api-contract/client';
-import { type RequestControlOptions } from '../../../shared/http/client';
+import { ApiError, type RequestControlOptions } from '../../../shared/http/client';
 import { collectionFrom, objectFrom } from '../../../shared/http/contract';
 export type * from './models';
 
@@ -47,6 +47,15 @@ type OrderBatchTransportResponse = {
     /** 本地补偿警告。 */ reconciliation_warning?: string;
     /** 当前业务处理阶段。 */ stage?: string;
   }>;
+};
+
+/** OrderSingleRefreshTransportResponse 描述生成 operation 返回、尚未补齐可选限流字段的单订单刷新结果。 */
+type OrderSingleRefreshTransportResponse = {
+  /** 表示刷新是否完成。 */ success: boolean;
+  /** 刷新结果说明。 */ message: string;
+  /** 可选的服务端限流等待毫秒数；旧后端不返回该字段。 */ throttle_wait_ms?: number;
+  /** 可选的服务端强制获取标记；旧后端不返回该字段。 */ forced?: boolean;
+  /** 刷新后的订单详情。 */ order: OrderSingleRefreshResponse['order'];
 };
 
 /** 订单刷新轮询选项仅控制前端等待行为；不改变后端任务、HTTP 路径或请求体契约。 */
@@ -278,13 +287,23 @@ export const cancelOrderRefreshJob = async (jobId: string, options?: RequestCont
   }), options);
 };
 
-// syncSingleOrder 同步单个订单。
-export const syncSingleOrder = async (orderId: string): Promise<OrderSingleRefreshResponse> => {
-  return runContractRequest(/* signal 是本次单订单刷新请求的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/orders/{order_id}/refresh', {
-    params: { path: { order_id: orderId } },
+// syncSingleOrder 同步单个订单；force 为真时按用户确认的强制获取跳过本地账号刷新间隔。
+// 返回结果保留后端上报的限流等待时长和强制标记，调用方据此向用户解释等待原因。
+export const syncSingleOrder = async (orderId: string, options?: { /** force 表示用户已确认强制获取。 */ force?: boolean }): Promise<OrderSingleRefreshResponse> => {
+  // response 是生成契约约束的单订单刷新 transport DTO，随后的归一化补齐旧字段默认值。
+  const response = await runContractRequest(/* signal 是本次单订单刷新请求的超时与取消控制信号。 */ signal => contractClient.POST('/api/v1/orders/{order_id}/refresh', {
+    params: { path: { order_id: orderId }, query: { force: options?.force ?? false } },
     signal,
   }));
+  return normalizeSingleRefreshResponse(response);
 };
+
+// normalizeSingleRefreshResponse 补齐旧后端缺失的限流字段，让页面无需重复判空。
+const normalizeSingleRefreshResponse = (response: OrderSingleRefreshTransportResponse): OrderSingleRefreshResponse => ({
+  ...response,
+  throttle_wait_ms: response.throttle_wait_ms ?? 0,
+  forced: response.forced ?? false,
+});
 
 // manualShipOrder 手动发货订单。
 export const manualShipOrder = async (orderIds: string[], shipMode: 'status_only' | 'full_delivery'): Promise<OrderBatchResponse> => {
@@ -298,6 +317,20 @@ export const manualShipOrder = async (orderIds: string[], shipMode: 'status_only
     }));
     return normalizeOrderBatchResponse(response);
 }
+
+/**
+ * orderSyncErrorMessage 把订单同步相关的统一 HTTP 错误归一为可执行的用户提示。
+ * error 是调用链抛出的原始异常；fallback 是无结构信息时的兜底文案。
+ * 429 表示平台要求风控验证或本地账号刷新间隔限流，必须提示用户等待而不是立即重试。
+ */
+export const orderSyncErrorMessage = (error: unknown, fallback: string): string => {
+  if (error instanceof ApiError) {
+    if (error.status === 429) return error.message || '平台要求完成风控验证或访问过于频繁，请稍后重试';
+    return error.message || fallback;
+  }
+  if (error instanceof Error) return error.message;
+  return fallback;
+};
 
 // normalizeOrderBatchResponse 将生成 transport DTO 转为兼容历史订单页面的受限结果状态。
 const normalizeOrderBatchResponse = (response: OrderBatchTransportResponse): OrderBatchResponse => ({

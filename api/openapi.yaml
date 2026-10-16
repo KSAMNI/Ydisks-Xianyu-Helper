@@ -5188,6 +5188,12 @@ paths:
             required: true
             schema:
               type: string
+          - name: force
+            in: query
+            required: false
+            description: 用户在界面上确认强制获取后传 true，本次跳过本地账号刷新间隔；省略或 false 时按账号限流排队。
+            schema:
+              type: boolean
       security: [{cookieAuth: []}]
       responses:
         '200':
@@ -5216,6 +5222,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: 平台要求风控验证或访问频率受限
           content:
             application/json:
               schema:
@@ -8805,6 +8817,13 @@ components:
       properties:
         success: {type: boolean}
         message: {type: string}
+        throttle_wait_ms:
+          type: integer
+          minimum: 0
+          description: 本次刷新因账号级限流真实等待的毫秒数；零值表示未等待，前端据此说明等待原因。
+        forced:
+          type: boolean
+          description: 本次刷新是否按用户确认的强制获取跳过了本地账号刷新间隔。
         order: {$ref: '#/components/schemas/OrderRefreshDetail'}
     OrderRefreshResult:
       type: object

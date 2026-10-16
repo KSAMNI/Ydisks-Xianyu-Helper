@@ -7,9 +7,11 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	orderapp "xianyu-go/internal/application/orders"
 	"xianyu-go/internal/auth"
+	"xianyu-go/internal/httpapi"
 )
 
 // refreshOrderChunkSize 用于本次流程后续判断的refresh订单Chunk数量
@@ -116,13 +118,26 @@ func missingRefreshTargetIDs(targets []refreshTarget, seen map[string]struct{}) 
 }
 
 // refreshSingleOrder 处理仍需访问订单详情接口的单订单刷新；批量刷新只返回已售列表同步统计。
+// force 查询参数由用户在界面上确认强制获取后传入，服务端据此跳过本地账号刷新间隔，但仍保留同订单并发合并。
 func (s *Server) refreshSingleOrder(w http.ResponseWriter, r *http.Request) {
 	// orderID 是需要通过详情接口刷新的订单标识。
 	orderID := chi.URLParam(r, "order_id")
+	// force 表示调用方是否明确要求跳过本地账号刷新间隔；只有显式真值才生效，无法解析时按普通刷新处理。
+	force := false
+	// rawForce 是查询字符串中的原始 force 取值；空字符串表示调用方未提供该参数。
+	if rawForce := r.URL.Query().Get("force"); rawForce != "" {
+		// parsedForce、parseErr 保存强制获取参数的解析结果与解析错误。
+		parsedForce, parseErr := strconv.ParseBool(rawForce)
+		if parseErr != nil {
+			writeErr(w, http.StatusBadRequest, "force 参数必须是布尔值")
+			return
+		}
+		force = parsedForce
+	}
 	// sess 用于本次流程后续判断的sess
 	sess := auth.SessionFromContext(r.Context())
 	// result、err 用于本次流程后续判断的result、err
-	result, err := s.orders().RefreshSingle(r.Context(), sess.UserID, orderID)
+	result, err := s.orders().RefreshSingle(r.Context(), sess.UserID, orderID, force)
 	if errors.Is(err, orderapp.ErrNotFound) {
 		writeErr(w, http.StatusNotFound, "订单不存在")
 		return
@@ -137,6 +152,11 @@ func (s *Server) refreshSingleOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	if errors.Is(err, errOrderCredentialChanged) {
 		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, orderapp.ErrRefreshRiskControl) {
+		// 平台明确返回风控时使用 429 统一错误码，前端据此提示用户稍后重试而不是当成服务故障。
+		writeErrCode(w, http.StatusTooManyRequests, httpapi.CodeTooManyRequests, err.Error(), middleware.GetReqID(r.Context()))
 		return
 	}
 	if err != nil {

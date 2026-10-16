@@ -712,6 +712,10 @@ type orderSingleRefreshResponse struct {
 	Success bool `json:"success"`
 	// Message 是刷新结果说明。
 	Message string `json:"message"`
+	// ThrottleWaitMs 是本次刷新因账号级限流真实等待的毫秒数；零值表示未等待，前端可据此提示用户。
+	ThrottleWaitMs int64 `json:"throttle_wait_ms,omitempty"`
+	// Forced 表示本次刷新由用户在界面上确认后跳过了本地账号刷新间隔。
+	Forced bool `json:"forced,omitempty"`
 	// Order 是刷新后的订单详情。
 	Order orderRefreshDetailResponse `json:"order"`
 }

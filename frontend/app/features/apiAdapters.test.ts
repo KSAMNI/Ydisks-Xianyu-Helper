@@ -1566,15 +1566,20 @@ test('order list, detail, and update APIs use versioned compatibility routes', r
 const runVersionedOrderRefreshAPITest = async () => {
   // fetchMock 是订单刷新与批量请求的测试替身。
   const fetchMock = vi.fn()
-    .mockResolvedValueOnce(jsonResponse({ success: true }))
+    .mockResolvedValueOnce(jsonResponse({ success: true, message: 'ok', order: {} }))
+    .mockResolvedValueOnce(jsonResponse({ success: true, message: 'ok', order: {} }))
     .mockResolvedValueOnce(jsonResponse({ success: true }));
   stubContractFetch(fetchMock);
 
+  // 单笔同步默认不强制：仍带上 force=false，避免服务端把省略视为强制获取。
   await syncSingleOrder('order-1');
+  // 强制获取按用户确认传入 force=true。
+  await syncSingleOrder('order-1', { force: true });
   await manualShipOrder(['order-1'], 'status_only');
 
-  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/orders/order-1/refresh', expect.objectContaining({ method: 'POST', credentials: 'include' }));
-  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/orders/manual-ship', expect.objectContaining({ method: 'POST', credentials: 'include' }));
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/orders/order-1/refresh?force=false', expect.objectContaining({ method: 'POST', credentials: 'include' }));
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/orders/order-1/refresh?force=true', expect.objectContaining({ method: 'POST', credentials: 'include' }));
+  expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/orders/manual-ship', expect.objectContaining({ method: 'POST', credentials: 'include' }));
 };
 
 test('order refresh and batch APIs use versioned compatibility routes', runVersionedOrderRefreshAPITest);

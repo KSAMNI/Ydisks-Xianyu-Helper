@@ -149,12 +149,12 @@ func (adapter OrderRuntimeAdapter) CredentialAvailable(detail *orderapp.Platform
 	return adapter.runtime != nil && adapter.runtime.CredentialAvailable(detail)
 }
 
-// FetchOrderDetail 调用平台详情接口并收集 Cookie 会话变化。
-func (adapter OrderRuntimeAdapter) FetchOrderDetail(ctx context.Context, detail *orderapp.PlatformRuntimeData, orderID string) (orderapp.RefreshDetailFetchResult, error) {
+// FetchOrderDetail 调用平台详情接口并收集 Cookie 会话变化，mode 语义由订单应用层定义、订单运行时解释。
+func (adapter OrderRuntimeAdapter) FetchOrderDetail(ctx context.Context, detail *orderapp.PlatformRuntimeData, orderID string, mode orderapp.RefreshDetailMode) (orderapp.RefreshDetailFetchResult, error) {
 	if adapter.runtime == nil {
 		return orderapp.RefreshDetailFetchResult{}, errors.New("订单运行时未初始化")
 	}
-	return adapter.runtime.FetchOrderDetail(ctx, detail, orderID)
+	return adapter.runtime.FetchOrderDetail(ctx, detail, orderID, mode)
 }
 
 // FetchSoldOrders 调用平台已售订单接口并收集 Cookie 会话变化。
@@ -187,4 +187,9 @@ func (adapter OrderRuntimeAdapter) PersistCookieSession(ctx context.Context, det
 // IsSessionExpired 判断平台错误是否为会话过期。
 func (adapter OrderRuntimeAdapter) IsSessionExpired(err error) bool {
 	return adapter.runtime != nil && adapter.runtime.IsSessionExpired(err)
+}
+
+// IsRiskControl 判断平台错误是否要求风控验证；未初始化时按非风控处理，避免误报限流提示。
+func (adapter OrderRuntimeAdapter) IsRiskControl(err error) bool {
+	return adapter.runtime != nil && adapter.runtime.IsRiskControl(err)
 }

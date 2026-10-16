@@ -53,7 +53,8 @@ type SessionRecoveryPort interface {
 
 // OrdersPort 定义订单 HTTP transport 实际消费的用例集合，避免持有应用层服务容器。
 type OrdersPort interface {
-	RefreshSingle(context.Context, int64, string) (orderapp.SingleRefreshResult, error)
+	// RefreshSingle 刷新单笔订单详情；forced 为真时按用户确认跳过本地账号刷新间隔。
+	RefreshSingle(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error)
 	Refresh(context.Context, int64, string, string) (orderapp.RefreshResult, error)
 	List(context.Context, orderapp.ListQuery) (orderapp.ListResult, error)
 	Get(context.Context, int64, string) (*orderapp.Order, error)

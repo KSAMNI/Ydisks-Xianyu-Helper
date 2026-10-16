@@ -10,8 +10,8 @@ import (
 
 // orderAdapterPortFake 为订单 HTTP 适配器提供可编程的应用层结果。
 type orderAdapterPortFake struct {
-	// refreshSingleFn 保存单订单刷新测试行为。
-	refreshSingleFn func(context.Context, int64, string) (orderapp.SingleRefreshResult, error)
+	// refreshSingleFn 保存单订单刷新测试行为；forced 由被测 HTTP 层解析 force 参数后传入。
+	refreshSingleFn func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error)
 	// refreshFn 保存批量刷新测试行为。
 	refreshFn func(context.Context, int64, string, string) (orderapp.RefreshResult, error)
 	// listFn 保存订单列表测试行为。
@@ -30,9 +30,9 @@ type orderAdapterPortFake struct {
 	manualShipFn func(context.Context, orderapp.ManualShipRequest) (orderapp.ManualShipResult, error)
 }
 
-// RefreshSingle 返回测试配置的单订单刷新结果。
-func (f orderAdapterPortFake) RefreshSingle(ctx context.Context, userID int64, orderID string) (orderapp.SingleRefreshResult, error) {
-	return f.refreshSingleFn(ctx, userID, orderID)
+// RefreshSingle 返回测试配置的单订单刷新结果，并把 HTTP 层解析出的 forced 原样交给测试行为。
+func (f orderAdapterPortFake) RefreshSingle(ctx context.Context, userID int64, orderID string, forced bool) (orderapp.SingleRefreshResult, error) {
+	return f.refreshSingleFn(ctx, userID, orderID, forced)
 }
 
 // Refresh 返回测试配置的批量刷新结果。
@@ -79,7 +79,7 @@ func (f orderAdapterPortFake) ManualShip(ctx context.Context, request orderapp.M
 func TestOrderHTTPAdapterCoversRefreshAndReadBranches(t *testing.T) {
 	// adapter 保存当前测试使用的订单 HTTP 适配器。
 	adapter := &orderHTTPAdapter{services: orderAdapterPortFake{
-		refreshSingleFn: func(context.Context, int64, string) (orderapp.SingleRefreshResult, error) {
+		refreshSingleFn: func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error) {
 			return orderapp.SingleRefreshResult{Success: true, Message: "ok", Detail: orderapp.RefreshDetail{Quantity: "2", SpecName: "颜色", SpecValue: "红", OrderStatus: "2", Amount: "12.00"}}, nil
 		},
 		refreshFn: func(context.Context, int64, string, string) (orderapp.RefreshResult, error) {
@@ -96,7 +96,7 @@ func TestOrderHTTPAdapterCoversRefreshAndReadBranches(t *testing.T) {
 		},
 	}}
 	// single、singleErr 保存单订单刷新适配结果。
-	single, singleErr := adapter.RefreshSingle(context.Background(), 1, "o1")
+	single, singleErr := adapter.RefreshSingle(context.Background(), 1, "o1", false)
 	if singleErr != nil || single.Order.Quantity != "2" || single.Order.OrderStatus != "pending_ship" {
 		t.Fatalf("single=%+v err=%v", single, singleErr)
 	}
@@ -139,27 +139,27 @@ func TestOrderHTTPAdapterCoversErrorMappingBranches(t *testing.T) {
 	}{
 		{name: "refresh single not found", run: func(adapter *orderHTTPAdapter) error {
 			// err 保存单订单不存在错误。
-			_, err := adapter.RefreshSingle(context.Background(), 1, "o")
+			_, err := adapter.RefreshSingle(context.Background(), 1, "o", false)
 			return err
 		}, want: orderapp.ErrNotFound},
 		{name: "refresh single forbidden", run: func(adapter *orderHTTPAdapter) error {
 			// err 保存单订单无权访问错误。
-			_, err := adapter.RefreshSingle(context.Background(), 1, "o")
+			_, err := adapter.RefreshSingle(context.Background(), 1, "o", false)
 			return err
 		}, want: orderapp.ErrForbidden},
 		{name: "refresh single unsupported", run: func(adapter *orderHTTPAdapter) error {
 			// err 保存详情接口不支持错误。
-			_, err := adapter.RefreshSingle(context.Background(), 1, "o")
+			_, err := adapter.RefreshSingle(context.Background(), 1, "o", false)
 			return err
 		}, want: errOrderDetailUnsupported},
 		{name: "refresh single credential", run: func(adapter *orderHTTPAdapter) error {
 			// err 保存凭证变化错误。
-			_, err := adapter.RefreshSingle(context.Background(), 1, "o")
+			_, err := adapter.RefreshSingle(context.Background(), 1, "o", false)
 			return err
 		}, want: errOrderCredentialChanged},
 		{name: "refresh single generic", run: func(adapter *orderHTTPAdapter) error {
 			// err 保存单订单刷新通用错误。
-			_, err := adapter.RefreshSingle(context.Background(), 1, "o")
+			_, err := adapter.RefreshSingle(context.Background(), 1, "o", false)
 			return err
 		}, want: sentinel},
 		{name: "refresh forbidden", run: func(adapter *orderHTTPAdapter) error {
@@ -244,7 +244,7 @@ func TestOrderHTTPAdapterCoversErrorMappingBranches(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			// adapter 保存返回当前错误的订单适配器。
 			adapter := &orderHTTPAdapter{services: orderAdapterPortFake{
-				refreshSingleFn: func(context.Context, int64, string) (orderapp.SingleRefreshResult, error) {
+			refreshSingleFn: func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error) {
 					return orderapp.SingleRefreshResult{}, []error{orderapp.ErrNotFound, orderapp.ErrForbidden, orderapp.ErrRefreshDetailUnsupported, orderapp.ErrRefreshCredentialChanged, sentinel}[index]
 				},
 				refreshFn: func(context.Context, int64, string, string) (orderapp.RefreshResult, error) {

@@ -234,13 +234,16 @@ export interface OrderRefreshDetailResponse {
   amount: string;
 }
 
-/** 订单单条刷新接口的具名响应。 */
 /** 由当前 feature adapter 归一后的 OrderSingleRefreshResponse UI 模型；不直接暴露 HTTP DTO。 */
 export interface OrderSingleRefreshResponse {
   /** 表示刷新是否完成。 */
   success: boolean;
   /** 刷新结果说明。 */
   message: string;
+  /** 本次刷新因账号级限流真实等待的毫秒数；零值表示未等待，页面据此说明等待原因。 */
+  throttle_wait_ms: number;
+  /** 本次刷新是否按用户确认的强制获取跳过了本地账号刷新间隔。 */
+  forced: boolean;
   /** 刷新后的订单详情。 */
   order: OrderRefreshDetailResponse;
 }

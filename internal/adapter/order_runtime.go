@@ -271,9 +271,18 @@ func (r *OrderRuntime) CredentialAvailable(detail *orderapp.PlatformRuntimeData)
 }
 
 // FetchOrderDetail 调用平台详情接口并收集 Cookie 会话变化，供管理端单笔订单刷新使用。
-// 用户主动刷新必须反映当前平台事实，因此这里走强制取新路径，跳过协调器的成功结果复用窗口；
-// 账号级限流与同订单并发合并仍然生效，不会绕过平台风控节奏。
-func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.PlatformRuntimeData, orderID string) (orderapp.RefreshDetailFetchResult, error) {
+// mode 决定复用与限流策略：普通刷新跳过快照复用但仍排队等待，强制获取在用户确认后跳过账号级限流；
+// 两种模式都保留同订单并发合并，并如实上报本次因限流等待的时长。
+// detail 必须携带当前账号凭证；返回值不含明文凭证，只包含订单事实、Cookie 会话变化和限流等待信息。
+func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.PlatformRuntimeData, orderID string, mode orderapp.RefreshDetailMode) (orderapp.RefreshDetailFetchResult, error) {
+	// coordinatorMode 把应用层获取模式映射为协调器模式；未知取值退回允许复用快照的保守策略。
+	coordinatorMode := OrderDetailFetchReuse
+	switch mode {
+	case orderapp.RefreshDetailModeFresh:
+		coordinatorMode = OrderDetailFetchFresh
+	case orderapp.RefreshDetailModeForced:
+		coordinatorMode = OrderDetailFetchForced
+	}
 	// fetcher、available 保存详情接口实现及其可用状态。
 	fetcher, available := r.mtopClient().(orderDetailMTop)
 	if !available {
@@ -284,17 +293,19 @@ func (r *OrderRuntime) FetchOrderDetail(ctx context.Context, detail *orderapp.Pl
 	}
 	// requestCtx、session 保存带 Cookie 快照的平台上下文及响应会话。
 	requestCtx, session := withOrderCookieSnapshot(ctx, platformRuntimeDataForOrder(detail))
-	// result、callErr 保存共享限流和同订单去重后的平台详情响应及错误。
-	result, callErr := r.orderDetails.FetchFresh(requestCtx, detail.ID, orderID, detail.Value, fetcher)
+	// outcome、callErr 保存共享限流和同订单去重后的平台详情终态及错误。
+	outcome, callErr := r.orderDetails.FetchWithMode(requestCtx, detail.ID, orderID, detail.Value, fetcher, coordinatorMode)
 	// cookieUpdate 保存平台详情请求观察到的 Cookie 会话变化。
 	cookieUpdate := orderCookieUpdate(detail, session)
+	// throttleWaitMs 是本次请求因账号级限流真实等待的毫秒数，零值表示未等待；被合并到在途请求时同样为零。
+	throttleWaitMs := int64(outcome.ThrottleWait / time.Millisecond)
 	if callErr != nil {
-		return orderapp.RefreshDetailFetchResult{CookieUpdate: cookieUpdate}, callErr
+		return orderapp.RefreshDetailFetchResult{CookieUpdate: cookieUpdate, ThrottleWaitMs: throttleWaitMs}, callErr
 	}
-	if result == nil {
-		return orderapp.RefreshDetailFetchResult{CookieUpdate: cookieUpdate}, errors.New("订单详情接口未返回结果")
+	if outcome.Result == nil {
+		return orderapp.RefreshDetailFetchResult{CookieUpdate: cookieUpdate, ThrottleWaitMs: throttleWaitMs}, errors.New("订单详情接口未返回结果")
 	}
-	return orderapp.RefreshDetailFetchResult{Detail: &orderapp.RefreshDetail{Quantity: result.Quantity, SpecName: result.SpecName, SpecValue: result.SpecValue, OrderStatus: result.OrderStatus, Amount: result.Amount, UpdatedCookies: result.UpdatedCookies}, CookieUpdate: cookieUpdate}, nil
+	return orderapp.RefreshDetailFetchResult{Detail: &orderapp.RefreshDetail{Quantity: outcome.Result.Quantity, SpecName: outcome.Result.SpecName, SpecValue: outcome.Result.SpecValue, OrderStatus: outcome.Result.OrderStatus, Amount: outcome.Result.Amount, UpdatedCookies: outcome.Result.UpdatedCookies}, CookieUpdate: cookieUpdate, ThrottleWaitMs: throttleWaitMs}, nil
 }
 
 // FetchSoldOrders 用 r 已装配的客户端按 ctx 取消信号读取 detail 对应账号的全部已售订单。
@@ -441,6 +452,11 @@ func (r *OrderRuntime) PersistCookieSession(ctx context.Context, detail *orderap
 // IsSessionExpired 判断 err 是否明确表示 Session 失效；r 的订单刷新调用不得把 Token 失效升级为账号恢复。
 func (r *OrderRuntime) IsSessionExpired(err error) bool {
 	return mtop.IsSessionExpiredErr(err)
+}
+
+// IsRiskControl 判断 err 是否表示平台要求风控验证；只有该平台分类才允许 HTTP 层返回 429 而不是 502。
+func (r *OrderRuntime) IsRiskControl(err error) bool {
+	return mtop.IsRiskVerificationErr(err)
 }
 
 // withOrderCookieSnapshot 为订单平台请求挂载平面 Cookie 或完整 Cookie Jar。
