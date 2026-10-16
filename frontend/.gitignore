@@ -1,5 +1,6 @@
 # Logs
-logs
+# 只忽略前端根目录下的日志输出目录；不加斜杠会连 app/features/logs 一起忽略。
+/logs
 *.log
 npm-debug.log*
 yarn-debug.log*
