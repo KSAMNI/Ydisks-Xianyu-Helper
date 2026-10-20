@@ -65,12 +65,32 @@ UPDATE goose_db_version SET version_id = 54 WHERE version_id = 52;  -- keyword_e
 
 ### 4. 登记补齐的两个版本
 
+`is_applied` 的取值必须按方言区分：Goose 在 SQLite/MySQL 里是整数列，在 PostgreSQL 里是 `boolean`，写 `1` 会直接报类型错误。
+
+SQLite / MySQL：
+
 ```sql
 INSERT INTO goose_db_version (version_id, is_applied, tstamp) VALUES (52, 1, CURRENT_TIMESTAMP);
 INSERT INTO goose_db_version (version_id, is_applied, tstamp) VALUES (53, 1, CURRENT_TIMESTAMP);
 ```
 
+PostgreSQL：
+
+```sql
+INSERT INTO goose_db_version (version_id, is_applied, tstamp) VALUES (52, true, CURRENT_TIMESTAMP);
+INSERT INTO goose_db_version (version_id, is_applied, tstamp) VALUES (53, true, CURRENT_TIMESTAMP);
+```
+
 MySQL 的 `tstamp` 若为 `TIMESTAMP NOT NULL`，同样可用 `CURRENT_TIMESTAMP`。
+
+建议先在事务里试运行再提交（下面以 PostgreSQL 为例，其余方言同理）：
+
+```bash
+printf 'BEGIN;\n' > /tmp/remap-dry.sql
+cat remap.sql >> /tmp/remap-dry.sql
+printf 'ROLLBACK;\n' >> /tmp/remap-dry.sql
+psql -v ON_ERROR_STOP=1 -f /tmp/remap-dry.sql   # 5 条 UPDATE 应各命中 1 行
+```
 
 ### 5. 校验
 
