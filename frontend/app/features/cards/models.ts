@@ -58,6 +58,16 @@ export interface CardAPIConfigSummary {
   validation_error?: string;
 }
 
+/** 仅在拥有者打开编辑弹窗时载入的完整配置，不进入列表缓存。 */
+export interface CardAPIEditor extends Pick<CardAPIConfigSummary, 'url' | 'method' | 'content_type' | 'timeout_seconds' | 'response_path' | 'retry_enabled'> {
+  /** 完整请求头模板，仅保留在当前编辑草稿。 */
+  headers: string;
+  /** 完整查询参数模板。 */
+  params: string;
+  /** 完整请求正文模板。 */
+  body: string;
+}
+
 /** API 卡券提交用的具名配置；敏感模板为空时由服务端保留旧值。 */
 export interface CardAPIConfigInput {
   /** API 卡券请求地址。 */
@@ -104,6 +114,8 @@ export interface CardAPITestResult {
 export type CardMutation = Omit<Partial<Card>, 'api_config'> & {
   /** API 卡券具名请求配置或历史 JSON 字符串。 */
   api_config?: CardAPIConfigInput | string;
+  /** 编辑 data 卡库存时打开弹窗所见的库存快照；服务端仅在库存未被自动发货改动时覆盖。 */
+  expected_data_content?: string;
 };
 
 /** 卡券批量创建接口的逐行结果。 */

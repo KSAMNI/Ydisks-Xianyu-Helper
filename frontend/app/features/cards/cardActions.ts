@@ -1,8 +1,9 @@
 import { useCallback,useEffect,useMemo,useRef,useState,type Dispatch,type SetStateAction } from 'react';
-import { imageSourceFields, validateImageSource } from '../../../shared/imageSource';
 import type { Card,CardMutation } from './api';
-import { createCard,deleteCard,updateCard } from './api';
+import { createCard,deleteCard,getCardAPIEditor,updateCard } from './api';
+import { apiConfigFromEditForm, apiConfigFromAddForm } from './editConfig';
 import { filterCards } from './batchState';
+import { imageSourceFields, validateImageSource } from '../../../shared/imageSource';
 import type { AddCardForm,EditCardForm } from './types';
 
 // emptyAddForm 创建新增卡密组表单的初始值。
@@ -50,8 +51,14 @@ export interface CardActionsState {
   setNameSearch: Dispatch<SetStateAction<string>>;
   // showEditModal 表示编辑卡密弹窗是否打开。
   showEditModal: boolean;
-  // setShowEditModal 更新编辑弹窗展示状态。
+  // closeEdit 取消读取并销毁含密钥的编辑草稿。
+  closeEdit: () => void;
+  // setShowEditModal 使旧保存不能关闭下一份编辑器；与 closeEdit 共用同一弹窗状态。
   setShowEditModal: Dispatch<SetStateAction<boolean>>;
+  // editLoading 表示完整配置仍在读取。
+  editLoading: boolean;
+  // editError 保存配置读取失败的安全提示。
+  editError: string;
   // showAddModal 表示新增卡密弹窗是否打开。
   showAddModal: boolean;
   // setShowAddModal 更新新增弹窗展示状态。
@@ -67,7 +74,7 @@ export interface CardActionsState {
   // setAddForm 更新当前新增卡密表单。
   setAddForm: Dispatch<SetStateAction<AddCardForm>>;
   // handleEdit 打开指定卡密组的编辑弹窗。
-  handleEdit: (card: Card) => void;
+  handleEdit: (card: Card) => Promise<void>;
   // handleSaveEdit 保存当前卡密编辑草稿。
   handleSaveEdit: () => Promise<void>;
   // handleDelete 删除指定卡密组并刷新库存。
@@ -125,8 +132,33 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     [cards, nameSearch, typeFilter],
   );
 
+  // editorRequest 标识当前编辑会话，旧请求完成时不能覆盖新草稿。
+  const editorRequest = useRef<AbortController | null>(null);
+  // editLoading 在完整配置载入前禁用测试与保存。
+  const [editLoading, setEditLoading] = useState(false);
+  // editError 显示读取失败提示，避免使用不完整表单覆盖配置。
+  const [editError, setEditError] = useState('');
+  // closeEdit 立即清除当前弹窗持有的敏感配置。
+  const closeEdit = useCallback(/* closeEditor 结束当前编辑会话。 */ () => {
+    editorRequest.current?.abort();
+    editorRequest.current = null;
+    setEditForm({});
+    setSelectedCard(null);
+    setEditLoading(false);
+    setEditError('');
+    setShowEditModal(false);
+  }, []);
+  // cleanupEditor 页面卸载时取消仍在进行的编辑配置读取。
+  useEffect(/* editorLifecycle 注册卸载清理。 */ () => /* abortEditor 取消页面卸载后的配置读取。 */ () => editorRequest.current?.abort(), []);
+
   // handleEdit 打开指定卡密组的编辑弹窗并初始化草稿。
-  const handleEdit = useCallback(/* editAction 打开卡密编辑弹窗。 */ (card: Card) => {
+  const handleEdit = useCallback(/* editAction 打开卡密编辑弹窗。 */ async (card: Card) => {
+    editorRequest.current?.abort();
+    // request 绑定这次打开操作，隔离切换卡密与关闭后的迟到响应。
+    const request = new AbortController();
+    editorRequest.current = request;
+    setEditLoading(card.type === 'api');
+    setEditError('');
     setSelectedCard(card);
     setEditForm({
       id: card.id,
@@ -152,13 +184,27 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       description: card.description || '',
       enabled: card.enabled,
     });
-    ++editorGenerationRef.current;
-    setEditModalOpen(true);
+    setShowEditModal(true);
+    if (card.type !== 'api') return;
+    try {
+      // config 只进入当前编辑草稿，不写入列表缓存或浏览器存储。
+      const config = await getCardAPIEditor(card.id, { signal: request.signal });
+      if (request.signal.aborted) return;
+      setEditForm(/* loadEditor 将已授权的完整配置载入当前草稿。 */ current => ({
+        ...current, api_url: config.url, api_method: config.method, api_timeout: config.timeout_seconds,
+        api_content_type: config.content_type, api_headers: config.headers, api_params: config.params,
+        api_body: config.body, api_response_path: config.response_path || '', api_retry_enabled: config.retry_enabled,
+      }));
+    } catch {
+      if (!request.signal.aborted) setEditError('读取配置失败，请重试');
+    } finally {
+      if (!request.signal.aborted) setEditLoading(false);
+    }
   }, []);
 
   // handleSaveEdit 保存当前卡密编辑草稿并刷新库存。
   const handleSaveEdit = useCallback(/* saveEditAction 保存卡密编辑草稿。 */ async () => {
-    if (!selectedCard) return;
+    if (!selectedCard || editLoading || editError) return;
     if (!editForm.name?.trim()) {
       alert('请输入卡密名称');
       return;
@@ -186,31 +232,27 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
         enabled: editForm.enabled ?? true,
       };
       if (editForm.type === 'api') {
-        updateData.api_config = {
-          url: editForm.api_url?.trim() || '',
-          method: editForm.api_method || 'GET',
-          timeout_seconds: editForm.api_timeout || 10,
-          headers: editForm.api_headers_action === 'clear' ? undefined : editForm.api_headers_action === 'replace' && !editForm.api_headers?.trim() ? {} : editForm.api_headers?.trim() || undefined,
-          params: editForm.api_params_action === 'clear' ? undefined : editForm.api_params_action === 'replace' && !editForm.api_params?.trim() ? {} : editForm.api_params?.trim() || undefined,
-          content_type: editForm.api_content_type || 'application/json',
-          body: editForm.api_body?.trim() || undefined,
-          headers_action: editForm.api_headers_action || 'retain',
-          params_action: editForm.api_params_action || 'retain',
-          response_path: editForm.api_response_path?.trim() || undefined,
-          retry_enabled: editForm.api_retry_enabled || false,
-        };
+        updateData.api_config = apiConfigFromEditForm(editForm);
       } else if (editForm.type === 'text') {
         updateData.text_content = editForm.text_content?.trim() || '';
       } else if (editForm.type === 'data') {
-        // 仅在用户实际修改库存编辑框时提交，避免旧库存快照覆盖自动发货结果。
-        if (editForm.data_content !== selectedCard.data_content) updateData.data_content = editForm.data_content?.trim() || '';
+        // 仅在用户实际修改库存编辑框时提交，并附带打开时的库存快照；编辑期间库存被自动发货消费时服务端拒绝覆盖。
+        if (editForm.data_content !== selectedCard.data_content) {
+          updateData.data_content = editForm.data_content?.trim() || '';
+          updateData.expected_data_content = selectedCard.data_content ?? '';
+        }
       } else if (editForm.type === 'image') {
         Object.assign(updateData, imageSourceFields(editForm));
       }
+      // request 记录保存发起时的编辑会话，防止迟到保存关闭后来打开的弹窗。
+      const request = editorRequest.current;
       await updateCard(selectedCard.id, updateData);
-      if (generation !== editorGenerationRef.current) return;
-      setEditModalOpen(false);
-      await loadCards();
+      // 只有仍属于同一编辑会话的保存才关闭弹窗并刷新列表：被取消或已被下一次打开取代的迟到保存
+      // 既不能关闭新草稿，也不应把列表刷新到与当前草稿不一致的状态。
+      if (editorRequest.current === request) {
+        closeEdit();
+        await loadCards();
+      }
     } catch (/* error 表示卡密编辑请求异常。 */ error: unknown) {
       if (generation !== editorGenerationRef.current) return;
       console.error('更新卡密失败:', error);
@@ -218,7 +260,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     } finally {
       if (pendingGenerationRef.current === generation) pendingGenerationRef.current = null;
     }
-  }, [editForm, loadCards, selectedCard]);
+  }, [closeEdit, editError, editForm, editLoading, loadCards, selectedCard]);
 
   // handleDelete 删除指定卡密组并刷新库存。
   const handleDelete = useCallback(/* deleteAction 删除卡密组。 */ async (id: string | number) => {
@@ -263,17 +305,7 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
       if (addForm.type === 'data') payload.data_content = addForm.content.trim();
       if (addForm.type === 'image') Object.assign(payload, imageSourceFields(addForm));
       if (addForm.type === 'api') {
-        payload.api_config = {
-          url: addForm.content.trim(),
-          method: addForm.api_method,
-          timeout_seconds: addForm.api_timeout,
-          headers: addForm.api_headers.trim() || undefined,
-          params: addForm.api_params.trim() || undefined,
-          content_type: addForm.api_content_type,
-          body: addForm.api_body.trim() || undefined,
-          response_path: addForm.api_response_path.trim() || undefined,
-          retry_enabled: addForm.api_retry_enabled,
-        };
+        payload.api_config = apiConfigFromAddForm(addForm);
       }
       await createCard(payload);
       if (generation !== editorGenerationRef.current) return;
@@ -347,6 +379,9 @@ export const useCardActions = ({ cards, loadCards }: CardActionsOptions): CardAc
     setNameSearch,
     showEditModal,
     setShowEditModal,
+    closeEdit,
+    editLoading,
+    editError,
     showAddModal,
     setShowAddModal,
     selectedCard,

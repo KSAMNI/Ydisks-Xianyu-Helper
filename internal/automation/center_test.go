@@ -600,6 +600,8 @@ func TestOrderPaidPreparationFailureIsPersistedAndRecovered(t *testing.T) {
 	// store、cleanup 提供本测试独占的 SQLite 及释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 控制本地规则、订单和队列操作。
 	ctx := context.Background()
 	// admin 提供测试规则和卡密的用户归属。
@@ -1101,6 +1103,8 @@ func TestCenterOrderPaidFetchesOrderDetailMatchesSpecAndQuantity(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 用于本次流程后续判断的ctx
 	ctx := context.Background()
 
@@ -1248,6 +1252,8 @@ func TestCenterOrderPaidSendsAllCardActionsForSameSpec(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 用于本次流程后续判断的ctx
 	ctx := context.Background()
 	// admin 用于本次流程后续判断的admin
@@ -1357,6 +1363,8 @@ func TestCenterAccountWideOrderPaidRuleSendsForSpecifiedOrderSpec(t *testing.T) 
 	// store、cleanup 提供自动化中心使用的隔离数据库及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 控制规则创建、付款事件处理和订单读取的生命周期。
 	ctx := context.Background()
 	// admin 保存测试规则和卡密库存的所属用户。
@@ -2301,6 +2309,8 @@ func TestCenterNotifiesOnDeliverySuccess(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 用于本次流程后续判断的ctx
 	ctx := context.Background()
 	// admin 用于本次流程后续判断的admin
@@ -2633,5 +2643,21 @@ func TestCookieValueFallbackUsesSingleValueQuery(t *testing.T) {
 	value, valueErr := center.cookieValue(ctx, "cid")
 	if valueErr != nil || value != "unb=123; _m_h5_tk=tk_1;" {
 		t.Fatalf("cookieValue value=%q err=%v", value, valueErr)
+	}
+}
+
+// disableAutoConsign 关闭回归夹具账号 cid 的自动确认发货设置；只验证发卡与恢复行为、不关心平台确认的用例使用。
+func disableAutoConsign(t *testing.T, store *db.Store) {
+	t.Helper()
+	// admin、adminErr 提供更新账号设置所需的归属用户。
+	admin, adminErr := store.Users.GetByUsername(context.Background(), "admin")
+	if adminErr != nil || admin == nil {
+		t.Fatalf("读取测试管理员失败: %v", adminErr)
+	}
+	// disabled 表示关闭账号自动确认发货。
+	disabled := false
+	// updateErr 保存更新账号设置的错误。
+	if _, updateErr := store.Cookies.UpdateSettings(context.Background(), "cid", db.AccountSettingsUpdate{UserID: admin.ID, AutoConsign: &disabled}); updateErr != nil {
+		t.Fatalf("关闭自动确认发货失败: %v", updateErr)
 	}
 }

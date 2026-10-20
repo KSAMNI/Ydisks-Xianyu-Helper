@@ -25,6 +25,8 @@ type cardMutationRequest struct {
 	TextContent string `json:"text_content"`
 	// DataContent 是 data 类型尚未消费的逐行卡密库存；指针用于区分省略和显式空库存。
 	DataContent *string `json:"data_content"`
+	// ExpectedDataContent 是编辑者打开弹窗时看到的库存快照；提交时服务端只在库存未变化时覆盖。
+	ExpectedDataContent *string `json:"expected_data_content"`
 	// ImageURL 省略时更新保留旧来源，显式空串用于来源切换。
 	ImageURL *string `json:"image_url"`
 	// ImagePath 是执行账号素材目录内的相对路径；省略保留，显式空串清空。
@@ -51,6 +53,8 @@ type cardAppendRequest struct {
 
 // cardAPITestRequest 是临时 API 测试请求的具名 DTO。
 type cardAPITestRequest struct {
+	// CardID 指向已保存卡密；省略时只测试完整的新建草稿。
+	CardID int64 `json:"card_id,omitempty"`
 	// APIConfig 是与卡券保存接口一致的 API 配置对象或历史 JSON 字符串。
 	APIConfig json.RawMessage `json:"api_config"`
 }
@@ -103,6 +107,18 @@ func (s *Server) testCardAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// session 是当前已认证用户，已保存模板只能按该用户的所有权读取。
+	session := auth.SessionFromContext(r.Context())
+	if session == nil {
+		writeErr(w, http.StatusUnauthorized, "请先登录")
+		return
+	}
+	config, err = s.cardsApplication().PrepareAPITest(r.Context(), session.UserID, request.CardID, config)
+	if err != nil {
+		writeCardAPIError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
 	// result、err 分别是临时远端调用的脱敏诊断和本地配置或网络错误。
 	result, err := s.applications.apiRequestTester.Test(r.Context(), cardsapp.APIRequestTestInput{Config: config})
 	if err != nil {
@@ -201,6 +217,8 @@ func (s *Server) updateCard(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "卡券不存在")
 		case errors.Is(err, cardsapp.ErrForbidden):
 			writeErr(w, http.StatusForbidden, "无权操作该卡密组")
+		case errors.Is(err, cardsapp.ErrDataStockChanged):
+			writeErr(w, http.StatusConflict, cardsapp.ErrDataStockChanged.Error())
 		default:
 			writeErr(w, http.StatusInternalServerError, "更新失败")
 		}
@@ -253,6 +271,11 @@ func decodeCardDraft(r *http.Request) (cardsapp.Draft, error) {
 	if request.DataContent != nil {
 		dataContent = *request.DataContent
 	}
+	// expectedData、expectedDataSet 保存库存快照及请求是否提交该守卫字段。
+	expectedData, expectedDataSet := "", request.ExpectedDataContent != nil
+	if request.ExpectedDataContent != nil {
+		expectedData = *request.ExpectedDataContent
+	}
 	// isMultiSpec、isMultiSpecSet 保存多规格开关及请求是否明确提交该字段。
 	isMultiSpec, isMultiSpecSet := false, request.IsMultiSpec != nil
 	if request.IsMultiSpec != nil {
@@ -280,6 +303,7 @@ func decodeCardDraft(r *http.Request) (cardsapp.Draft, error) {
 		Name: request.Name, Type: request.Type, APIConfig: apiConfig,
 		TextContent: request.TextContent, DataContent: dataContent, DataContentSet: dataContentSet,
 		ImageURL: imageURL, ImageURLSet: request.ImageURL != nil, ImagePath: imagePath, ImagePathSet: request.ImagePath != nil,
+		ExpectedDataContent: expectedData, ExpectedDataContentSet: expectedDataSet,
 		Description: request.Description, Enabled: request.Enabled, DelaySeconds: request.DelaySeconds,
 		IsMultiSpec: isMultiSpec, IsMultiSpecSet: isMultiSpecSet,
 		SpecName: specName, SpecNameSet: specNameSet,

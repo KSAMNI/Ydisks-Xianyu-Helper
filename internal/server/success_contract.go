@@ -310,7 +310,7 @@ type cookieDetailResponse struct {
 	ID string `json:"id"`
 	// Enabled 表示账号是否允许运行。
 	Enabled bool `json:"enabled"`
-	// AutoConfirm 表示是否自动确认订单。
+	// AutoConfirm 表示账号是否开启自动发货总开关（库字段 auto_confirm，付款后自动发卡密或发货模板）；不是确认发货开关。
 	AutoConfirm bool `json:"auto_confirm"`
 	// AutoConsign 表示自动发货后是否自动转已发货。
 	AutoConsign bool `json:"auto_consign"`
@@ -380,9 +380,9 @@ type cookieProfileResponse struct {
 	ProfileError string `json:"profile_error"`
 }
 
-// autoConfirmResponse 是账号自动确认设置查询接口的具名响应 DTO。
+// autoConfirmResponse 是账号自动发货总开关与自动确认发货开关查询接口的具名响应 DTO。
 type autoConfirmResponse struct {
-	// AutoConfirm 表示是否自动确认订单。
+	// AutoConfirm 表示账号是否开启自动发货总开关（库字段 auto_confirm，付款后自动发卡密或发货模板）；不是确认发货开关。
 	AutoConfirm bool `json:"auto_confirm"`
 	// AutoConsign 表示自动发货后是否自动转已发货。
 	AutoConsign bool `json:"auto_consign"`
@@ -424,6 +424,8 @@ type itemListResponse struct {
 	MultiQuantityDelivery bool `json:"multi_quantity_delivery"`
 	// IsMultiQtyShip 是按数量发货的兼容字段。
 	IsMultiQtyShip bool `json:"is_multi_qty_ship"`
+	// AIOverride 是商品级 AI 启停覆盖状态。
+	AIOverride string `json:"ai_override"`
 }
 
 // itemDetailResponse 是单个本地商品详情接口的具名响应 DTO。

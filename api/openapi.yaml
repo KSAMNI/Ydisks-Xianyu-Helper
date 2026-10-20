@@ -2277,6 +2277,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   "/api/v1/cards/{card_id}":
     delete:
       operationId: deleteApiV1CardsBycard_id
@@ -2419,6 +2438,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: 统一错误响应
           content:
@@ -2449,6 +2474,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CardAppendResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/cards/{card_id}/api-editor":
+    get:
+      operationId: getApiV1CardsBycard_idApiEditor
+      summary: getApiV1CardsBycard_idApiEditor
+      parameters:
+          - name: card_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CardAPIEditorResponse'
         '400':
           description: 统一错误响应
           content:
@@ -3899,6 +3972,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/items/{cookie_id}/{item_id}/ai-settings":
+    get:
+      operationId: getApiV1ItemsBycookie_idByitem_idAiSettings
+      summary: 读取商品级 AI 客服配置
+      parameters:
+        - {name: cookie_id, in: path, required: true, schema: {type: string}}
+        - {name: item_id, in: path, required: true, schema: {type: string}}
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ItemAISettingsResponse'}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+    put:
+      operationId: putApiV1ItemsBycookie_idByitem_idAiSettings
+      summary: 保存商品级 AI 客服配置
+      parameters:
+        - {name: cookie_id, in: path, required: true, schema: {type: string}}
+        - {name: item_id, in: path, required: true, schema: {type: string}}
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ItemAISettingsUpdateRequest'}
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ItemAISettingsResponse'}
+        '400': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '401': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '403': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '404': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
+        '500': {description: 统一错误响应, content: {application/json: {schema: {$ref: '#/components/schemas/ErrorResponse'}}}}
   "/api/v1/items/{cookie_id}/{item_id}/multi-quantity-delivery":
     put:
       operationId: putApiV1ItemsBycookie_idByitem_idMultiQuantityDelivery
@@ -7937,7 +8052,7 @@ components:
       properties:
         keyword: {type: string}
         expressions: {type: array, items: {type: string}, description: 同一条规则的多个匹配表达式；缺省时使用 keyword}
-        match_type: {type: string, enum: [contains, regexp], description: 匹配模式；历史规则按 contains 处理}
+        match_type: {type: string, enum: [contains, regexp], description: 匹配模式；历史规则按 contains 处理，contains 下每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词}
         reply: {type: string}
     KeywordBasicListResponse:
       type: array
@@ -7961,7 +8076,7 @@ components:
         id: {type: integer}
         keyword: {type: string, description: 第一条表达式的兼容单值字段}
         expressions: {type: array, items: {type: string}, description: 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复}
-        match_type: {type: string, enum: [contains, regexp], description: contains 为大小写不敏感普通包含，regexp 为大小写不敏感 Go/RE2 正则}
+        match_type: {type: string, enum: [contains, regexp], description: contains 为大小写不敏感普通包含（每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词，任一命中即触发），regexp 为大小写不敏感 Go/RE2 正则（| 为正则分支，不做拆分）}
         reply: {type: string}
         item_id: {type: string, description: 关联商品标识的持久化字段；多选时为逗号分隔串，空串表示账号级回复}
         item_ids: {type: array, items: {type: string}, description: 关联商品标识集合；空集合表示账号级回复}
@@ -8012,7 +8127,7 @@ components:
       items: {$ref: '#/components/schemas/ItemReplyResponse'}
     AIReplySettingsResponse:
       type: object
-      required: [ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
+      required: [ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts, ai_mode]
       properties:
         cookie_id: {type: string}
         ai_enabled: {type: boolean}
@@ -8021,6 +8136,7 @@ components:
         max_discount_amount: {type: integer}
         max_bargain_rounds: {type: integer}
         custom_prompts: {type: string}
+        ai_mode: {type: string, enum: [bargain_only, full_service]}
     AIReplySettingsUpdateRequest:
       type: object
       required: [ai_enabled, auto_adjust_price_enabled, max_discount_percent, max_discount_amount, max_bargain_rounds, custom_prompts]
@@ -8031,6 +8147,7 @@ components:
         max_discount_amount: {type: integer, minimum: 0}
         max_bargain_rounds: {type: integer, minimum: 1, maximum: 10}
         custom_prompts: {type: string}
+        ai_mode: {type: string, enum: [bargain_only, full_service]}
     AIReplySettingsMapResponse:
       type: object
       additionalProperties:
@@ -8250,6 +8367,9 @@ components:
             - type: string
         text_content: {type: string}
         data_content: {type: string}
+        expected_data_content:
+          type: string
+          description: 编辑 data 卡库存时打开弹窗所见的库存快照；提交后服务端仅在当前库存仍与之相同时覆盖，否则返回 409。
         image_url: {type: string, description: image 类型的固定 HTTP(S) 来源；更新省略保留，显式空串清空，切换来源必须清空旧来源。}
         image_path: {type: string, maxLength: 1024, description: 实际执行账号 reply-images 目录内的相对路径；与 image_url 恰好一个来源，省略保留、空串清空，无浏览器上传。}
         description: {type: string}
@@ -8353,10 +8473,24 @@ components:
         params_configured: {type: boolean}
         ready: {type: boolean}
         validation_error: {type: string}
+    CardAPIEditorResponse:
+      type: object
+      required: [url, method, timeout_seconds, content_type, headers, params, body, response_path, retry_enabled]
+      properties:
+        url: {type: string}
+        method: {type: string, enum: [GET, POST]}
+        timeout_seconds: {type: integer}
+        content_type: {type: string}
+        headers: {type: string, description: 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录}
+        params: {type: string}
+        body: {type: string}
+        response_path: {type: string}
+        retry_enabled: {type: boolean}
     CardAPITestRequest:
       type: object
       required: [api_config]
       properties:
+        card_id: {type: integer, minimum: 1, description: 已保存卡密标识；提供时合并其模板并校验当前用户所有权}
         api_config:
           oneOf:
             - $ref: '#/components/schemas/APICardConfigMutation'
@@ -8371,9 +8505,26 @@ components:
         response_fields: {type: array, items: {type: string}}
         extracted_value: {type: string}
         response_preview: {type: string}
+    ItemAIOverride:
+      type: string
+      enum: [inherit, enabled, disabled]
+    ItemAISettingsUpdateRequest:
+      type: object
+      required: [ai_override, item_context]
+      properties:
+        ai_override: {$ref: '#/components/schemas/ItemAIOverride'}
+        item_context: {type: string, maxLength: 12000}
+    ItemAISettingsResponse:
+      type: object
+      required: [cookie_id, item_id, ai_override, item_context]
+      properties:
+        cookie_id: {type: string}
+        item_id: {type: string}
+        ai_override: {$ref: '#/components/schemas/ItemAIOverride'}
+        item_context: {type: string, maxLength: 12000}
     ItemListResponse:
       type: object
-      required: [id, cookie_id, item_id, item_title, item_description, item_category, item_price, item_detail, item_image, is_multi_spec, multi_quantity_delivery, is_multi_qty_ship]
+      required: [id, cookie_id, item_id, item_title, item_description, item_category, item_price, item_detail, item_image, is_multi_spec, multi_quantity_delivery, is_multi_qty_ship, ai_override]
       properties:
         id: {type: integer}
         cookie_id: {type: string}
@@ -8387,6 +8538,7 @@ components:
         is_multi_spec: {type: boolean}
         multi_quantity_delivery: {type: boolean}
         is_multi_qty_ship: {type: boolean}
+        ai_override: {$ref: '#/components/schemas/ItemAIOverride'}
     ItemListArrayResponse:
       type: array
       items: {$ref: '#/components/schemas/ItemListResponse'}

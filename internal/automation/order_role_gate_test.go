@@ -53,6 +53,8 @@ func TestUnknownWebSocketPaidEventDeferredThenResumesAfterLocalFacts(t *testing.
 	// store、cleanup 提供隔离数据库及测试结束后的连接释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制延期任务、订单同步事实和恢复执行的生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供卡密组和付款规则的管理用户归属。
@@ -153,6 +155,8 @@ func TestUnknownWebSocketPaidEventWithLocalSellerFactsContinuesAutomation(t *tes
 	// store、cleanup 提供隔离数据库及测试结束后的连接释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制当前测试的商品、订单和自动化动作生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供卡密组和付款规则的管理用户归属。
@@ -261,6 +265,8 @@ func TestUnknownWebSocketRecoveryRequiresSellerEvidence(t *testing.T) {
 	// store、cleanup 提供恢复路径所需的隔离数据库及资源释放责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
+	// 本用例只验证发货与恢复行为，关闭账号自动确认发货，避免规则缺少确认动作时的隐式确认步骤访问平台；隐式确认由专门用例覆盖。
+	disableAutoConsign(t, store)
 	// ctx 限制规则、订单和恢复扫描的同步生命周期。
 	ctx := context.Background()
 	// admin、adminErr 提供恢复规则的管理用户归属。

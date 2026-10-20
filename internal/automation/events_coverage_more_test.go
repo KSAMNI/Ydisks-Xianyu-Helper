@@ -66,6 +66,40 @@ func TestEventFactHelpersCoverValidationAndFallbacks(t *testing.T) {
 	}
 }
 
+// TestParseUpdateKeyRejectsBusinessCodeSegment 验证平台「订单:阶段码:业务键:序号」编码不会被解析成短数字伪订单，
+// 同时保持「会话:订单:...」和「会话:历史订单标识:...」编码的会话与订单归属不变。
+func TestParseUpdateKeyRejectsBusinessCodeSegment(t *testing.T) {
+	// cases 保存平台已观察到的 updateKey 编码及其期望解析结果。
+	cases := []struct {
+		// name 是本用例对应的平台业务卡片名称。
+		name string
+		// updateKey 是平台 extJson 中的原始更新键。
+		updateKey string
+		// wantChatID 是期望解析出的会话标识，空表示编码中不含会话标识。
+		wantChatID string
+		// wantOrderID 是期望解析出的真实订单标识。
+		wantOrderID string
+	}{
+		{name: "确认收货带评价_卖家", updateKey: "3310145690545023995:20:BUYER_CONFIRM_RATE_SELLER:74", wantChatID: "", wantOrderID: "3310145690545023995"},
+		{name: "确认收货带评价_买家侧", updateKey: "3310145690545023996:20:BUYER_CONFIRM_RATE_BUTER:74", wantChatID: "", wantOrderID: "3310145690545023996"},
+		{name: "首段过短无效", updateKey: "20:20:BUYER_CONFIRM_RATE_SELLER:74", wantChatID: "", wantOrderID: ""},
+		{name: "首段非数字无效", updateKey: "not-an-order:20:BUYER_CONFIRM_RATE_SELLER:74", wantChatID: "", wantOrderID: ""},
+		{name: "第二段非纯数字不算阶段码", updateKey: "3310145690545023997:2a:BUYER_CONFIRM_RATE_SELLER:74", wantChatID: "3310145690545023997", wantOrderID: "2a"},
+		{name: "提醒收货_买家", updateKey: "67610674681:3316904653109017997:100:REMINDR_CONFIRM_BUYER:26", wantChatID: "67610674681", wantOrderID: "3316904653109017997"},
+		{name: "待付款_卖家", updateKey: "67565991380:5127503438001025036:1_not_pay_seller", wantChatID: "67565991380", wantOrderID: "5127503438001025036"},
+		{name: "非数字订单标识保持兼容", updateKey: "chat-1:order-seq:10:PAID:26", wantChatID: "chat-1", wantOrderID: "order-seq"},
+		{name: "空业务键", updateKey: "", wantChatID: "", wantOrderID: ""},
+	}
+	// testCase 是当前待验证的 updateKey 编码样本及其期望身份字段。
+	for _, testCase := range cases {
+		// chatID、orderID 保存当前用例解析出的会话与订单标识。
+		chatID, orderID := parseUpdateKey(testCase.updateKey)
+		if chatID != testCase.wantChatID || orderID != testCase.wantOrderID {
+			t.Fatalf("%s: parseUpdateKey(%q)=(%q,%q)，期望=(%q,%q)", testCase.name, testCase.updateKey, chatID, orderID, testCase.wantChatID, testCase.wantOrderID)
+		}
+	}
+}
+
 // TestFieldsFromRawCoversFallbackPaths 验证平台报文在备用顶层字段和不同卡片内容路径下的事实提取。
 func TestFieldsFromRawCoversFallbackPaths(t *testing.T) {
 	// raw 保存使用备用字段位置和第三种动态卡片路径的交易报文。

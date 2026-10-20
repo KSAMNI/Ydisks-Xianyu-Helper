@@ -595,7 +595,8 @@ func (c *Cookies) IsPaused(ctx context.Context, cookieID string) (bool, int64, e
 	return pausedUntil > time.Now().UTC().Unix(), pausedUntil, nil
 }
 
-// GetAutoConfirm 读取账号是否自动将订单确认成已发货状态。
+// GetAutoConfirm 读取账号的自动发货总开关（auto_confirm）：开启后付款订单才会自动发卡密或发货模板。
+// 历史字段名含 confirm，但发货后是否调用平台确认发货由 GetAutoConsign 读取的 auto_consign 决定。
 func (c *Cookies) GetAutoConfirm(ctx context.Context, cookieID string) (bool, error) {
 	// enabled 用于本次流程后续判断的启用状态
 	var enabled int

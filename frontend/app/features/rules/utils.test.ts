@@ -10,6 +10,7 @@ buildAdjustPriceConfig,
 buildReviewConfig,
 cardActionsForTrigger,
 defaultRuleName,
+reviewLookbackHours,
 emptyVariant,
 hasCompleteTemplateBindings,
 isValidAdjustPrice,needsAllItemsConfirmation,
@@ -40,6 +41,21 @@ describe('规则工具函数', /* 当前回调处理规则配置和展示状态�
     expect(parseJSONObject('{"max_attempts": 3}')).toEqual({ max_attempts: 3 });
     expect(buildReviewConfig('{"after_shipped_hours": 48}')).toBe('{"after_shipped_hours":48,"repeat_interval_hours":24,"max_attempts":1}');
     expect(buildReviewConfig(undefined, { max_attempts: 4 })).toBe('{"after_shipped_hours":72,"repeat_interval_hours":24,"max_attempts":4}');
+  });
+
+  test('求评价回溯窗口：默认推导、显式值保留与下限', /* 当前回调处理规则配置和展示状态。 */ () => {
+    // 默认 72h 首次、1 次：72 + 24 = 96。
+    expect(reviewLookbackHours()).toBe(96);
+    // 多次求评：48 + 2*12 + 24 = 96。
+    expect(reviewLookbackHours('{"after_shipped_hours":48,"repeat_interval_hours":12,"max_attempts":3}')).toBe(96);
+    // 显式值生效，且不得小于首次等待时长。
+    expect(reviewLookbackHours('{"max_lookback_hours":200}')).toBe(200);
+    expect(reviewLookbackHours('{"after_shipped_hours":48,"max_lookback_hours":10}')).toBe(48);
+    // 非正值视为未配置。
+    expect(reviewLookbackHours('{"max_lookback_hours":-5}')).toBe(96);
+    // 显式窗口随其他字段编辑被保留，未配置时不写入。
+    expect(buildReviewConfig('{"max_lookback_hours":120}', { max_attempts: 2 })).toBe('{"after_shipped_hours":72,"repeat_interval_hours":24,"max_attempts":2,"max_lookback_hours":120}');
+    expect(buildReviewConfig(undefined, { max_lookback_hours: 30 })).toBe('{"after_shipped_hours":72,"repeat_interval_hours":24,"max_attempts":1,"max_lookback_hours":30}');
   });
 
   test('生成规则名称并识别可替换的系统名称', /* 当前回调处理规则配置和展示状态。 */ () => {

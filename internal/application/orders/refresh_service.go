@@ -397,7 +397,7 @@ func (s *RefreshService) RefreshSingle(ctx context.Context, userID int64, orderI
 		status = NormalizeOrderStatus(order.OrderStatus)
 	}
 	// err 保存订单详情写入错误。
-	if err := s.repository.UpsertOrder(ctx, orderID, UpsertOptions{CookieID: cookieID, OrderStatus: status, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, Quantity: fetchResult.Detail.Quantity, Amount: fetchResult.Detail.Amount}); err != nil {
+	if err := s.repository.UpsertOrder(ctx, orderID, UpsertOptions{CookieID: cookieID, OrderStatus: status, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, Quantity: fetchResult.Detail.Quantity, Amount: fetchResult.Detail.Amount, PlatformSnapshot: true}); err != nil {
 		return SingleRefreshResult{}, err
 	}
 	return SingleRefreshResult{Success: true, Message: "订单刷新完成", Detail: RefreshDetail{Quantity: fetchResult.Detail.Quantity, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, OrderStatus: NormalizeOrderStatus(fetchResult.Detail.OrderStatus), Amount: fetchResult.Detail.Amount}, ThrottleWaitMs: fetchResult.ThrottleWaitMs, Forced: forced}, nil
@@ -619,7 +619,7 @@ func (s *RefreshService) refreshDetailChunk(ctx context.Context, userID int64, c
 		if !ValidEditableOrderStatus(newStatus) {
 			newStatus = target.CurrentStatus
 		}
-		pendingWrites = append(pendingWrites, refreshWrite{OrderID: target.OrderID, CurrentStatus: target.CurrentStatus, NewStatus: newStatus, Options: UpsertOptions{CookieID: cookieID, OrderStatus: newStatus, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, Quantity: fetchResult.Detail.Quantity, Amount: fetchResult.Detail.Amount}, CookieUpdate: fetchResult.CookieUpdate})
+		pendingWrites = append(pendingWrites, refreshWrite{OrderID: target.OrderID, CurrentStatus: target.CurrentStatus, NewStatus: newStatus, Options: UpsertOptions{CookieID: cookieID, OrderStatus: newStatus, SpecName: fetchResult.Detail.SpecName, SpecValue: fetchResult.Detail.SpecValue, Quantity: fetchResult.Detail.Quantity, Amount: fetchResult.Detail.Amount, PlatformSnapshot: true}, CookieUpdate: fetchResult.CookieUpdate})
 	}
 	cancel()
 	unlock = s.repository.LockCredentials(cookieID)

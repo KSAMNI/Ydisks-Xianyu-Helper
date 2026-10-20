@@ -19,7 +19,7 @@ func TestMultiDB_ReplyImageMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			goose.SetBaseFS(migrationsFS)
-			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 52); err != nil { // err 是构造旧版本基线失败。
+			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 54); err != nil { // err 是构造旧版本基线失败。
 				t.Fatal(err)
 			}
 			if columnExistsForDialect(t, target.store.DB, target.dialect, "default_replies", "reply_image_path") || columnExistsForDialect(t, target.store.DB, target.dialect, "item_replay", "reply_image_path") {
@@ -35,7 +35,7 @@ func TestMultiDB_ReplyImageMigration(t *testing.T) {
 			if _, err := target.store.DB.ExecContext(ctx, `INSERT INTO item_replay (item_id,cookie_id,reply_content) VALUES ('old-item',?,'历史商品')`, cookieID); err != nil { // err 是旧格式商品配置写入错误。
 				t.Fatal(err)
 			}
-			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 53); err != nil { // err 是本次新增迁移的执行错误。
+			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 55); err != nil { // err 是本次新增迁移的执行错误。
 				t.Fatal(err)
 			}
 			// reply、readErr 验证升级不改旧 URL、正文或一次性开关。

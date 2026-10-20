@@ -3,6 +3,8 @@ package keywords
 import (
 	"context"
 	"errors"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -642,5 +644,99 @@ func TestServiceRejectsInvalidExpressionsBeforeRepositoryWrites(t *testing.T) {
 	})
 	if replaceErr == nil || replaceErr.Error() != "第 2 个正则表达式无效" || replaceRepository.replaceCalls != 0 {
 		t.Fatalf("批量非法正则边界错误 replaceErr=%v calls=%d", replaceErr, replaceRepository.replaceCalls)
+	}
+}
+
+// TestNormalizeExpressionsRules 验证表达式规范化规则：expressions 为 nil 时回退历史 keyword，
+// 显式给出的空集合或含空白项视为错误，重复项按首次出现顺序去重，并保持表达式正文大小写与内部空白不变。
+func TestNormalizeExpressionsRules(t *testing.T) {
+	// cases 每项描述输入、期望结果或期望错误片段。
+	cases := []struct {
+		// name 是子用例说明。
+		name string
+		// keyword、expressions 是历史单值字段与新多表达式字段。
+		keyword     string
+		expressions []string
+		// want 是期望的规范化结果；wantErr 非空表示必须失败且错误文本包含该片段。
+		want    []string
+		wantErr string
+	}{
+		{"缺省 expressions 回退 keyword 并去空白", "  在吗  ", nil, []string{"在吗"}, ""},
+		{"缺省 expressions 且 keyword 为空白", "   ", nil, nil, "至少填写一个表达式"},
+		{"显式空集合不回退 keyword", "在吗", []string{}, nil, "至少填写一个表达式"},
+		{"expressions 优先于 keyword", "旧词", []string{"新词"}, []string{"新词"}, ""},
+		{"空白项指出 1 起始位置", "", []string{"甲", "  "}, nil, "第 2 个表达式不能为空"},
+		{"去重保持首次出现顺序", "", []string{"乙", "甲", "乙", " 甲 "}, []string{"乙", "甲"}, ""},
+		{"保留大小写与内部空白", "", []string{"Hello World"}, []string{"Hello World"}, ""},
+	}
+	// tc 是当前规范化场景。
+	for _, tc := range cases {
+		// err、got 保存 normalizeExpressions 调用的返回值及其错误，随后断言是否符合该场景的预期。
+		got, err := normalizeExpressions(tc.keyword, tc.expressions, "contains")
+		if tc.wantErr != "" {
+			// validationErr 用于确认错误类型是可展示的校验错误。
+			var validationErr *ValidationError
+			if err == nil || !errors.As(err, &validationErr) || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("%s: err=%v want 包含 %q", tc.name, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil || !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: got=%v err=%v want %v", tc.name, got, err, tc.want)
+		}
+	}
+}
+
+// TestNormalizeMatchTypeRules 验证匹配模式归一：历史别名归为 contains，regex 别名归为 regexp，
+// 大小写与空白不敏感；regexp 会预编译并给出 1 起始的错误位置且不泄露编译器内部文本；未知模式被拒绝。
+func TestNormalizeMatchTypeRules(t *testing.T) {
+	// okCases 描述应成功的输入及其规范结果。
+	okCases := map[string]string{
+		"":         KeywordMatchTypeContains,
+		"contains": KeywordMatchTypeContains,
+		" FUZZY ":  KeywordMatchTypeContains,
+		"exact":    KeywordMatchTypeContains,
+		"regexp":   KeywordMatchTypeRegexp,
+		"Regex":    KeywordMatchTypeRegexp,
+	}
+	// raw、want 是原始模式与期望的规范模式。
+	for raw, want := range okCases {
+		// err、got 保存 normalizeMatchType 调用的返回值及其错误，随后断言是否符合该场景的预期。
+		if got, err := normalizeMatchType(raw, []string{"在吗|在不在"}); err != nil || got != want {
+			t.Errorf("normalizeMatchType(%q)=%q err=%v want %q", raw, got, err, want)
+		}
+	}
+	// contains 模式不编译表达式：对正则非法的文本也必须通过。
+	if got, err := normalizeMatchType("contains", []string{"(未闭合"}); err != nil || got != KeywordMatchTypeContains {
+		t.Errorf("contains 模式不应校验正则: got=%q err=%v", got, err)
+	}
+	// regexp 模式遇到第二个表达式非法时报告其位置。
+	_, err := normalizeMatchType("regexp", []string{"有效", "(未闭合"})
+	if err == nil || !strings.Contains(err.Error(), "第 2 个正则表达式无效") {
+		t.Fatalf("应指出第 2 个正则无效: %v", err)
+	}
+	if strings.Contains(err.Error(), "missing closing") || strings.Contains(err.Error(), "error parsing") {
+		t.Fatalf("错误不得泄露编译器内部文本: %v", err)
+	}
+	// 未知模式必须被拒绝并提示合法取值。
+	if _, unknownErr := normalizeMatchType("glob", nil); unknownErr == nil || !strings.Contains(unknownErr.Error(), "contains 或 regexp") {
+		t.Fatalf("未知模式应被拒绝: %v", unknownErr)
+	}
+}
+
+// TestNormalizeMatchTypeRejectsUnbalancedRegexpWrapper 验证保存时拒绝试图逃出忽略大小写范围的不配对括号。
+func TestNormalizeMatchTypeRejectsUnbalancedRegexpWrapper(t *testing.T) {
+	// _, err 保存不配对括号表达式的校验结果，期望返回错误。
+	if _, err := normalizeMatchType("regexp", []string{"foo)|(BAR"}); err == nil {
+		t.Fatal("不配对括号必须被拒绝")
+	}
+}
+
+// TestNormalizeMatchTypeAcceptsPaddedRegexp 验证带首尾空白的合法正则与运行时一致地通过校验。
+func TestNormalizeMatchTypeAcceptsPaddedRegexp(t *testing.T) {
+	// matchType、err 是规范模式及校验错误。
+	matchType, err := normalizeMatchType("regexp", []string{"  foo|bar  "})
+	if err != nil || matchType != KeywordMatchTypeRegexp {
+		t.Fatalf("matchType=%q err=%v", matchType, err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	settingsapp "xianyu-go/internal/application/settings"
+	"xianyu-go/internal/db"
 )
 
 // TestSettingsRepositoryDeterministicPaths 覆盖设置适配器的系统、用户、AI 和归属查询路径。
@@ -92,7 +93,7 @@ func TestSettingsRepositoryDeterministicPaths(t *testing.T) {
 		t.Fatalf("missing owner=%d err=%v", missingOwner, missingOwnerErr)
 	}
 	// aiSettings、aiSettingsErr 保存用户范围内的 AI 配置摘要。
-	if err := repository.UpsertAIReply(ctx, "cid", settingsapp.AIReplySettings{AIEnabled: true, MaxBargainRounds: 2}); err != nil {
+	if err := repository.UpsertAIReply(ctx, "cid", settingsapp.AIReplySettings{AIEnabled: true, MaxBargainRounds: 2, AIMode: "bargain_only"}); err != nil {
 		t.Fatal(err)
 	}
 	// aiSettings、aiSettingsErr 保存用户范围内的 AI 配置摘要及读取错误。
@@ -114,5 +115,97 @@ func TestSettingsRepositoryDeterministicPaths(t *testing.T) {
 	hasRule, hasRuleErr := repository.HasEnabledAdjustPriceRule(ctx, "cid")
 	if hasRuleErr != nil || hasRule {
 		t.Fatalf("has rule=%v err=%v", hasRule, hasRuleErr)
+	}
+}
+
+// TestSettingsRepositoryAIReplyModeAndPricingConflict 验证账号 AI 设置在真实 SQLite 上的需求：
+// 工作模式随设置保存并能从列表与单项读取中原样取回；账号已有启用的固定改价规则时，启用 AI 议价必须以冲突拒绝且不写入；
+// 未启用 AI 议价时不受固定规则影响。
+func TestSettingsRepositoryAIReplyModeAndPricingConflict(t *testing.T) {
+	// store、cleanup 是带管理员账号 cid 的测试存储。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// repository 是被测的设置适配器。
+	repository := NewSettingsRepository(store)
+	// ctx 是本测试共用的上下文。
+	ctx := context.Background()
+	// owner 是账号 cid 的所有者。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// 保存全场景模式的设置并读回。
+	saved := settingsapp.AIReplySettings{AIEnabled: true, MaxDiscountPercent: 10, MaxDiscountAmount: 50, MaxBargainRounds: 3, CustomPrompts: "当天发货", AIMode: "full_service"}
+	// err 保存 UpsertAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := repository.UpsertAIReply(ctx, "cid", saved); err != nil {
+		t.Fatal(err)
+	}
+	// single、singleErr 保存 GetAIReply 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	single, singleErr := repository.GetAIReply(ctx, owner.ID, "cid")
+	if singleErr != nil || single.AIMode != "full_service" || single.CustomPrompts != "当天发货" || !single.AIEnabled {
+		t.Fatalf("单项读取不一致: %+v err=%v", single, singleErr)
+	}
+	// list、listErr 保存 ListAIReply 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	list, listErr := repository.ListAIReply(ctx, owner.ID)
+	if listErr != nil || len(list) != 1 || list[0].AIMode != "full_service" {
+		t.Fatalf("列表读取不一致: %+v err=%v", list, listErr)
+	}
+	// 未配置的账号返回“未配置”，而不是零值设置。
+	if _, err := repository.GetAIReply(ctx, owner.ID, "no-such-account"); !errors.Is(err, settingsapp.ErrConfigNotFound) {
+		t.Fatalf("未配置账号应返回 ErrConfigNotFound，got %v", err)
+	}
+
+	// 账号存在启用的固定改价规则时，再次启用 AI 议价必须冲突，且已保存的设置不被覆盖。
+	if _, err := store.Automation.Create(ctx, db.AutomationRuleInput{
+		UserID: owner.ID, CookieID: "cid", ItemID: "item-adjust", Name: "固定改价", TriggerType: "price_change", Enabled: true, Priority: 1,
+		Actions: []db.AutomationActionInput{{ActionType: "adjust_price", Enabled: true, SortOrder: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// err、has 保存 HasEnabledAdjustPriceRule 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	if has, err := repository.HasEnabledAdjustPriceRule(ctx, " cid "); err != nil || !has {
+		t.Fatalf("应检测到固定改价规则（含空白账号标识）: has=%v err=%v", has, err)
+	}
+	// conflicting 是在已保存设置基础上改为仅砍价模式的草稿，用于触发固定改价规则冲突。
+	conflicting := saved
+	conflicting.AIMode = "bargain_only"
+	// err 保存 UpsertAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := repository.UpsertAIReply(ctx, "cid", conflicting); !errors.Is(err, settingsapp.ErrPricingModeConflict) {
+		t.Fatalf("启用 AI 议价与固定改价规则应冲突，got %v", err)
+	}
+	// after、err 保存 GetAIReply 调用的返回值及其错误，随后断言是否符合该场景的预期。
+	if after, err := repository.GetAIReply(ctx, owner.ID, "cid"); err != nil || after.AIMode != "full_service" {
+		t.Fatalf("冲突失败不得覆盖已保存设置: %+v err=%v", after, err)
+	}
+	// 关闭 AI 议价时不受固定规则影响，可保存其他模式。
+	disabled := conflicting
+	disabled.AIEnabled = false
+	// err 保存 UpsertAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := repository.UpsertAIReply(ctx, "cid", disabled); err != nil {
+		t.Fatalf("关闭 AI 议价应不受固定改价规则影响: %v", err)
+	}
+}
+
+// TestSettingsRepositoryAIReplyRejectsUninitializedStore 验证设置适配器缺少依赖时，AI 设置相关入口都返回错误而不是 panic 或伪装成功。
+func TestSettingsRepositoryAIReplyRejectsUninitializedStore(t *testing.T) {
+	// repository 是没有任何存储的设置适配器。
+	repository := &SettingsRepository{}
+	// ctx 是本测试共用的上下文。
+	ctx := context.Background()
+	// err 保存 ListAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if _, err := repository.ListAIReply(ctx, 1); err == nil {
+		t.Error("ListAIReply 未初始化必须返回错误")
+	}
+	// err 保存 GetAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if _, err := repository.GetAIReply(ctx, 1, "cid"); err == nil {
+		t.Error("GetAIReply 未初始化必须返回错误")
+	}
+	// err 保存 UpsertAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+	if err := repository.UpsertAIReply(ctx, "cid", settingsapp.AIReplySettings{}); err == nil {
+		t.Error("UpsertAIReply 未初始化必须返回错误")
+	}
+	// err 保存 HasEnabledAdjustPriceRule 调用返回的错误，随后断言它是否符合该场景的预期。
+	if _, err := repository.HasEnabledAdjustPriceRule(ctx, "cid"); err == nil {
+		t.Error("HasEnabledAdjustPriceRule 未初始化必须返回错误")
 	}
 }

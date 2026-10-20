@@ -5,47 +5,71 @@ import { afterEach,describe,expect,test,vi } from 'vitest';
 import type { ReplyRule } from '../types';
 import ReplyRuleEditor from './ReplyRuleEditor';
 
-/** ReplyRuleEditorHarness 用真实草稿状态承接编辑器输入，保存回调只记录草稿而不触达网络。 */
-const ReplyRuleEditorHarness = ({ initialRule,onSave }: {
-  /** initialRule 是当前用例的旧规则或新规则初始草稿。 */
-  initialRule: Partial<ReplyRule>;
-  /** onSave 记录用户点击保存时的完整表单，用于验证输入没有隐式清理。 */
-  onSave: (rule: Partial<ReplyRule>) => void;
-}) => {
-  // rule/setRule 拥有本用例的受控表单状态，关闭后卸载编辑器。
-  const [rule, setRule] = useState<Partial<ReplyRule> | null>(initialRule);
-  return rule ? <ReplyRuleEditor rule={rule} setRule={setRule} items={[]} onClose={/* 当前回调响应取消并移除草稿。 */ () => setRule(null)} onSave={/* 当前回调记录用户保存时的草稿。 */ () => onSave(rule)} /> : null;
+/** EditorHarnessProps 描述测试承载组件的初始草稿和被观察的父级动作。 */
+interface EditorHarnessProps {
+  /** initial 是编辑器首次渲染时的关键词回复草稿。 */
+  initial: Partial<ReplyRule>;
+  /** onSave 是父级保存动作替身，用于确认编辑器只转发而不自行提交。 */
+  onSave: () => void;
+  /** onClose 是父级关闭动作替身，用于确认取消按钮的转发。 */
+  onClose: () => void;
+  /** onDraft 在每次渲染时接收最新草稿，使测试能断言函数式更新的结果。 */
+  onDraft: (draft: Partial<ReplyRule> | null) => void;
+}
+
+// EditorHarness 用真实 React 状态承载受控草稿，使编辑器的函数式更新可以被端到端观察。
+const EditorHarness = ({ initial,onSave,onClose,onDraft }: EditorHarnessProps) => {
+  // draft 是编辑器当前展示并修改的关键词回复草稿。
+  const [draft, setDraft] = useState<Partial<ReplyRule> | null>(initial);
+  onDraft(draft);
+  return draft ? <ReplyRuleEditor rule={draft} setRule={setDraft} items={[]} onClose={onClose} onSave={onSave} /> : null;
 };
 
-afterEach(/* 当前回调清理编辑器 portal，避免各用例共享 DOM。 */ () => cleanup());
+describe('ReplyRuleEditor', /* 当前回调验证关键词回复编辑器的表达式增删、匹配模式与历史规则回填。 */ () => {
+  afterEach(/* 当前回调清理 Portal 和测试 DOM。 */ () => cleanup());
 
-describe('ReplyRuleEditor', /* 当前回调验证多表达式编辑器的可访问名称和原始输入行为。 */ () => {
-  test('匹配模式和每行表达式有明确可访问名称，旧规则默认包含匹配', /* 当前回调按用户可感知的标签查找控件并验证兼容默认值。 */ () => {
-    render(<ReplyRuleEditorHarness initialRule={{ keyword: '旧关键词', reply_content: '已命中' }} onSave={vi.fn()} />);
-    expect((screen.getByRole('combobox', { name: '匹配模式' }) as HTMLSelectElement).value).toBe('contains');
-    expect((screen.getByRole('textbox', { name: '第 1 个关键词表达式' }) as HTMLInputElement).value).toBe('旧关键词');
-    expect((screen.getByRole('button', { name: '删除第 1 个表达式' }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/正则语法由后端 Go\/RE2 校验/)).toBeTruthy();
-    expect(screen.getByText(/默认忽略大小写/)).toBeTruthy();
+  test('新建规则默认一行表达式，可增加并在非最后一行时删除', /* 当前回调验证表达式行的增删边界。 */ () => {
+    // latest 记录最近一次渲染得到的草稿。
+    let latest: Partial<ReplyRule> | null = null;
+    render(<EditorHarness initial={{ keyword: '', expressions: [''], match_type: 'contains', type: 'text', reply_content: '' }} onSave={vi.fn()} onClose={vi.fn()} onDraft={/* draft 是最新草稿。 */ draft => { latest = draft; }} />);
+    expect(screen.getByText('新增回复规则')).toBeTruthy();
+    // 只有一行时删除按钮必须禁用，保证至少保留一个表达式输入。
+    expect((screen.getByLabelText('删除第 1 个表达式') as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByText('添加表达式'));
+    expect(screen.getAllByPlaceholderText('例如：在吗 | 在不在 | 有人吗')).toHaveLength(2);
+    // 编辑第 2 行后，首项兼容字段 keyword 仍等于第 1 行。
+    fireEvent.change(screen.getAllByPlaceholderText('例如：在吗 | 在不在 | 有人吗')[1], { target: { value: '发货' } });
+    fireEvent.change(screen.getAllByPlaceholderText('例如：在吗 | 在不在 | 有人吗')[0], { target: { value: '在吗' } });
+    expect(latest).toMatchObject({ keyword: '在吗', expressions: ['在吗', '发货'] });
+    // 两行时可以删除，删到只剩一行后又禁用。
+    fireEvent.click(screen.getByLabelText('删除第 1 个表达式'));
+    expect(latest).toMatchObject({ keyword: '发货', expressions: ['发货'] });
+    expect((screen.getByLabelText('删除第 1 个表达式') as HTMLButtonElement).disabled).toBe(true);
   });
 
-  test('切换正则模式后可按名称新增、编辑和删除表达式，并保留空白', /* 当前回调验证多行编辑到保存的用户操作，不依赖内部状态。 */ () => {
-    // onSave 记录编辑器保存动作发出的原始草稿。
-    const onSave = vi.fn();
-    render(<ReplyRuleEditorHarness initialRule={{ keyword: '旧关键词', reply_content: '已命中' }} onSave={onSave} />);
-    fireEvent.change(screen.getByRole('combobox', { name: '匹配模式' }), { target: { value: 'regexp' } });
-    fireEvent.change(screen.getByRole('textbox', { name: '第 1 个关键词表达式' }), { target: { value: 'foo\\ ' } });
-    fireEvent.click(screen.getByRole('button', { name: '添加表达式' }));
-    fireEvent.change(screen.getByRole('textbox', { name: '第 2 个关键词表达式' }), { target: { value: '   ' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存规则' }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: 'foo\\ ', expressions: ['foo\\ ', '   '], match_type: 'regexp' }));
+  test('切换匹配模式会更新占位符和提示，且不改动已填写的表达式', /* 当前回调验证包含匹配与正则模式的输入提示差异。 */ () => {
+    // latest 记录最近一次渲染得到的草稿。
+    let latest: Partial<ReplyRule> | null = null;
+    render(<EditorHarness initial={{ keyword: '在吗', expressions: ['在吗'], match_type: 'contains', type: 'text', reply_content: '您好' }} onSave={vi.fn()} onClose={vi.fn()} onDraft={/* draft 是最新草稿。 */ draft => { latest = draft; }} />);
+    expect(screen.getByPlaceholderText('例如：在吗 | 在不在 | 有人吗')).toBeTruthy();
+    expect(screen.getByText(/包含匹配下每个表达式还可用 \|、中英文逗号、顿号或换行分隔多个候选词/)).toBeTruthy();
+    fireEvent.change(screen.getByDisplayValue('包含匹配'), { target: { value: 'regexp' } });
+    expect(screen.getByPlaceholderText('正则表达式，例如：在吗|在不在')).toBeTruthy();
+    expect(latest).toMatchObject({ match_type: 'regexp', expressions: ['在吗'] });
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: '删除第 1 个表达式' }));
-    expect((screen.getByRole('textbox', { name: '第 1 个关键词表达式' }) as HTMLInputElement).value).toBe('   ');
-    expect(screen.queryByRole('textbox', { name: '第 2 个关键词表达式' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '保存规则' }));
-    expect(onSave).toHaveBeenLastCalledWith(expect.objectContaining({ keyword: '   ', expressions: ['   '], match_type: 'regexp' }));
-    fireEvent.click(screen.getByRole('button', { name: '取消' }));
-    expect(screen.queryByRole('combobox', { name: '匹配模式' })).toBeNull();
+  test('历史规则只有 keyword 时回填为一行表达式，编辑规则显示编辑标题并转发保存与关闭', /* 当前回调验证历史数据回填与父级动作转发。 */ () => {
+    // onSave、onClose 是父级保存与关闭动作替身。
+    const onSave = vi.fn();
+    // onClose 是父级关闭动作替身。
+    const onClose = vi.fn();
+    render(<EditorHarness initial={{ id: '7', keyword: '历史词', match_type: 'regexp', type: 'text', reply_content: '回复' }} onSave={onSave} onClose={onClose} onDraft={vi.fn()} />);
+    expect(screen.getByText('编辑回复规则')).toBeTruthy();
+    expect(screen.getByDisplayValue('历史词')).toBeTruthy();
+    fireEvent.click(screen.getByText('保存规则'));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('取消'));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

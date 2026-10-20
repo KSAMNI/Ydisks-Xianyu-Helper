@@ -241,4 +241,24 @@ describe('useRuntimeLogs', /* 当前测试组验证运行日志轮询、暂停�
     expect(hook.result.current.loading).toBe(false);
     hook.unmount();
   });
+
+  test('上一轮请求未返回时跳过本轮轮询，响应乱序不会让游标倒退', /* 当前回调验证同一日志流内增量请求不会并发。 */ async () => {
+    // firstResolve 保存首轮挂起请求的兑现函数。
+    let firstResolve: ((page: RuntimeLogPage) => void) | undefined;
+    logsMock
+      .mockImplementationOnce(/* pendingFactory 挂起首轮请求，直到测试显式放行。 */ () => new Promise(/* resolve 在测试放行时兑现首轮结果。 */ resolve => { firstResolve = resolve; }))
+      .mockResolvedValueOnce(buildPage([buildEntry(4)], 4));
+    // hook 保存运行日志 Hook 的当前测试状态。
+    const hook = renderHook(/* hookFactory 创建运行日志 Hook 测试实例。 */ () => useRuntimeLogs({ pollIntervalMs: POLL_INTERVAL_MS }));
+    await flushAsync();
+    await advancePoll();
+    await advancePoll();
+    expect(logsMock).toHaveBeenCalledTimes(1);
+    await act(/* firstResponseAction 放行首轮请求。 */ async () => { firstResolve?.(buildPage([buildEntry(3)], 3)); });
+    await advancePoll();
+    expect(logsMock).toHaveBeenCalledTimes(2);
+    expect(logsMock.mock.calls[1][1]).toBe(3);
+    expect(entrySeqs(hook.result.current.entries)).toEqual([3, 4]);
+    hook.unmount();
+  });
 });

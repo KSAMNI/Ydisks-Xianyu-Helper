@@ -197,7 +197,7 @@ func (h *runtimeBufferHandler) Handle(ctx context.Context, record slog.Record) e
 		// attrs 保存绑定属性与单条记录属性的合并结果，容量按两者之和预留。
 		attrs := make([]slog.Attr, 0, len(h.attrs)+record.NumAttrs())
 		attrs = append(attrs, h.attrs...)
-		record.Attrs(/* collectRecordAttrs 展开单条记录属性并补齐当前分组前缀。 */ func(attr slog.Attr) bool {
+		record.Attrs( /* collectRecordAttrs 展开单条记录属性并补齐当前分组前缀。 */ func(attr slog.Attr) bool {
 			attrs = append(attrs, h.prefixed(attr))
 			return true
 		})

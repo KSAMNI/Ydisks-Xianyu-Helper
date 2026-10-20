@@ -265,6 +265,11 @@ func (a *AutomationRules) ClaimDueDeferredTasks(ctx context.Context, limit int) 
 		}
 		candidates = append(candidates, task)
 	}
+	// iterErr 是逐行读取中途的数据库错误；截断的候选集不能被当作本轮完整的到期任务。
+	if iterErr := rows.Err(); iterErr != nil {
+		_ = rows.Close()
+		return nil, iterErr
+	}
 	if // err 用于本次流程后续判断的err
 	err := rows.Close(); err != nil {
 		return nil, err

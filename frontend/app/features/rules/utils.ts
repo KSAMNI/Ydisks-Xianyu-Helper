@@ -22,7 +22,7 @@ export const triggerMeta: Record<AutomationTriggerType, TriggerMeta> = {
   order_paid: {
     label: '付款后自动发货',
     shortLabel: '自动发货',
-    description: '闲鱼付款系统卡片进入自动化中心后，先发送卡密，成功后再确认发货。',
+    description: '闲鱼付款系统卡片进入自动化中心后，先发送卡密；发送成功后，按账号“自动确认发货”开关决定是否确认发货。',
     flow: ['付款系统卡片', '匹配商品/规格', '发送卡密', '确认发货'],
     accent: 'blue',
     icon: PackageCheck,
@@ -95,14 +95,34 @@ export const parseJSONObject = (raw?: string): Record<string, any> => {
   }
 };
 
+// reviewLookbackHours 返回求评价规则实际生效的回溯窗口小时数，口径与后端 effectiveLookbackHours 一致：
+// 未显式配置时为「走完全部求评流程所需时长 + 24 小时」，显式值不得小于首次等待时长。
+export const reviewLookbackHours = (raw?: string) => {
+  // current 是求评价配置的已有字段。
+  const current = parseJSONObject(raw);
+  // afterShipped 是发货后首次求评的等待小时数。
+  const afterShipped = Number(current.after_shipped_hours) > 0 ? Number(current.after_shipped_hours) : 72;
+  // repeat 是再次求评的间隔小时数。
+  const repeat = Number(current.repeat_interval_hours) > 0 ? Number(current.repeat_interval_hours) : 24;
+  // attempts 是最多求评次数。
+  const attempts = Number(current.max_attempts) > 0 ? Number(current.max_attempts) : 1;
+  // explicit 是用户显式配置的回溯窗口小时数，非正值视为未配置。
+  const explicit = Number(current.max_lookback_hours);
+  if (!(explicit > 0)) return afterShipped + (attempts - 1) * repeat + 24;
+  return Math.max(explicit, afterShipped);
+};
+
 // buildReviewConfig 规范化求评价规则的时间参数，并应用编辑器的局部修改。
 export const buildReviewConfig = (raw?: string, patch: Record<string, number> = {}) => {
   // current 是求评价配置的已有字段。
   const current = parseJSONObject(raw);
+  // lookback 仅在用户显式配置过时写回，未配置时保持后端按其他字段推导的默认窗口。
+  const lookback = Number(current.max_lookback_hours) > 0 ? { max_lookback_hours: Number(current.max_lookback_hours) } : {};
   return JSON.stringify({
     after_shipped_hours: Number(current.after_shipped_hours || 72),
     repeat_interval_hours: Number(current.repeat_interval_hours || 24),
     max_attempts: Number(current.max_attempts || 1),
+    ...lookback,
     ...patch,
   });
 };

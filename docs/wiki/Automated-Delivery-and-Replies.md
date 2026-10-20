@@ -28,7 +28,7 @@ Account-level automatic reviews and daily refresh are separate from the order ru
 Prerequisites: the account is online, Automatic Delivery is enabled for the account, the product is synced, and an enabled card group has sufficient inventory. The separate Automatic Shipping Confirmation setting controls whether the platform order is marked shipped.
 
 1. Open Automation, choose Paid Delivery, and click Add.
-2. Set a rule name and select the target account and product. For products with specifications, create a matching configuration for each specification that needs delivery.
+2. Set a rule name and select the target account and product. For products with specifications, create a matching configuration for each specification that needs delivery. If you leave the product empty to create an account-level rule, you must tick “I confirm this delivery content applies to all products of this account”; without it the rule is not used as a fallback when a product has no rule.
 3. Add a Send Cards action, choose card inventory, set quantity per item, and choose whether the action is enabled.
 4. To override the card group’s default delay, enable the override and enter seconds; otherwise the group delay is used.
 5. Save and confirm the rule is enabled.
@@ -44,8 +44,9 @@ To configure review reminders:
 
 1. Create a Review Reminder rule and select account and product.
 2. Set how many hours after shipment to wait, the repeat interval, and the maximum number of reminders.
-3. Enter the copy, save, and enable the rule.
-4. Use a test order to confirm that no message is sent early and that reminders stop at the maximum.
+3. Set "Only process orders shipped within the last N hours". Orders shipped earlier than this window are never reminded, so re-enabling a rule after a pause does not message old orders. The default is the time needed to finish all reminders plus 24 hours, and it is never below the first wait time.
+4. Enter the copy, save, and enable the rule.
+5. Use a test order to confirm that no message is sent early and that reminders stop at the maximum.
 
 ## Exceptions and manual delivery
 
@@ -57,6 +58,11 @@ Paid delivery is normally triggered only by the platform's paid system message. 
 
 ## Keyword and default replies
 
-In Automation → Keyword Replies, select an account, add a rule, enter keywords and text or image URL, and save. Keyword rules apply to ordinary buyer messages.
+In Automation → Keyword Replies, select an account, add a rule, and save. Keyword rules apply to ordinary buyer messages.
 
-Default replies are the last level of the current production chain: keyword reply first, AI reply second, and default reply last. AI handles bargaining only. If AI is disabled, lacks an API key, does not apply to the message, has no usable result, or fails, the system continues to the default reply. A default reply may contain text, an image URL, and “reply only once per conversation”. A product-specific default reply takes precedence over the account default. The external API extension point, if later wired, takes precedence over keyword replies.
+- **Expressions:** one rule can hold several expressions that share the same reply; any one matching triggers it. In contains mode, an expression may also list several candidate words separated by `|`, commas, or line breaks.
+- **Match mode:** choose Contains or Regular Expression. Regular expressions use Go/RE2 syntax and ignore case; the page pre-checks them and the server validates them again on save.
+- **Products:** a rule can be linked to several synced products. Leaving it empty makes it an account-level rule.
+- **Reply:** enter text or an image URL.
+
+Default replies are the last level of the current production chain: keyword reply first, AI reply second, and default reply last. By default AI handles bargaining only; when the account’s AI mode is Full Service, it also answers ordinary consultation, shipping, and after-sales messages that no keyword rule matched. A product can also force AI on or off (see [Product Management](Product-Management)). If AI is disabled, lacks an API key, does not apply to the message, has no usable result, or fails, the system continues to the default reply. A default reply may contain text, an image URL, and “reply only once per conversation”. A product-specific default reply takes precedence over the account default. The external API extension point, if later wired, takes precedence over keyword replies.

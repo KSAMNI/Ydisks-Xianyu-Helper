@@ -99,9 +99,9 @@ func summarizeCardAPIConfig(cardType, raw string) *CardAPIConfigSummary {
 	summary.HeadersConfigured = templateConfigured(fields["headers"])
 	summary.ParamsConfigured = templateConfigured(fields["params"])
 	// templates 是只在本地校验幂等占位符的临时 JSON 值，不进入返回结构。
-	templates := make(map[string]any, 2)
-	// name 表示当前待读取的敏感模板字段名。
-	for _, name := range []string{"headers", "params"} {
+	templates := make(map[string]any, 3)
+	// name 表示当前待读取的敏感模板字段名；body 只用于判断幂等键是否真正随 POST 正文发送。
+	for _, name := range []string{"headers", "params", "body"} {
 		// value 保存模板的临时 JSON 值，函数返回前不会写入摘要。
 		var value any
 		// err 表示模板字段解析错误；错误模板不影响公开字段读取。
@@ -176,10 +176,50 @@ func validateSummaryAPIConfig(summary CardAPIConfigSummary, templates map[string
 	if summary.TimeoutSeconds < 1 || summary.TimeoutSeconds > 60 {
 		return errors.New("API 超时时间必须在 1 到 60 秒之间")
 	}
-	if summary.RetryEnabled && !summaryTemplateContains(templates, "{idempotency_key}") {
-		return errors.New("启用 API 重试时，请求头或请求参数必须包含 {idempotency_key}")
+	return validateSummaryRetryIdempotency(summary, templates)
+}
+
+// validateSummaryRetryIdempotency 校验启用重试时幂等键会真正随请求发送。
+// 结论必须与保存路径 internal/application/cards 的校验保持一致，否则摘要与保存入口会互相矛盾：
+// 请求头对 GET 与 POST 都会发送；GET 只额外发送查询参数；POST 只额外发送正文，正文为空时才把参数当作正文。
+func validateSummaryRetryIdempotency(summary CardAPIConfigSummary, templates map[string]any) error {
+	if !summary.RetryEnabled || summaryIdempotencyKeyDelivered(summary.Method, templates) {
+		return nil
 	}
-	return nil
+	if summary.Method == "GET" {
+		return errors.New("启用 API 重试时，GET 请求的请求头或查询参数必须包含 {idempotency_key}")
+	}
+	return errors.New("启用 API 重试时，POST 请求的请求头或请求正文必须包含 {idempotency_key}（正文为空时可用查询参数）")
+}
+
+// summaryIdempotencyKeyDelivered 判断幂等占位符是否落在真实发送的模板载荷中。
+func summaryIdempotencyKeyDelivered(method string, templates map[string]any) bool {
+	// placeholder 是幂等重试要求的稳定占位符文本。
+	const placeholder = "{idempotency_key}"
+	if summaryTemplateContains(templates["headers"], placeholder) {
+		return true
+	}
+	if method == "GET" {
+		return summaryTemplateContains(templates["params"], placeholder)
+	}
+	// body 已配置时 POST 只发送正文，参数不会进入出站请求。
+	if summaryTemplateHasEntries(templates["body"]) {
+		return summaryTemplateContains(templates["body"], placeholder)
+	}
+	return summaryTemplateContains(templates["params"], placeholder)
+}
+
+// summaryTemplateHasEntries 判断已解析模板值是否含有会被发送的字段，空对象和空数组视为未配置。
+func summaryTemplateHasEntries(value any) bool {
+	// current 保存当前模板值的容器视图，用于判断是否含字段。
+	switch current := value.(type) {
+	case map[string]any:
+		return len(current) > 0
+	case []any:
+		return len(current) > 0
+	default:
+		return false
+	}
 }
 
 // summaryTemplateContains 递归检查模板是否包含指定占位符。

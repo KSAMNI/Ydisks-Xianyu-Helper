@@ -84,6 +84,11 @@ func (s *Service) RefreshSessionIdentities(ctx context.Context, accountID string
 		// updated、err和attempted保存一次按需补查的结果、错误及预算消耗。
 		updated, err, attempted := s.resolveIdentity(ctx, session)
 		result[index] = updated
+		if ctx.Err() != nil {
+			// 父上下文取消属于“停止继续排队剩余会话”：保留整页旧资料并正常返回，
+			// 不把取消包装成补查失败，避免调用方把主动取消当成数据错误处理。
+			return result, nil
+		}
 		if err != nil || attempted {
 			return result, err
 		}

@@ -297,3 +297,103 @@ func TestReplyKeywordExpressionsSQLiteLegacyRows(t *testing.T) {
 func newTestLogger(buffer *bytes.Buffer) *slog.Logger {
 	return slog.New(slog.NewTextHandler(buffer, nil))
 }
+
+// TestMatchKeywordExpressionsKeepsSeparatorSplittingInContainsMode 验证包含模式沿用历史分隔符拆分，而正则模式的 | 保持正则分支语义。
+func TestMatchKeywordExpressionsKeepsSeparatorSplittingInContainsMode(t *testing.T) {
+	// cases 覆盖历史分隔符规则、多表达式叠加以及正则模式不拆分逗号的边界。
+	cases := []struct {
+		// name 是子用例说明。
+		name string
+		// expressions 是规则表达式集合。
+		expressions []string
+		// matchType 是规则匹配模式。
+		matchType string
+		// text 是买家消息。
+		text string
+		// want 是期望命中结果。
+		want bool
+	}{
+		{"包含模式竖线分隔命中右侧候选词", []string{"在吗 | 在不在"}, "contains", "老板在不在呀", true},
+		{"包含模式顿号逗号换行均可分隔", []string{"价格、怎么卖,什么价\n包邮吗"}, "contains", "请问包邮吗", true},
+		{"包含模式多表达式与分隔符叠加", []string{"甲", "乙|丙"}, "contains", "我要丙", true},
+		{"包含模式仅分隔符不匹配任意消息", []string{" | , ， 、 "}, "contains", "任意消息", false},
+		{"历史别名 fuzzy 按包含模式拆分", []string{"在吗|在不在"}, "fuzzy", "在不在", true},
+		{"正则模式竖线是分支而非拆分", []string{"^在吗$|^在不在$"}, "regexp", "在不在", true},
+		{"正则模式不按逗号拆分", []string{"在吗,在不在"}, "regexp", "在不在", false},
+	}
+	// tc 是当前子用例。
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// matched 保存匹配结果，invalid 与 unknown 在这些合法输入下必须为空。
+			matched, invalid, unknown := matchKeywordExpressions(tc.expressions, tc.matchType, tc.text)
+			if matched != tc.want || len(invalid) != 0 || unknown {
+				t.Fatalf("matched=%v invalid=%v unknown=%v, want matched=%v", matched, invalid, unknown, tc.want)
+			}
+		})
+	}
+}
+
+// TestKeywordMatchesLogsUnknownModeWithoutLeakingRawValue 验证未知匹配模式既不命中也不抛错，
+// 日志只记录稳定的错误类别，不回显调用方传入的原始模式文本或表达式。
+func TestKeywordMatchesLogsUnknownModeWithoutLeakingRawValue(t *testing.T) {
+	// logBuffer 收集诊断日志文本。
+	var logBuffer bytes.Buffer
+	// service 注入测试日志端口；账号上下文用于确认日志可追踪。
+	service := &ReplyService{cookieID: "account-mode", logger: newTestLogger(&logBuffer)}
+	// keyword 使用未知模式 glob-secret 与会命中的表达式，二者都不得进入日志。
+	keyword := db.Keyword{Expressions: []string{"可用-secret"}, MatchType: "glob-secret"}
+	if service.keywordMatches(keyword, "消息 可用-secret") {
+		t.Fatal("未知匹配模式不得命中")
+	}
+	// output 是脱敏后的日志。
+	output := logBuffer.String()
+	if !strings.Contains(output, "unknown_match_type") {
+		t.Fatalf("日志应记录稳定类别: %q", output)
+	}
+	if strings.Contains(output, "glob-secret") || strings.Contains(output, "可用-secret") {
+		t.Fatalf("日志不得泄露原始模式或表达式: %q", output)
+	}
+}
+
+// TestMatchKeywordExpressionsSkipsBlankExpressions 验证历史遗留的空白表达式被跳过，
+// 既不会匹配所有消息，也不会阻止同一规则中的有效表达式命中。
+func TestMatchKeywordExpressionsSkipsBlankExpressions(t *testing.T) {
+	// invalid、matched、unknown 保存 matchKeywordExpressions 调用的返回结果，供随后的断言使用。
+	if matched, invalid, unknown := matchKeywordExpressions([]string{"", "   "}, "contains", "任意消息"); matched || len(invalid) != 0 || unknown {
+		t.Fatalf("只有空白表达式时不得命中: matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+	// matched 保存 matchKeywordExpressions 调用的返回结果，供随后的断言使用。
+	if matched, _, _ := matchKeywordExpressions([]string{"  ", "有效"}, "regexp", "这条有效"); !matched {
+		t.Fatal("空白表达式不得阻止后续有效表达式命中")
+	}
+}
+
+// TestMatchKeywordExpressionsRegexpWrapperEscape 验证不配对括号的正则被当作非法跳过，
+// 不会因逃出忽略大小写范围而造成部分分支大小写敏感。
+func TestMatchKeywordExpressionsRegexpWrapperEscape(t *testing.T) {
+	// matched、invalid、unknown 分别是命中结果、非法表达式位置与未知模式标记。
+	matched, invalid, unknown := matchKeywordExpressions([]string{"foo)|(BAR"}, "regexp", "bar")
+	if matched || unknown || len(invalid) != 1 || invalid[0] != 0 {
+		t.Fatalf("matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+	// 顶层竖线的所有分支都应忽略大小写。
+	matched, _, _ = matchKeywordExpressions([]string{"foo|BAR"}, "regexp", "xbarx")
+	if !matched {
+		t.Fatal("顶层分支应忽略大小写")
+	}
+}
+
+// TestMatchKeywordExpressionsRegexpPreservesWhitespace 验证正则模式保留首尾空白并按原文匹配，且非法项不阻断后续合法项。
+func TestMatchKeywordExpressionsRegexpPreservesWhitespace(t *testing.T) {
+	// matched、invalid、unknown 分别是命中结果、非法表达式位置与未知模式标记。
+	// 纯空白表达式只匹配空白文本，"  HELLO  " 的边界空白必须参与匹配，因此不含双空格的句子不应命中。
+	matched, invalid, unknown := matchKeywordExpressions([]string{"   ", "(", "  HELLO  "}, "regexp", "say hello")
+	if matched || unknown || len(invalid) != 1 || invalid[0] != 1 {
+		t.Fatalf("matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+	// 边界空白保留后，含双空格的文本才命中同一表达式。
+	matched, invalid, unknown = matchKeywordExpressions([]string{"  HELLO  "}, "regexp", "say  hello  ")
+	if !matched || unknown || len(invalid) != 0 {
+		t.Fatalf("matched=%v invalid=%v unknown=%v", matched, invalid, unknown)
+	}
+}

@@ -1,4 +1,5 @@
 import React from 'react';
+import SearchableSelect from '../../../../shared/ui/SearchableSelect';
 import type { Card, DeliveryTemplate, ShippingVariant } from '../types';
 import { isDeliveryCardReady } from '../utils';
 
@@ -68,10 +69,14 @@ const TemplateVariantEditor: React.FC<TemplateVariantEditorProps> = ({ index, va
           return (
             <div key={key} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_90px] gap-2 items-center">
               <code className="min-w-0 break-all text-xs text-sky-800">{`{{cards.${key}}}`}</code>
-              <select value={binding?.card_id || ''} onChange={/* callback 更新变量库存绑定。 */ event => updateVariant(index, { template_bindings: (variant.template_bindings || []).map(/* bindingCandidate 是待处理的变量绑定。 */ bindingCandidate => bindingCandidate.variable_key === key ? { ...bindingCandidate, card_id: Number(event.target.value) } : bindingCandidate) })} className="ios-input min-w-0 px-2 py-2 rounded-lg text-xs">
-                <option value="">请选择卡密库存</option>
-                {availableCards.map(/* card 是待渲染的卡密库存选项。 */ card => <option key={card.id} value={card.id}>{card.name}</option>)}
-              </select>
+              <SearchableSelect
+                options={availableCards.map(/* card 转换为可搜索选项，仅保留主键与名称。 */ card => ({ value: card.id, label: card.name }))}
+                value={binding?.card_id}
+                onChange={/* cardID 是用户为该变量选中的卡密库存主键，0 表示清空。 */ cardID => updateVariant(index, { template_bindings: (variant.template_bindings || []).map(/* bindingCandidate 是待处理的变量绑定。 */ bindingCandidate => bindingCandidate.variable_key === key ? { ...bindingCandidate, card_id: cardID } : bindingCandidate) })}
+                placeholder="请选择卡密库存"
+                ariaLabel={`${key} 卡密库存`}
+                className="ios-input min-w-0 w-full px-2 py-2 rounded-lg text-xs"
+              />
               <input type="number" min="1" value={binding?.delivery_count || 1} onChange={/* callback 更新变量取货数量。 */ event => updateVariant(index, { template_bindings: (variant.template_bindings || []).map(/* bindingCandidate 是待处理的变量绑定。 */ bindingCandidate => bindingCandidate.variable_key === key ? { ...bindingCandidate, delivery_count: Math.max(1, Number(event.target.value) || 1) } : bindingCandidate) })} className="ios-input px-2 py-2 rounded-lg text-xs" aria-label={`${key} 每件份数`} />
             </div>
           );

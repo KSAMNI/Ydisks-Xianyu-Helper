@@ -641,7 +641,7 @@ func (s *Server) setCookieAutoConfirm(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, operationResponse{Success: true})
 }
 
-// getCookieAutoConfirm 获取自动确认发货设置。
+// getCookieAutoConfirm 获取账号自动发货总开关（auto_confirm）与自动确认发货开关（auto_consign）。
 func (s *Server) getCookieAutoConfirm(w http.ResponseWriter, r *http.Request) {
 	// cid 用于本次流程后续判断的cid
 	cid := chi.URLParam(r, "cid")

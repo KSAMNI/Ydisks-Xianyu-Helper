@@ -6,12 +6,10 @@ import { getSalesStats, type SalesStatsModel } from './api';
 export type UseSalesStatsOptions = {
   /** range 是预设时间范围或自定义。 */
   range: 'today' | 'yesterday' | '3days' | '7days' | '30days' | 'custom';
-  /** customStartDate 是自定义范围的起始日期。 */
+  /** customStartDate 是已应用的自定义范围起始日期，仅 range 为 custom 时使用。 */
   customStartDate: string;
-  /** customEndDate 是自定义范围的结束日期。 */
+  /** customEndDate 是已应用的自定义范围结束日期，仅 range 为 custom 时使用。 */
   customEndDate: string;
-  /** customRangeVersion 用于在自定义日期确认后触发重新加载。 */
-  customRangeVersion: number;
 };
 
 /** useSalesStats 暴露给页面的可视化数据与操作。 */
@@ -35,7 +33,7 @@ const errorMessage = (error: unknown, fallback: string): string => error instanc
 /** 加载销售统计数据，并隔离过期响应。 */
 export const useSalesStats = (options: UseSalesStatsOptions): UseSalesStatsResult => {
   // { 解构得到当前 Hook 的输入参数。
-  const { range, customStartDate, customEndDate, customRangeVersion } = options;
+  const { range, customStartDate, customEndDate } = options;
   // [data, setData] 保存销售统计结果。
   const [data, setData] = useState<SalesStatsModel | null>(null);
   // [loading, setLoading] 保存加载状态。
@@ -54,6 +52,11 @@ export const useSalesStats = (options: UseSalesStatsOptions): UseSalesStatsResul
   );
 
   useEffect(/* effect 在时间范围或刷新版本变化时加载销售统计，并在卸载或过期时中止请求。 */ () => {
+    // 自定义范围的日期未填齐时不请求，避免静默回退成最近 7 天而与选中状态不一致。
+    if (range === 'custom' && (!customStartDate || !customEndDate)) {
+      setLoading(false);
+      return;
+    }
     // dateRange 是按用户本地时间解析后的日期范围。
     let dateRange;
     try {
@@ -83,7 +86,7 @@ export const useSalesStats = (options: UseSalesStatsOptions): UseSalesStatsResul
         setLoading(false);
       });
     return /* cleanup 在组件卸载或范围切换时释放请求。 */ () => controller.abort();
-  }, [range, customStartDate, customEndDate, customRangeVersion, refreshKey]);
+  }, [range, customStartDate, customEndDate, refreshKey]);
 
   return { data, loading, error, refresh };
 };

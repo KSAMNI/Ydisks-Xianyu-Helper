@@ -128,6 +128,143 @@ func TestAPIDeliveryClientPOSTRetryAndStableIdempotencyKey(t *testing.T) {
 	}
 }
 
+// TestAPIDeliveryClientRetriesWithBodyOnlyIdempotencyKey 验证幂等键只写在 POST 正文时仍会按同一键重试。
+// 这是用户报告的场景：正文里的占位符会被真实替换，因此执行层必须承认它并允许重试。
+func TestAPIDeliveryClientRetriesWithBodyOnlyIdempotencyKey(t *testing.T) {
+	// oldGaps 保存全局退避配置，避免测试等待真实秒数。
+	oldGaps := apiDeliveryRetryGaps
+	apiDeliveryRetryGaps = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { apiDeliveryRetryGaps = oldGaps }()
+	// calls 记录服务端实际收到的请求次数。
+	var calls int32
+	// keys 保存每次请求在正文中观察到的幂等键。
+	var keys []string
+	// server 是首次返回暂时性失败、随后成功的本地测试服务。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		// body 保存 POST JSON 正文。
+		var body map[string]any
+		// err 表示测试服务解析正文的错误。
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("POST JSON 解码失败: %v", err)
+		}
+		keys = append(keys, fmt.Sprint(body["idempotency_key"]))
+		if calls < 2 {
+			writer.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		_, _ = writer.Write([]byte(`{"content":"BODY-CODE"}`))
+	}))
+	defer server.Close()
+	// client 是使用测试 HTTP 服务的普通 API 发货客户端。
+	client := &apiDeliveryClient{}
+	// result、err 保存正文携带幂等键的发货结果。
+	result, err := client.Fetch(context.Background(), automation.APICardRequest{
+		Config:     fmt.Sprintf(`{"url":%q,"method":"POST","timeout_seconds":10,"retry_enabled":true,"body":{"idempotency_key":"{idempotency_key}"}}`, server.URL),
+		TriggerKey: "trigger-body", ActionID: 8, CardID: 9, UnitIndex: 1,
+	})
+	if err != nil || result.Content != "BODY-CODE" {
+		t.Fatalf("正文幂等键发货结果错误 result=%+v err=%v", result, err)
+	}
+	if atomic.LoadInt32(&calls) != 2 || len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("正文幂等键重试错误 calls=%d keys=%v", atomic.LoadInt32(&calls), keys)
+	}
+}
+
+// TestAPIDeliveryClientDoesNotRetryWithoutDeliveredIdempotencyKey 验证历史配置的重试不会在缺少幂等键时发生。
+// POST 且正文非空时参数不会出现在任何出站载荷中，此时重试会造成重复发卡，必须降级为单次请求。
+func TestAPIDeliveryClientDoesNotRetryWithoutDeliveredIdempotencyKey(t *testing.T) {
+	// calls 记录服务端实际收到的请求次数。
+	var calls int32
+	// server 是始终返回暂时性失败的本地测试服务，用于暴露是否发生重试。
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		writer.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+	// client 是使用测试 HTTP 服务的普通 API 发货客户端。
+	client := &apiDeliveryClient{}
+	// _, err 保存发货结果；该配置只能失败一次而不重试。
+	_, err := client.Fetch(context.Background(), automation.APICardRequest{
+		Config:     fmt.Sprintf(`{"url":%q,"method":"POST","timeout_seconds":10,"retry_enabled":true,"params":{"idempotency_key":"{idempotency_key}"},"body":{"order_id":"{order_id}"}}`, server.URL),
+		TriggerKey: "trigger-legacy", ActionID: 10, CardID: 11, UnitIndex: 1, OrderID: "order-legacy",
+	})
+	if err == nil {
+		t.Fatal("暂时性失败必须返回错误")
+	}
+	// callsAfterRequest 保存发货结束后服务端累计收到的请求次数。
+	callsAfterRequest := atomic.LoadInt32(&calls)
+	if callsAfterRequest != 1 {
+		t.Fatalf("未携带幂等键时不得重试 calls=%d", callsAfterRequest)
+	}
+}
+
+// TestAPIDeliveryCarriesIdempotencyKeyCoversNestedTemplates 验证幂等键判定覆盖嵌套模板与各发送位置。
+func TestAPIDeliveryCarriesIdempotencyKeyCoversNestedTemplates(t *testing.T) {
+	// cases 保存按请求方法、模板嵌套和幂等键位置划分的判定预期。
+	cases := []struct {
+		// name 是当前用例的可读名称。
+		name string
+		// method 是请求方法。
+		method string
+		// headers 是已替换的请求头模板。
+		headers map[string]any
+		// params 是已替换的查询参数模板。
+		params map[string]any
+		// body 是已编码的出站正文。
+		body []byte
+		// want 表示是否应判定为携带幂等键。
+		want bool
+	}{
+		{
+			name:   "嵌套请求头对象携带幂等键",
+			method: http.MethodPost,
+			headers: map[string]any{
+				"X-Trace": map[string]any{"inner": "key-1"},
+			},
+			body: []byte(`{"order_id":"o-1"}`),
+			want: true,
+		},
+		{
+			name:   "GET 数组参数携带幂等键",
+			method: http.MethodGet,
+			params: map[string]any{"list": []any{"none", "key-1"}},
+			want:   true,
+		},
+		{
+			name:   "POST 参数不参与判定",
+			method: http.MethodPost,
+			params: map[string]any{"idempotency_key": "key-1"},
+			body:   []byte(`{"order_id":"o-1"}`),
+			want:   false,
+		},
+		{
+			name:   "POST 正文携带幂等键",
+			method: http.MethodPost,
+			body:   []byte(`{"idempotency_key":"key-1"}`),
+			want:   true,
+		},
+		{
+			name:   "数字模板值不误判",
+			method: http.MethodGet,
+			params: map[string]any{"count": float64(1)},
+			want:   false,
+		},
+	}
+	// testCase 表示当前待判定的出站载荷组合。
+	for _, testCase := range cases {
+		// delivered 保存当前载荷组合是否被判为携带幂等键。
+		delivered := apiDeliveryCarriesIdempotencyKey(testCase.method, testCase.headers, testCase.params, testCase.body, "key-1")
+		if delivered != testCase.want {
+			t.Fatalf("%s 判定错误 got=%v want=%v", testCase.name, delivered, testCase.want)
+		}
+	}
+	// emptyKey 表示缺少幂等键时必须拒绝重试。
+	if apiDeliveryCarriesIdempotencyKey(http.MethodGet, map[string]any{"x": "key-1"}, nil, nil, "") {
+		t.Fatal("空幂等键必须判定为未携带")
+	}
+}
+
 // TestAPIDeliveryClientFormBodyAndContentType 验证非 JSON Content-Type 使用键值表单正文，而不是上传文件格式。
 func TestAPIDeliveryClientFormBodyAndContentType(t *testing.T) {
 	// receivedContentType、receivedBody 保存测试服务观察到的正文元数据和内容。

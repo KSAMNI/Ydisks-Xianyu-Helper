@@ -584,7 +584,7 @@ func TestOrdersUpsertDoesNotRegressAdvancedStatus(t *testing.T) {
 	if got.OrderStatus != "completed" || got.Amount != "10" {
 		t.Fatalf("stale event regressed status or lost other facts: %+v", got)
 	}
-	if !shouldUpdateOrderStatus("pending_ship", "shipped") || shouldUpdateOrderStatus("completed", "shipped") {
+	if !shouldUpdateOrderStatus("pending_ship", "shipped", false) || shouldUpdateOrderStatus("completed", "shipped", false) {
 		t.Fatal("status transition guard mismatch")
 	}
 }

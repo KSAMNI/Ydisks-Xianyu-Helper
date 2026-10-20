@@ -11,6 +11,7 @@ getShippingRules,
 updateReplyRule,
 updateShippingRule,
 } from './api';
+import { precheckRegexpExpression } from './regexpPrecheck';
 import { finishRuleSubmission,idleRuleSubmitState,startRuleSubmission,type RuleSubmitState } from './interactionState';
 import type { AutomationTriggerType,Card,DeliveryTemplate,Item,ReplyRule,RulesProps,RulesTab,ShippingRule,ShippingVariant } from './types';
 import { adjustPriceTarget,boolFlag,buildAdjustPriceConfig,buildReviewConfig,cardActionsForTrigger,defaultRuleName,emptyVariant,hasCompleteTemplateBindings,isValidAdjustPrice,parseJSONObject,shouldReplaceGeneratedName,triggerMeta,withAllItemsConfirmation } from './utils';
@@ -462,6 +463,10 @@ export const useRuleActions = ({
     // hasReplyContent 表示当前回复是否填写了文字或图片。
     const hasReplyContent = editingReplyRule.type === 'image' ? Boolean(editingReplyRule.image_url?.trim()) : Boolean(editingReplyRule.reply_content?.trim());
     if (!expressions.length || !hasReplyContent) return showReplyToast('error', '请填写关键词和回复内容');
+    // 正则模式先做尽力而为的语法预检；预检已兼容 Go/RE2 的内联标志和命名组，后端仍是最终权威。
+    if (matchType === 'regexp' && !expressions.every(/* expression 是当前待预检的正则表达式。 */ expression => precheckRegexpExpression(expression))) {
+      return showReplyToast('error', '正则表达式格式错误，请检查关键词');
+    }
     setReplySubmitState(startRuleSubmission(replySubmitState));
     // succeeded 记录保存是否成功。
     let succeeded = false;

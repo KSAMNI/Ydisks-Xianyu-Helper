@@ -95,7 +95,7 @@ func (s *RefreshService) persistSoldOrders(ctx context.Context, cookieID string,
 				chatID = chatIDs[0]
 			}
 		}
-		batchRows = append(batchRows, RefreshOrderWrite{OrderID: remote.OrderID, Options: UpsertOptions{ItemID: remote.ItemID, BuyerID: remote.BuyerID, CookieID: cookieID, CreatedAt: remote.CreatedAt, OrderStatus: status, Quantity: remote.Quantity, Amount: remote.Amount, ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity, ChatID: chatID, IsBargain: bargain}})
+		batchRows = append(batchRows, RefreshOrderWrite{OrderID: remote.OrderID, Options: UpsertOptions{ItemID: remote.ItemID, BuyerID: remote.BuyerID, CookieID: cookieID, CreatedAt: remote.CreatedAt, OrderStatus: status, Quantity: remote.Quantity, Amount: remote.Amount, ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity, ChatID: chatID, IsBargain: bargain, PlatformSnapshot: true}})
 		if !exists {
 			discovered++
 			newOrderIDs[remote.OrderID] = struct{}{}

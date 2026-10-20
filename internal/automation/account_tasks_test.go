@@ -205,6 +205,67 @@ func TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests(t *testing.T
 	}
 }
 
+// TestAccountTaskRateAlreadyRatedCountsAsSuccessAndNotRateableStopsRetry 验证平台回答“已评价”时按成功收口且不再请求，
+// 回答“当前订单不能评价”时与超期同等视为永久失败。
+func TestAccountTaskRateAlreadyRatedCountsAsSuccessAndNotRateableStopsRetry(t *testing.T) {
+	// cases 保存两种平台业务拒绝及其对运行记录与统计的期望。
+	cases := []struct {
+		name        string
+		ret         string
+		wantStatus  string
+		wantSuccess int
+		wantFailed  int
+	}{
+		{name: "already-rated", ret: "FAIL_BIZ_BAD_REQUEST::亲，您已经评价过了||rate failed", wantStatus: "success", wantSuccess: 1},
+		{name: "not-rateable", ret: "FAIL_BIZ_BAD_REQUEST::当前订单不能评价||rate failed", wantStatus: "failed", wantFailed: 1},
+	}
+	// testCase 是当前子测试使用的平台拒绝样本。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// store、cleanup 保存本子测试使用的 SQLite 自动化存储及关闭责任。
+			store, cleanup := newAutomationTestStore(t)
+			defer cleanup()
+			// ctx 是本子测试共用的数据库上下文。
+			ctx := context.Background()
+			// rejectErr 保存平台返回的业务拒绝错误。
+			rejectErr := &mtop.MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: mtop.MTopErrorBusiness, Ret: []string{testCase.ret}}
+			// client 模拟评价接口持续返回同一业务拒绝，并统计评价请求次数。
+			client := &fakeAccountTaskClient{rateErr: rejectErr}
+			// center 是注入平台错误替身后的自动化中心。
+			center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
+			// settingsErr 保存自动评价设置写入错误。
+			if settingsErr := store.AccountTasks.Upsert(ctx, db.AccountTaskSettings{CookieID: "cid", AutoRateEnabled: true, RateContent: "交易愉快", PolishTime: "03:00"}); settingsErr != nil {
+				t.Fatal(settingsErr)
+			}
+			seedLocalCompletedOrders(t, store, ctx, "order-x")
+			// firstSummary、firstErr 保存首次执行结果。
+			firstSummary, firstErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+			if firstErr != nil || firstSummary.Success != testCase.wantSuccess || firstSummary.Failed != testCase.wantFailed || client.rateCalls != 1 {
+				t.Fatalf("首次结果错误: summary=%+v calls=%d err=%v", firstSummary, client.rateCalls, firstErr)
+			}
+			// status、message 保存运行记录状态与原因，nextRetryAt 保存下一次自动执行时间。
+			var status, message string
+			// nextRetryAt 保存运行记录的下一次自动执行时间，终态必须为零。
+			var nextRetryAt int64
+			// queryErr 保存读取运行记录的数据库错误。
+			if queryErr := store.DB.QueryRowContext(ctx, `SELECT status,error_message,next_retry_at FROM account_task_runs WHERE run_key=?`, "rate:cid:order-x").Scan(&status, &message, &nextRetryAt); queryErr != nil {
+				t.Fatal(queryErr)
+			}
+			if status != testCase.wantStatus || nextRetryAt != 0 {
+				t.Fatalf("运行记录错误: status=%q message=%q next_retry_at=%d", status, message, nextRetryAt)
+			}
+			if testCase.wantFailed == 1 && !strings.HasPrefix(message, db.NoRetryErrorPrefix) {
+				t.Fatalf("不能评价应带永久失败前缀: %q", message)
+			}
+			// secondSummary、secondErr 保存后续扫描结果；终态订单不应再次请求平台。
+			secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+			if secondErr != nil || client.rateCalls != 1 {
+				t.Fatalf("终态后不应再次请求评价: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
+			}
+		})
+	}
+}
+
 // TestScanAccountTasksRunsEnabledRateConfiguration 验证账号任务扫描器发现启用配置后执行自动评价。
 func TestScanAccountTasksRunsEnabledRateConfiguration(t *testing.T) {
 	// store、cleanup 保存本测试使用的 SQLite 自动化存储及关闭责任。

@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -121,35 +122,77 @@ func catchupOrder(t *testing.T, store *db.Store, cookieID, orderID, itemID, chat
 	}
 }
 
-// TestPendingShipCatchupReadyDefersFreshThenAllowsObservedOrders 验证通用兜底会等待实时卡片窗口，订单阶段资格由查询层决定。
+// TestPendingShipCatchupReadyDefersFreshThenAllowsObservedOrders 验证通用兜底按首次观测时间等待实时卡片窗口，且不受 updated_at 影响。
 func TestPendingShipCatchupReadyDefersFreshThenAllowsObservedOrders(t *testing.T) {
 	// now 是固定的当前时刻，保证时间窗口断言不依赖测试执行速度。
 	now := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)
-	// cases 覆盖普通订单等待/放行和无法确认观测时间三条安全边界。
+	// cases 覆盖首次观测等待/放行、付款时间更晚、updated_at 被反复刷新和无法确认观测时间的安全边界。
 	cases := []struct {
 		// name 是当前安全边界的可读名称。
 		name string
 		// order 是输入给通用兜底的本地订单事实。
 		order db.Order
+		// firstSeen 是扫描器首次观测到该候选订单的时间。
+		firstSeen time.Time
 		// wantReady 是该订单是否允许被通用兜底转换为付款事件。
 		wantReady bool
 		// wantReason 是拒绝时写入诊断日志的稳定原因。
 		wantReason string
 	}{
-		{name: "普通订单仍在实时卡片窗口", order: db.Order{UpdatedAt: now.Add(-time.Minute).Format(time.RFC3339Nano)}, wantReason: "waiting_for_realtime_payment_event"},
-		{name: "普通订单已过实时卡片窗口", order: db.Order{UpdatedAt: now.Add(-defaultPendingShipSettleWindow).Format(time.RFC3339Nano)}, wantReady: true},
-		{name: "已由候选查询确认阶段资格的砍价订单在窗口后放行", order: db.Order{IsBargain: 1, UpdatedAt: now.Add(-time.Hour).Format(time.RFC3339Nano)}, wantReady: true},
-		{name: "缺少可解析观测时间时安全停止", order: db.Order{UpdatedAt: "not-a-time"}, wantReason: "missing_observed_time"},
+		{name: "首次观测仍在实时卡片窗口", firstSeen: now.Add(-time.Minute), wantReason: "waiting_for_realtime_payment_event"},
+		{name: "首次观测已过实时卡片窗口", firstSeen: now.Add(-defaultPendingShipSettleWindow), wantReady: true},
+		{name: "已由候选查询确认阶段资格的砍价订单在窗口后放行", order: db.Order{IsBargain: 1}, firstSeen: now.Add(-time.Hour), wantReady: true},
+		{name: "订单被反复同步刷新 updated_at 也不推迟兜底", order: db.Order{UpdatedAt: now.Add(-time.Second).Format(time.RFC3339Nano)}, firstSeen: now.Add(-time.Hour), wantReady: true},
+		{name: "付款时间晚于首次观测时以付款时间起算", order: db.Order{PaidAt: now.Add(-time.Minute).Format(time.RFC3339Nano)}, firstSeen: now.Add(-time.Hour), wantReason: "waiting_for_realtime_payment_event"},
+		{name: "缺少首次观测时间时安全停止", wantReason: "missing_observed_time"},
 	}
 	// testCase 表示当前待验证的兜底安全边界。
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
 			// ready、reason 保存被测订单的通用兜底放行结果及诊断原因。
-			ready, reason := pendingShipCatchupReady(testCase.order, now)
+			ready, reason := pendingShipCatchupReady(testCase.order, testCase.firstSeen, now, defaultPendingShipSettleWindow)
 			if ready != testCase.wantReady || reason != testCase.wantReason {
 				t.Fatalf("兜底放行结果异常: ready=%v reason=%q wantReady=%v wantReason=%q", ready, reason, testCase.wantReady, testCase.wantReason)
 			}
 		})
+	}
+}
+
+// TestObservePendingShipKeepsFirstSeenAndResetsAfterGap 验证首次观测时间在连续出现期间保持不变，缺席超过间隔后重新计时并清理过期条目。
+func TestObservePendingShipKeepsFirstSeenAndResetsAfterGap(t *testing.T) {
+	// scheduler 是仅用于观测表的调度器，不依赖 Center。
+	scheduler := &Scheduler{}
+	// start 是第一次观测的固定时刻。
+	start := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)
+	// first 保存连续出现的首次观测时间。
+	if first := scheduler.observePendingShip("o1", start); !first.Equal(start) {
+		t.Fatalf("首次观测应返回当前时刻: %v", first)
+	}
+	// first 保存连续出现的首次观测时间。
+	if first := scheduler.observePendingShip("o1", start.Add(time.Minute)); !first.Equal(start) {
+		t.Fatalf("连续出现时首次观测时间不应被刷新: %v", first)
+	}
+	// later 是订单缺席超过间隔后再次出现的时刻。
+	later := start.Add(time.Minute + pendingShipObservationGap + time.Second)
+	// first 保存连续出现的首次观测时间。
+	if first := scheduler.observePendingShip("o1", later); !first.Equal(later) {
+		t.Fatalf("缺席过久后应重新计时: %v", first)
+	}
+	// nilScheduler 验证空调度器不 panic 并返回当前时刻。
+	var nilScheduler *Scheduler
+	// first 保存连续出现的首次观测时间。
+	if first := nilScheduler.observePendingShip("o1", start); !first.Equal(start) {
+		t.Fatalf("空调度器应返回当前时刻: %v", first)
+	}
+	// index 用于填满观测表以触发过期条目清理。
+	for index := 0; index < 1100; index++ {
+		scheduler.observePendingShip(fmt.Sprintf("bulk-%d", index), start)
+	}
+	scheduler.observePendingShip("trigger", later)
+	scheduler.pendingShipMu.Lock()
+	defer scheduler.pendingShipMu.Unlock()
+	if len(scheduler.pendingShipObserved) > 3 {
+		t.Fatalf("长期缺席的观测条目应被清理: %d", len(scheduler.pendingShipObserved))
 	}
 }
 
@@ -196,7 +239,7 @@ func TestPendingShipDeliveryScanUsesNormalConsignAfterRecordedBargainStage(t *te
 	// sender 是验证兜底仍先发送交付内容的在线替身。
 	sender := &testSender{}
 	// scheduler 是注入平台替身的待发货兜底调度器。
-	scheduler := &Scheduler{center: NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client}), pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: NewWithDependencies(store, testSenderProvider{sender: sender}, nil, CenterDependencies{MTop: client}), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	scheduler.scanPendingShipDeliveries(ctx)
 	if len(sender.texts) != 1 {
 		t.Fatalf("砍价兜底应在已记录免拼后发送一次交付内容: %+v", sender.texts)
@@ -244,6 +287,20 @@ func TestPendingShipDeliveryScanDefersFreshOrder(t *testing.T) {
 	}
 	if runCount != 0 {
 		t.Fatalf("新订单不应被兜底提前创建付款运行: %d", runCount)
+	}
+	// 订单被反复同步写入会刷新 updated_at，但不得重置首次观测时间；把首次观测回拨到窗口之前后，下一轮必须补触发。
+	if upsertErr := store.Orders.Upsert(ctx, "fresh-catchup-order", db.OrderUpsertOpts{ItemID: "fresh-item", Amount: "9.90", OrderStatus: "pending_ship"}); upsertErr != nil {
+		t.Fatal(upsertErr)
+	}
+	scheduler.pendingShipMu.Lock()
+	// observation 是该订单的首次观测记录，回拨 first 模拟窗口已经走完。
+	observation := scheduler.pendingShipObserved["fresh-catchup-order"]
+	observation.first = time.Now().UTC().Add(-defaultPendingShipSettleWindow - time.Minute)
+	scheduler.pendingShipObserved["fresh-catchup-order"] = observation
+	scheduler.pendingShipMu.Unlock()
+	scheduler.scanPendingShipDeliveries(ctx)
+	if len(sender.texts) == 0 {
+		t.Fatal("首次观测满窗口后即使订单被刷新写入也应补触发自动发货")
 	}
 }
 
@@ -335,7 +392,7 @@ func TestScanPendingShipDeliveriesCoversGatesCooldownAndSuccess(t *testing.T) {
 		ready:   map[string]bool{"ready-acc": true},
 	}
 	// scheduler 是使用选择性发送器的调度器。
-	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	// 首轮扫描应补触发就绪账号，并对其余账号分别给出跳过原因。
 	scheduler.scanPendingShipDeliveries(ctx)
 	// readySender 是就绪账号的缓存发送器，用于确认补触发确实执行了发送。
@@ -407,8 +464,9 @@ func TestPendingShipDeliveryScanHonorsBudget(t *testing.T) {
 	sender := &contextBoundSender{entered: make(chan struct{})}
 	// scheduler 保存短预算配置，便于在测试中毫秒级验证扫描退出。
 	scheduler := &Scheduler{
-		center:              New(store, blockingSenderProvider{sender: sender}, nil),
-		pendingShipCooldown: map[string]time.Time{},
+		center:                  New(store, blockingSenderProvider{sender: sender}, nil),
+		pendingShipCooldown:     map[string]time.Time{},
+		pendingShipSettleWindow: -1,
 		// 250ms 给 race 检测下的数据库领取和 goroutine 调度留下进入发送器的余量，同时仍远小于测试超时阈值。
 		pendingShipScanBudget:   250 * time.Millisecond,
 		pendingShipScanMaxTasks: 20,
@@ -475,6 +533,7 @@ func TestPendingShipDeliveryScanHonorsTaskLimit(t *testing.T) {
 	scheduler := &Scheduler{
 		center:                  New(store, testSenderProvider{sender: sender}, nil),
 		pendingShipCooldown:     map[string]time.Time{},
+		pendingShipSettleWindow: -1,
 		pendingShipScanBudget:   time.Second,
 		pendingShipScanMaxTasks: 2,
 	}
@@ -512,7 +571,7 @@ func TestScanPendingShipDeliveriesReportsStorageFailures(t *testing.T) {
 		t.Fatal(closeErr)
 	}
 	// scheduler 是带失效存储的调度器；扫描必须安全返回。
-	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	scheduler.scanPendingShipDeliveries(context.Background())
 }
 
@@ -529,7 +588,7 @@ func TestClaimPendingShipAttemptCooldownsAndCleansExpiredEntries(t *testing.T) {
 	// center 是带真实存储的自动化中心。
 	center := New(store, testSenderProvider{sender: &testSender{}}, nil)
 	// scheduler 是被测调度器。
-	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	if !scheduler.claimPendingShipAttempt("o-first") {
 		t.Fatal("首次领取应成功")
 	}
@@ -592,7 +651,7 @@ func TestScanPendingShipResumesContinuesIdempotentTails(t *testing.T) {
 	// provider 对待续跑账号报告发送器就绪。
 	provider := selectiveSenderProvider{ready: map[string]bool{"resume-acc": true}}
 	// scheduler 是使用选择性发送器的调度器。
-	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	scheduler.scanPendingShipResumes(ctx)
 	// run 保存续跑后的运行记录，用于确认重开与续跑已经生效。
 	run, getErr := store.Automation.GetRun(ctx, runID)
@@ -654,7 +713,7 @@ func TestScanPendingShipResumesReportsStorageFailures(t *testing.T) {
 		t.Fatal(closeErr)
 	}
 	// scheduler 是带失效存储的调度器；扫描必须安全返回。
-	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: center, pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	scheduler.scanPendingShipResumes(context.Background())
 }
 
@@ -753,7 +812,7 @@ func TestScanPendingShipResumesSkipsWhenAutoConfirmDisabled(t *testing.T) {
 	// provider 报告发送器就绪，确保拦截来自账号开关而不是连接状态。
 	provider := selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{"gate-acc": true}}
 	// scheduler 是使用选择性发送器的调度器。
-	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler := &Scheduler{center: New(store, provider, nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	scheduler.scanPendingShipResumes(ctx)
 	// run 保存扫描后的运行记录，必须保持人工核对且代次不变。
 	run, getErr := store.Automation.GetRun(ctx, runID)
@@ -785,13 +844,13 @@ func TestScanPendingShipDeliveriesDoesNotClaimCooldownWhenGatesBlock(t *testing.
 	catchupRule(t, store, admin.ID, "blocked-acc", "item-blocked", []db.AutomationActionInput{catchupCardAction(cardID)})
 	catchupOrder(t, store, "blocked-acc", "o-blocked", "item-blocked", "chat-blocked")
 	// 首轮扫描：发送器未就绪，任务不触发，冷却窗口不得被占用。
-	blocked := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{}}, nil), pendingShipCooldown: map[string]time.Time{}}
+	blocked := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{}}, nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	blocked.scanPendingShipDeliveries(ctx)
 	if len(blocked.pendingShipCooldown) != 0 {
 		t.Fatalf("闸门拦下时不得占用冷却窗口: %+v", blocked.pendingShipCooldown)
 	}
 	// 发送器就绪后的下一轮扫描必须立刻补触发，不需要再等冷却。
-	ready := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{"blocked-acc": true}}, nil), pendingShipCooldown: map[string]time.Time{}}
+	ready := &Scheduler{center: New(store, selectiveSenderProvider{senders: map[string]*readinessTestSender{}, ready: map[string]bool{"blocked-acc": true}}, nil), pendingShipCooldown: map[string]time.Time{}, pendingShipSettleWindow: -1}
 	ready.scanPendingShipDeliveries(ctx)
 	// runs 保存补触发产生的运行数量，用于确认任务确实被触发。
 	var runs int
@@ -803,4 +862,82 @@ func TestScanPendingShipDeliveriesDoesNotClaimCooldownWhenGatesBlock(t *testing.
 	if runs != 1 {
 		t.Fatalf("发送器就绪后应立刻补触发: runs=%d", runs)
 	}
+}
+
+// TestPendingShipObservationResetsAfterOrderLeavesCandidates 验证订单退款后短时间重新待发货时，重新获得完整的实时付款事件等待窗口，而不是沿用旧的首次观测时间。
+func TestPendingShipObservationResetsAfterOrderLeavesCandidates(t *testing.T) {
+	// cleanup、store 分别保存：测试数据库的关闭函数；隔离的测试数据库仓储。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库与扫描上下文。
+	ctx := context.Background()
+	// admin、adminErr 分别保存：规则所属的测试管理员账号；读取管理员账号的错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// cardID 保存发货卡密组主键。
+	cardID := catchupCard(t, store, admin.ID)
+	catchupAccount(t, store, admin.ID, "reset-acc")
+	catchupRule(t, store, admin.ID, "reset-acc", "reset-item", []db.AutomationActionInput{catchupCardAction(cardID)})
+	catchupOrder(t, store, "reset-acc", "reset-order", "reset-item", "reset-chat")
+	// sender 记录是否发生兜底发货。
+	sender := &testSender{}
+	// scheduler 使用默认等待窗口，验证重新获得的窗口。
+	scheduler := &Scheduler{center: New(store, testSenderProvider{sender: sender}, nil), pendingShipCooldown: map[string]time.Time{}}
+	scheduler.scanPendingShipDeliveries(ctx)
+	// setStatus 直接改写订单状态，模拟平台退款与退款撤销后重新待发货。
+	setStatus := func(status string) {
+		// err 保存改写订单状态的错误，非空时测试立即失败。
+		if _, err := store.DB.ExecContext(ctx, `UPDATE orders SET order_status=? WHERE order_id='reset-order'`, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 把首次观测回拨到窗口之前，模拟订单已经连续待发货很久。
+	scheduler.pendingShipMu.Lock()
+	// observation 是订单当前的观测记录。
+	observation := scheduler.pendingShipObserved["reset-order"]
+	observation.first = time.Now().UTC().Add(-time.Hour)
+	scheduler.pendingShipObserved["reset-order"] = observation
+	scheduler.pendingShipMu.Unlock()
+	// 订单进入退款：本轮完整扫描没有候选，观测记录被清除。
+	setStatus("refunding")
+	scheduler.scanPendingShipDeliveries(ctx)
+	scheduler.pendingShipMu.Lock()
+	// remaining 是清理后仍保留的观测记录数量。
+	remaining := len(scheduler.pendingShipObserved)
+	scheduler.pendingShipMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("订单离开候选集合后观测记录应被清除: %d", remaining)
+	}
+	// 退款撤销后重新待发货：必须重新等待完整窗口，不能立即补触发。
+	setStatus("pending_ship")
+	scheduler.scanPendingShipDeliveries(ctx)
+	if len(sender.texts) != 0 {
+		t.Fatalf("重新待发货的订单应重新等待实时付款事件窗口: %v", sender.texts)
+	}
+}
+
+// TestPruneUnseenPendingShipKeepsRecentAndDropsStale 验证清理只删除本轮扫描起点之前最后观测的记录，空调度器不 panic。
+func TestPruneUnseenPendingShipKeepsRecentAndDropsStale(t *testing.T) {
+	// scheduler 是仅用于观测表的调度器。
+	scheduler := &Scheduler{}
+	// sweepStart 是本轮扫描起点。
+	sweepStart := time.Date(2026, time.September, 15, 8, 0, 0, 0, time.UTC)
+	scheduler.observePendingShip("stale", sweepStart.Add(-time.Minute))
+	scheduler.observePendingShip("fresh", sweepStart.Add(time.Second))
+	scheduler.pruneUnseenPendingShip(sweepStart)
+	scheduler.pendingShipMu.Lock()
+	defer scheduler.pendingShipMu.Unlock()
+	// stale 保存本轮未再出现的订单记录是否仍被保留。
+	if _, stale := scheduler.pendingShipObserved["stale"]; stale {
+		t.Fatal("本轮未再出现的订单应被清除")
+	}
+	// fresh 保存本轮仍出现的订单记录是否被保留。
+	if _, fresh := scheduler.pendingShipObserved["fresh"]; !fresh {
+		t.Fatal("本轮仍出现的订单不应被清除")
+	}
+	// nilScheduler 验证空调度器清理安全。
+	var nilScheduler *Scheduler
+	nilScheduler.pruneUnseenPendingShip(sweepStart)
 }

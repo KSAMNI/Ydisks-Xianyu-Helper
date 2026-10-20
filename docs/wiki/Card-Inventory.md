@@ -27,7 +27,7 @@
 
 ## API cards
 
-API cards are suitable for external code-delivery systems that issue a code per order. Test the endpoint with non-sensitive data and confirm the response shape before enabling production automation. Request headers, parameters, and keys are sensitive; do not expose them in screenshots or chat.
+API cards are suitable for external code-delivery systems that issue a code per order. You can paste a cURL command to fill in the request, and an existing card can be reopened for editing and tested without retyping its secrets. When idempotent retry is enabled, `{idempotency_key}` must appear in a header, query parameter, or body that is actually sent; otherwise saving is rejected and delivery makes only one request. Test the endpoint with non-sensitive data and confirm the response shape before enabling production automation. Request headers, parameters, and keys are sensitive; do not expose them in screenshots or chat.
 
 Common order variables include order ID, product ID, buyer ID, account ID, quantity, amount, and trigger type. A response path may be `data.card.code`. If the external response changes, disable the group first so automatic delivery does not fail repeatedly.
 

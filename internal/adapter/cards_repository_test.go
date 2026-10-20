@@ -174,6 +174,54 @@ func TestCardsRepositoryDataMetadataPreservesConsumedStock(t *testing.T) {
 	}
 }
 
+// TestCardsRepositoryUpdateIfDataUnchangedRejectsStaleStock 验证库存快照守卫：编辑期间被自动发货消费后，旧快照不得把已发出的卡密写回库存。
+func TestCardsRepositoryUpdateIfDataUnchangedRejectsStaleStock(t *testing.T) {
+	// store、cleanup 管理隔离数据库及关闭责任。
+	store, cleanup := newAdapterTestStore(t)
+	defer cleanup()
+	// ctx 是本地 SQLite 读写使用的上下文。
+	ctx := context.Background()
+	// owner、ownerErr 保存测试卡券所属用户。
+	owner, ownerErr := store.Users.GetByUsername(ctx, "admin")
+	if ownerErr != nil {
+		t.Fatal(ownerErr)
+	}
+	// repository 是待测卡券数据库适配器。
+	repository := NewCardsRepository(store)
+	// cardID、createErr 保存编辑者打开弹窗时库存为 A、B 的 data 卡券。
+	cardID, createErr := repository.Create(ctx, cardsapp.Card{Name: "库存", Type: "data", DataContent: "A\nB", Enabled: true, UserID: owner.ID})
+	if createErr != nil {
+		t.Fatal(createErr)
+	}
+	// consumed、consumeErr 模拟编辑期间自动发货先发出 A。
+	consumed, consumeErr := store.Cards.ConsumeBatchData(ctx, cardID)
+	if consumeErr != nil || consumed != "A" {
+		t.Fatalf("消费库存失败 consumed=%q err=%v", consumed, consumeErr)
+	}
+	// edited 是编辑者基于旧快照追加 C 后的完整草稿。
+	edited := cardsapp.Card{ID: cardID, Name: "库存", Type: "data", DataContent: "A\nB\nC", Enabled: true, UserID: owner.ID}
+	// staleUpdated、staleErr 保存旧快照守卫更新结果，必须拒绝写入。
+	staleUpdated, staleErr := repository.UpdateIfDataUnchanged(ctx, edited, "A\nB")
+	if staleErr != nil || staleUpdated {
+		t.Fatalf("旧库存快照不应覆盖 updated=%v err=%v", staleUpdated, staleErr)
+	}
+	// current、currentErr 验证被拒绝后库存仍是自动发货后的剩余行。
+	current, currentErr := repository.GetFull(ctx, cardID)
+	if currentErr != nil || current.DataContent != "B" {
+		t.Fatalf("拒绝写入后库存被改动 current=%+v err=%v", current, currentErr)
+	}
+	// freshUpdated、freshErr 保存基于最新快照重新编辑后的写入结果，应成功。
+	freshUpdated, freshErr := repository.UpdateIfDataUnchanged(ctx, cardsapp.Card{ID: cardID, Name: "库存", Type: "data", DataContent: "B\nC", Enabled: true, UserID: owner.ID}, "B")
+	if freshErr != nil || !freshUpdated {
+		t.Fatalf("最新快照应允许写入 updated=%v err=%v", freshUpdated, freshErr)
+	}
+	// saved、savedErr 验证最新快照写入后的库存正文。
+	saved, savedErr := repository.GetFull(ctx, cardID)
+	if savedErr != nil || saved.DataContent != "B\nC" {
+		t.Fatalf("库存未按最新快照写入 saved=%+v err=%v", saved, savedErr)
+	}
+}
+
 // TestCardsRepositoryPropagatesInfrastructureErrors 验证数据库不可用时不会伪装成卡券缺失。
 func TestCardsRepositoryPropagatesInfrastructureErrors(t *testing.T) {
 	// store 是随后主动关闭数据库连接的测试存储。

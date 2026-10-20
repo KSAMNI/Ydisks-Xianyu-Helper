@@ -27,11 +27,12 @@ import TemplateVariantEditor from '../components/TemplateVariantEditor';
 import ReplyRuleEditor from '../components/ReplyRuleEditor';
 import DefaultRepliesPanel from '../components/DefaultRepliesPanel';
 import DefaultReplyEditor from '../components/DefaultReplyEditor';
+import SearchableSelect from '../../../../shared/ui/SearchableSelect';
 import { useRulesData } from '../hooks';
 import { filterAutomationIssues } from '../issueState';
 import { useRuleActions } from '../ruleActions';
 import type { AutomationTriggerType,ReplyRule,RulesProps,RulesTab } from '../types';
-import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
+import { accentClasses,accountLabel,actionSummary,adjustPriceTarget,buildReviewConfig,reviewLookbackHours,cardActionsForTrigger,isDeliveryCardReady,needsAllItemsConfirmation,statusPill,triggerMeta,triggerOrder,withAllItemsConfirmation } from '../utils';
 
 // Rules 是规则 feature 在旧页面目录下保留的兼容入口组件。
 const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHandled }) => {
@@ -845,16 +846,14 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                             ) : (
                               <div>
                                 <label className="block text-xs font-bold text-gray-600 mb-2">卡密库存</label>
-                                <select
-                                  value={variant.card_id || ''}
-                                  onChange={/* 当前回调选择卡密库存。 */ event => updateVariant(index, { card_id: Number(event.target.value) })}
-                                  className="w-full ios-input px-3 py-2.5 rounded-lg"
-                                >
-                                  <option value="">请选择卡密库存</option>
-                                  {cards.filter(isDeliveryCardReady).map(/* 当前回调处理集合中的单个元素。 */ card => (
-                                    <option key={card.id} value={card.id}>{card.name}</option>
-                                  ))}
-                                </select>
+                                <SearchableSelect
+                                  options={cards.filter(isDeliveryCardReady).map(/* card 转换为可搜索选项，仅保留主键与名称。 */ card => ({ value: card.id, label: card.name }))}
+                                  value={variant.card_id}
+                                  onChange={/* cardID 是用户选中的卡密库存主键，0 表示清空。 */ cardID => updateVariant(index, { card_id: cardID })}
+                                  placeholder="请选择卡密库存"
+                                  ariaLabel="卡密库存"
+                                />
+
                               </div>
                             )}
                             <div>
@@ -960,6 +959,22 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                           />
                         </div>
                         <div className="md:col-span-3">
+                          <label className="block text-sm font-bold text-gray-700 mb-2">仅处理最近 N 小时内发货的订单</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={reviewLookbackHours(editingAutomationRule.config_json)}
+                            onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setEditingAutomationRule({
+                              ...editingAutomationRule,
+                              config_json: buildReviewConfig(editingAutomationRule.config_json, {
+                                max_lookback_hours: Math.max(1, Number(event.target.value) || 1),
+                              }),
+                            })}
+                            className="w-full ios-input px-4 py-3 rounded-xl"
+                          />
+                          <p className="text-xs text-gray-500 mt-2">发货时间早于该窗口的订单不会求评价，避免规则停用后重新启用时给历史订单补发消息。默认值为走完全部求评流程所需时长再加 24 小时；填写值不会小于「发货后等待小时」。</p>
+                        </div>
+                        <div className="md:col-span-3">
                           <label className="block text-sm font-bold text-gray-700 mb-2">求评价文案</label>
                           <textarea
                             value={editingAutomationRule.actions?.find(/* 当前回调处理集合中的单个元素。 */ action => action.action_type === 'send_text')?.message_template || ''}
@@ -980,7 +995,7 @@ const Rules: React.FC<RulesProps> = ({ initialDeliveryTarget, onDeliveryTargetHa
                     <div className="grid grid-cols-1 md:grid-cols-[180px_1fr] gap-4 items-end">
                       <div>
 						<label className="block text-sm font-bold text-gray-700 mb-2">优先级</label>
-						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则。</p>
+						<p className="text-xs text-gray-500 mb-2">数字越小优先级越高；同一账号、商品和触发条件只执行优先级最高的一条规则；商品级规则存在时，账号级规则不会生效。</p>
                         <input
                           type="number"
                           value={editingAutomationRule.priority || 100}

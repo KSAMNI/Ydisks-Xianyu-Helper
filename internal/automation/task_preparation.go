@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"xianyu-go/internal/db"
 )
+
+// simplifiedEventResolveWindow 是简化系统事件按会话回溯近期订单的时间窗口；窗口外的订单不参与识别，保持原有延期行为。
+const simplifiedEventResolveWindow = 30 * time.Minute
 
 // resolvePaidTaskOrder 为交易系统消息回填本账号已有订单事实，避免未知角色事件因协议字段缺失而无法完成卖家核验。
 func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, error) {
@@ -24,28 +28,35 @@ func (c *Center) resolvePaidTaskOrder(ctx context.Context, task Task) (Task, err
 		}
 		return mergeOrderIntoTask(task, order), nil
 	}
-	if task.TriggerType == TriggerOrderCreated || task.ChatID == "" {
+	if task.ChatID == "" {
 		return task, nil
 	}
-	// order 保存按账号、会话及可选身份约束匹配的事实；未知角色只接受唯一候选，不按最近时间猜单。
-	var order *db.Order
-	// err 保存对应选择策略的数据库错误，失败时不能继续外部动作。
-	var err error
-	if task.OrderRole == OrderRoleUnknown && isWebSocketSellerOrderTask(task) {
-		order, err = c.store.Orders.FindUniquePendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
-	} else {
-		order, err = c.store.Orders.FindLatestPendingByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID)
+	if task.TriggerType != TriggerOrderCreated {
+		// 付款与砍价阶段事件缺少订单号时不按会话猜测订单：买家加商品也不能唯一确定一笔交易，
+		// 同一买家再次购买同一商品而新订单尚未同步时，旧的待发货订单会被误发卡，已发货旧订单会把新消息误当重复消息收口。
+		// 事件保持订单号缺失，由角色门禁延期等待订单同步；订单同步后的丢消息兜底由待发货扫描负责。
+		return task, nil
 	}
+	if task.ItemID != "" {
+		// 拍下事件已带商品，说明不是只含会话标识的简化事件，不改写。
+		return task, nil
+	}
+	// recent 保存同会话近期已被完整事件处理的订单（如已发货）；简化事件只含会话标识，
+	// 命中后合并订单事实，使后续角色门禁把“订单已不是待发货”判为不可重试并安全收口，而不是反复延期后误报人工处理。
+	recent, err := c.store.Orders.FindRecentByChat(ctx, task.AccountID, task.ChatID, task.BuyerID, task.ItemID, time.Now().Add(-simplifiedEventResolveWindow))
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			return task, nil
 		}
-		return task, fmt.Errorf("按会话回填自动发货订单: %w", err)
+		return task, fmt.Errorf("按会话识别近期订单: %w", err)
 	}
-	if order == nil {
+	if recent == nil {
 		return task, nil
 	}
-	return mergeOrderIntoTask(task, order), nil
+	if c.logger != nil {
+		c.logger.Info("简化交易事件已按会话关联近期订单", "account", task.AccountID, "order_id", recent.OrderID, "trigger", task.TriggerType)
+	}
+	return mergeOrderIntoTask(task, recent), nil
 }
 
 // prepareBuyerNickname 补齐模板渲染所需的买家昵称摘要。
@@ -96,4 +107,16 @@ func mergeOrderIntoTask(task Task, order *db.Order) Task {
 		task.IsBargain = true
 	}
 	return task
+}
+
+// requireReliablePaidQuantity 要求付款发货在执行外部动作前已可靠取得正整数购买数量。
+// 订单详情成功但缺少或无法识别 buyAmount 时，数量不得退化为 1 而少发卡密；返回错误使准备阶段延期重试。
+func requireReliablePaidQuantity(task Task) error {
+	if task.TriggerType != TriggerOrderPaid {
+		return nil
+	}
+	if parsePositiveInt(task.Quantity) <= 0 {
+		return fmt.Errorf("订单 %s 的购买数量缺失或无法识别，暂不自动发货", task.OrderID)
+	}
+	return nil
 }

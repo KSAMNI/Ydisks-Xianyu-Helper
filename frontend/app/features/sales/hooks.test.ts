@@ -14,13 +14,11 @@ const statsMock = vi.mocked(getSalesStats);
 // SalesRangeProps 是范围切换测试使用的 Hook 输入参数。
 type SalesRangeProps = {
   /** range 是当前预设时间范围，测试在 7 天与 30 天之间切换。 */
-  range: '7days' | '30days';
+  range: '7days' | '30days' | 'custom';
   /** customStartDate 是自定义起始日期，本用例不使用。 */
   customStartDate: string;
   /** customEndDate 是自定义结束日期，本用例不使用。 */
   customEndDate: string;
-  /** customRangeVersion 是自定义范围确认版本，本用例不使用。 */
-  customRangeVersion: number;
 };
 // sampleStats 是服务端返回形状的销售统计样例数据。
 const sampleStats = {
@@ -58,7 +56,7 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
 
   test('加载成功后返回销售统计数据', /* 当前回调验证默认 7 天范围的加载成功路径。 */ async () => {
     // hook 保存销售统计 Hook 的当前测试状态。
-    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: '7days', customStartDate: '', customEndDate: '', customRangeVersion: 0 }));
+    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: '7days', customStartDate: '', customEndDate: '' }));
     await waitInitialLoad();
     expect(statsMock).toHaveBeenCalledTimes(1);
     expect(hook.result.current.loading).toBe(false);
@@ -71,7 +69,7 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
   test('加载失败时写入错误并清空数据', /* 当前回调验证错误路径的用户可见语义。 */ async () => {
     statsMock.mockRejectedValueOnce(new Error('统计失败'));
     // hook 保存销售统计 Hook 的当前测试状态。
-    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'today', customStartDate: '', customEndDate: '', customRangeVersion: 0 }));
+    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'today', customStartDate: '', customEndDate: '' }));
     await waitInitialLoad();
     expect(hook.result.current.loading).toBe(false);
     expect(hook.result.current.error).toContain('统计失败');
@@ -81,7 +79,7 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
 
   test('刷新函数重新发起请求', /* 当前回调验证手动刷新重新加载最新统计。 */ async () => {
     // hook 保存销售统计 Hook 的当前测试状态。
-    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: '7days', customStartDate: '', customEndDate: '', customRangeVersion: 0 }));
+    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: '7days', customStartDate: '', customEndDate: '' }));
     await waitInitialLoad();
     // 手动刷新会再次触发同一范围的请求。
     await act(/* refreshAction 等待手动刷新请求完成。 */ async () => { await hook.result.current.refresh(); });
@@ -100,11 +98,11 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
     const hook = renderHook(
       // hookFactory 按传入的范围参数创建销售统计 Hook 测试实例。
       (props: SalesRangeProps) => useSalesStats(props),
-      { initialProps: { range: '7days', customStartDate: '', customEndDate: '', customRangeVersion: 0 } as SalesRangeProps },
+      { initialProps: { range: '7days', customStartDate: '', customEndDate: '' } as SalesRangeProps },
     );
     await waitInitialLoad();
     // 切换到 30days 触发新一轮请求并中止旧请求。
-    await act(/* rangeSwitchAction 等待范围切换后的新请求完成。 */ async () => { await hook.rerender({ range: '30days', customStartDate: '', customEndDate: '', customRangeVersion: 0 }); });
+    await act(/* rangeSwitchAction 等待范围切换后的新请求完成。 */ async () => { await hook.rerender({ range: '30days', customStartDate: '', customEndDate: '' }); });
     // 晚到的第一轮响应不得写入状态。
     await act(/* lateResponseAction 放行第一轮挂起响应并等待状态刷新。 */ async () => { firstPending?.(sampleStats); });
     expect(hook.result.current.data?.salesAmount).toBe(28.5);
@@ -114,7 +112,7 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
 
   test('自定义日期倒置时写入日期范围错误', /* 当前回调验证非法自定义范围不会发起请求。 */ async () => {
     // hook 保存销售统计 Hook 的当前测试状态。
-    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'custom', customStartDate: '2026-10-11', customEndDate: '2026-10-10', customRangeVersion: 0 }));
+    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'custom', customStartDate: '2026-10-11', customEndDate: '2026-10-10' }));
     await waitInitialLoad();
     expect(statsMock).not.toHaveBeenCalled();
     expect(hook.result.current.error).toContain('开始日期不能晚于结束日期');
@@ -124,9 +122,33 @@ describe('useSalesStats', /* 当前测试组验证销售统计 Hook 的成功、
 
   test('StrictMode 重挂载后仍能正常加载', /* 当前回调验证模拟卸载不会永久阻断最新统计响应。 */ async () => {
     // hook 保存 StrictMode 下销售统计 Hook 的当前测试状态。
-    const hook = renderHook(/* hookFactory 创建 StrictMode 销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'yesterday', customStartDate: '', customEndDate: '', customRangeVersion: 0 }), { wrapper: strictModeWrapper });
+    const hook = renderHook(/* hookFactory 创建 StrictMode 销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'yesterday', customStartDate: '', customEndDate: '' }), { wrapper: strictModeWrapper });
     await waitInitialLoad();
     expect(hook.result.current.loading).toBe(false);
+    expect(hook.result.current.data?.salesOrders).toBe(4);
+    hook.unmount();
+  });
+
+  test('自定义日期未填齐时不发起请求', /* 当前回调验证不会静默回退为 7 天范围。 */ async () => {
+    // hook 保存销售统计 Hook 的当前测试状态。
+    const hook = renderHook(/* hookFactory 创建销售统计 Hook 测试实例。 */ () => useSalesStats({ range: 'custom', customStartDate: '2026-10-10', customEndDate: '' }));
+    await waitInitialLoad();
+    expect(statsMock).not.toHaveBeenCalled();
+    expect(hook.result.current.loading).toBe(false);
+    expect(hook.result.current.error).toBe('');
+    hook.unmount();
+  });
+
+  test('倒置日期被修正后恢复加载', /* 当前回调验证错误状态可通过修改输入恢复。 */ async () => {
+    // hook 保存销售统计 Hook 的当前测试状态；回调透传 props 以支持 rerender 修正日期。
+    const hook = renderHook(
+      /* hookFactory 按传入参数创建销售统计 Hook 测试实例。 */ (props: SalesRangeProps) => useSalesStats(props),
+      { initialProps: { range: 'custom', customStartDate: '2026-10-11', customEndDate: '2026-10-10' } as SalesRangeProps },
+    );
+    await waitInitialLoad();
+    expect(hook.result.current.error).toContain('开始日期不能晚于结束日期');
+    await act(/* fixAction 修正日期后等待新请求完成。 */ async () => { hook.rerender({ range: 'custom', customStartDate: '2026-10-09', customEndDate: '2026-10-10' }); });
+    expect(hook.result.current.error).toBe('');
     expect(hook.result.current.data?.salesOrders).toBe(4);
     hook.unmount();
   });

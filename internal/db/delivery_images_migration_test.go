@@ -19,7 +19,7 @@ func TestMultiDB_DeliveryImageMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			goose.SetBaseFS(migrationsFS)
-			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 53); err != nil { // err 是构造升级前结构的错误。
+			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 55); err != nil { // err 是构造升级前结构的错误。
 				t.Fatal(err)
 			}
 			if columnExistsForDialect(t, target.store.DB, target.dialect, "cards", "image_path") || columnExistsForDialect(t, target.store.DB, target.dialect, "delivery_template_messages", "type") {
@@ -42,7 +42,7 @@ func TestMultiDB_DeliveryImageMigration(t *testing.T) {
 			if _, err := target.store.DB.ExecContext(ctx, `INSERT INTO delivery_template_messages (template_id,sort_order,content) VALUES (?,1,'旧正文 {{order_id}}')`, templateID); err != nil { // err 是旧格式消息写入错误。
 				t.Fatal(err)
 			}
-			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 54); err != nil { // err 是当前迁移执行错误。
+			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 56); err != nil { // err 是当前迁移执行错误。
 				t.Fatal(err)
 			}
 			// card、readErr 验证卡券升级保留旧 URL 并将本地路径默认设为空。

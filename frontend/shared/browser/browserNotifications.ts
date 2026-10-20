@@ -79,6 +79,14 @@ export const getBrowserNotificationPermission = (): BrowserNotificationPermissio
 // effectiveBrowserNotificationEnabled 计算本地偏好与系统权限共同决定的真实通知开关。
 export const effectiveBrowserNotificationEnabled = (preferred: boolean, permission: BrowserNotificationPermission): boolean => preferred && permission === 'granted';
 
+/** getBrowserNotificationHint 根据权限与页面安全上下文给出无法开启通知时的处理建议；可正常使用时返回空串。 */
+export const getBrowserNotificationHint = (permission: BrowserNotificationPermission, secureContext: boolean): string => {
+  if (permission === 'granted' || permission === 'default') return '';
+  if (!secureContext) return '当前页面不是 HTTPS 或 localhost，浏览器会禁止系统通知。请改用 HTTPS（或通过 localhost 访问）后再开启。';
+  if (permission === 'denied') return '通知权限已被浏览器拒绝：请点击地址栏左侧的站点设置，把“通知”改为允许后刷新页面。';
+  return '当前浏览器不支持系统通知。';
+};
+
 /** publishBrowserNotificationPreference 通知同页消费者重新读取本地偏好。 */
 const publishBrowserNotificationPreference = (): void => {
   if (typeof window !== 'undefined') window.dispatchEvent(new Event(BROWSER_NOTIFICATION_CHANGE_EVENT));

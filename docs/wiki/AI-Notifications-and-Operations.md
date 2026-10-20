@@ -10,10 +10,10 @@ The system-level connection is configured under System and AI and can be changed
 2. Enter the API key and click Read Models. If the service does not support model listing, enter the model name manually.
 3. Save System and AI. The API key is stored as a sensitive field; still restrict database and administrator access.
 4. Open Account Management and select AI Settings for the target account.
-5. Enable automatic AI replies. Set the maximum discount percentage, maximum discount amount, maximum bargaining rounds, and custom prompt, then save.
+5. Enable automatic AI replies and choose a mode: Bargaining Only (default), or Full Service, which also answers consultation, shipping, and after-sales messages. Set the maximum discount percentage, maximum discount amount, maximum bargaining rounds, and the custom prompt (shop rules in Full Service mode), then save.
 6. Test with a realistic but low-risk bargaining conversation. Confirm amount limits and wording before enabling a production account.
 
-AI handles buyer bargaining messages. A maximum discount percentage or amount of `0` forbids that type of discount; keep bargaining rounds conservative. Prompts should define product boundaries, forbidden promises, tone, and when to hand off to a person. Do not put Cookies, passwords, complete private order data, or other secrets in prompts.
+In Bargaining Only mode AI handles buyer bargaining messages; in Full Service mode it also answers other messages, but discount, refund, and compensation promises are still forbidden outside the bargaining flow and the buyer is referred to a person. Shipping or postage amounts are not treated as bargaining. Each product can override the account switch (Inherit, Force Enable, or Force Disable) and carry up to 12,000 characters of product-specific reference material; open it from the AI Customer Service entry on the product card. That material is treated as facts only and cannot override shop rules or price limits. A maximum discount percentage or amount of `0` forbids that type of discount; keep bargaining rounds conservative. Prompts should define product boundaries, forbidden promises, tone, and when to hand off to a person. Do not put Cookies, passwords, complete private order data, or other secrets in prompts.
 
 ## Configure notifications
 
@@ -24,6 +24,8 @@ AI handles buyer bargaining messages. A maximum discount percentage or amount of
 5. Return to Account Management → Edit and bind the channel to each account. Creating a channel alone does not make an account use it.
 
 A test notification verifies only channel configuration. Automated task notifications additionally require the account binding and the corresponding automation event filter. Automation results send when a task reaches completed, failed, or manual-review status.
+
+SMTP authentication prefers `PLAIN` and selects `LOGIN` when the server offers only `LOGIN`. For SendCloud, use `API_USER` as the SMTP username and its `API_KEY` as the password; set the sender email address separately. Use STARTTLS on port `587`, with implicit SSL/TLS disabled.
 
 Webhook URLs and bot tokens are equivalent to passwords. Do not paste them into screenshots, Issues, or chat. Update and retest a channel immediately after rotating a token.
 
@@ -41,7 +43,7 @@ Check the following every day or before a major promotion:
 
 1. **Account offline:** check whether it is paused, whether its Cookie expired, and whether QR login or security verification is required. Confirm the recovery notification afterward.
 2. **Delivery did not run:** check account ownership, product/specification match, enabled rules, card inventory, and automation exceptions. First confirm whether content was already sent.
-3. **AI did not reply:** verify the system API URL, key, and model; then verify AI is enabled for the account and that the message is a bargaining message.
+3. **AI did not reply:** verify the system API URL, key, and model; then verify AI is enabled for the account (and not forced off for the product) and that the message suits the mode: in Bargaining Only mode it must be a bargaining message.
 4. **Notification did not arrive:** send a test notification, then check the matching automation event filter and account binding. Paid delivery requires the Paid Delivery event; email also requires valid SMTP. If it still fails, inspect logs for notification trigger, queue insertion, and send result.
 5. **Database cannot connect:** check `DATABASE_URL`, network/TLS, database permissions, and service logs. Do not delete the database as a repair step.
 

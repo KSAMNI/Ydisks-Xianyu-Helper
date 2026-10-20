@@ -1,5 +1,5 @@
 import { describe,expect,test } from 'vitest';
-import { getDateRange,getPreviousDateRange } from './dateRange';
+import { getDateRange,getPreviousDateRange,validateCustomDateRange } from './dateRange';
 
 describe('date ranges', () => {
   const now = new Date('2026-07-10T12:00:00'); /* now 表示now。 */
@@ -33,4 +33,11 @@ describe('date ranges', () => {
     expect(getDateRange('yesterday', now)).toEqual({ startDate: '2026-07-09', endDate: '2026-07-09' });
     expect(getDateRange('today', now)).toEqual({ startDate: '2026-07-10', endDate: '2026-07-10' });
   } /* 测试回调断言自定义、今天和昨天范围的边界。 */);
+
+  test('自定义日期校验区分缺失、倒置与合法', () => {
+    expect(validateCustomDateRange('', '2026-07-10')).toBe('请选择开始日期和结束日期');
+    expect(validateCustomDateRange('2026-07-10', '')).toBe('请选择开始日期和结束日期');
+    expect(validateCustomDateRange('2026-07-11', '2026-07-10')).toBe('开始日期不能晚于结束日期');
+    expect(validateCustomDateRange('2026-07-10', '2026-07-10')).toBe('');
+  } /* 测试回调断言自定义日期校验的三类结果。 */);
 } /* 测试套件回调汇总日期范围计算契约。 */);

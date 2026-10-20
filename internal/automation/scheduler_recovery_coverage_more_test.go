@@ -109,6 +109,8 @@ func TestSchedulerRecoveryCoversInvalidSnapshotAndAccountPostpone(t *testing.T) 
 func newPaidRecoveryFixture(t *testing.T, orderStatus, source string) (int64, *testSender, *Scheduler, *db.Store, func()) {
 	// store、cleanup 保存隔离测试数据库及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
+	// 关闭账号自动确认发货：本用例验证恢复准入，隐式确认发货由专门用例覆盖，避免测试触碰平台确认接口。
+	disableAutoConsign(t, store)
 	// ctx 是测试数据创建使用的上下文。
 	ctx := context.Background()
 	// admin、adminErr 保存付款规则所属管理员及查询错误。

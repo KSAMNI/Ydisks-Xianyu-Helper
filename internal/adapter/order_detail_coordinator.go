@@ -60,6 +60,7 @@ type OrderDetailFetchOutcome struct {
 	// Forced 表示本次调用是否按强制模式跳过了账号级限流；它只描述本次调用，不描述被复用的在途请求。
 	Forced bool
 }
+
 // OrderDetailCoordinator 统一协调订单详情 MTOP 请求。
 // mu 保护 nextAllowed、requests 与 successes；锁内只管理内存状态，绝不执行定时等待或平台 I/O。
 // 同一账号按最短间隔限流，同一账号同一订单的并发请求和短暂成功结果均可复用。
@@ -137,6 +138,17 @@ func newOrderDetailCoordinatorWithLogger(logger *slog.Logger, minGap, maxJitter 
 		jitter:      boundedJitter,
 		successTTL:  defaultOrderDetailSuccessTTL,
 	}
+}
+
+// Fetch 以默认复用模式获取订单详情，保留上游调用方与回归用例使用的兼容入口。
+// ctx 只控制当前等待者和首个调用的平台请求；cookies 只传给当前 MTOP 调用，协调器不保存、记录或比较其内容。
+func (c *OrderDetailCoordinator) Fetch(ctx context.Context, accountID, orderID, cookies string, fetcher orderDetailMTop) (*mtop.OrderDetailResult, error) {
+	// outcome 保存本次请求的终态与限流信息；兼容入口只把订单详情返回给调用方。
+	outcome, err := c.FetchWithMode(ctx, accountID, orderID, cookies, fetcher, OrderDetailFetchReuse)
+	if err != nil {
+		return nil, err
+	}
+	return outcome.Result, nil
 }
 
 // FetchWithMode 按 mode 执行一次订单详情请求，并返回可直接用于用户提示的限流等待信息。

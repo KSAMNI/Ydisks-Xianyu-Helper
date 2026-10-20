@@ -97,8 +97,12 @@ export const useRuntimeLogs = (options: UseRuntimeLogsOptions = {}): UseRuntimeL
     const controller = new AbortController();
     // cancelled 表示当前日志流是否已被清理函数结束。
     let cancelled = false;
-    // loadIncrement 读取一次增量日志并按代次守卫写入状态。
+    // inFlight 表示本日志流是否已有未返回的增量请求；同一游标的请求不得并发，避免乱序响应让游标倒退。
+    let inFlight = false;
+    // loadIncrement 读取一次增量日志并按代次守卫写入状态；上一轮未返回时跳过本轮。
     const loadIncrement = async (): Promise<void> => {
+      if (inFlight) return;
+      inFlight = true;
       setLoading(true);
       try {
         // page 是本次增量查询返回的日志页。
@@ -112,6 +116,7 @@ export const useRuntimeLogs = (options: UseRuntimeLogsOptions = {}): UseRuntimeL
         if (cancelled || sequenceRef.current !== sequence || isRuntimeLogAbortError(requestError)) return;
         setError(runtimeLogErrorMessage(requestError, '运行日志加载失败'));
       } finally {
+        inFlight = false;
         if (!cancelled && sequenceRef.current === sequence) setLoading(false);
       }
     };

@@ -11,7 +11,7 @@ type AccountSummary struct {
 	ID string
 	// UserID 是账号所属的本地用户标识。
 	UserID int64
-	// AutoConfirm 表示账号是否启用自动确认收货。
+	// AutoConfirm 表示账号是否开启自动发货总开关（库字段 auto_confirm，付款后自动发卡密或发货模板）。
 	AutoConfirm bool
 	// AutoConsign 表示自动发货后是否自动转已发货。
 	AutoConsign bool

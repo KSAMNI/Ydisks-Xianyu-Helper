@@ -110,7 +110,7 @@ func (c *Center) guardDeferredReplay(ctx context.Context, task Task) (bool, bool
 		return true, false, nil
 	}
 	// enabled、settingsErr 读取账号自动发货总开关；关闭期间保留延期任务而不消耗重试次数。
-	enabled, settingsErr := c.paidDeliveryAutoConfirmEnabled(ctx, task.AccountID)
+	enabled, settingsErr := c.autoDeliveryEnabled(ctx, task.AccountID)
 	if settingsErr != nil {
 		return true, false, settingsErr
 	}

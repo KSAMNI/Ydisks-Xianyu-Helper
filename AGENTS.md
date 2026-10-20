@@ -27,6 +27,7 @@ make build      # go build ./cmd/server
 make test       # go test ./...
 make test-server       # go test ./internal/server
 make test-server-race  # server 生命周期与凭证并发 smoke race
+make smoke      # 构建并启动真实二进制，经 HTTP 验证健康/初始化/登录/核心列表/前端首页/优雅退出（临时 SQLite）
 make vet        # go vet ./...
 make lint       # golangci-lint run ./... (0 issues baseline)
 make check      # fmt + architecture + API contract + vet + lint + test + comments
@@ -232,6 +233,13 @@ until their recorded phase is completed; agents MUST NOT add new violations.
 - New ownership checks return existence/non-sensitive identity rather than maps of decrypted Cookie values.
 - Do not hold credential locks across slow external I/O unless an authoritative protocol invariant explicitly
   requires it and the lock order is documented and tested.
+- **Sole documented exception (API card editor):** `GET /api/v1/cards/{card_id}/api-editor` may return the
+  owner's saved API-card request template (headers, query parameters and body, including third-party API keys) so
+  the owner can review and edit it. This exception was explicitly approved by the project owner and is limited to
+  that one endpoint. It requires: login plus card-ownership and `type=api` checks, `Cache-Control: no-store`,
+  no values in ordinary card lists/details, logs, notifications or error messages, secret-bearing inputs masked by
+  default in the UI, and the draft cleared when the dialog closes or the card switches. It is not a precedent: any
+  other endpoint that would return a stored secret still needs its own recorded approval.
 
 ## Mandatory HTTP API constraints
 

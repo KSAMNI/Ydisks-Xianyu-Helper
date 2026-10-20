@@ -3,8 +3,9 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { ImageSourceEditor } from '../../../../shared/components/ImageSourceEditor';
 import { Card, testCardAPI } from '../api';
-import { useCardActions } from '../cardActions';
 import { APIRequestBuilder } from '../components/APIRequestBuilder';
+import { apiConfigFromEditForm, apiConfigFromAddForm, updateAPIEditForm, updateAPIAddForm } from '../editConfig';
+import { useCardActions } from '../cardActions';
 import { BatchCardImportModal } from '../components/BatchCardImportModal';
 import { CardIcon } from '../components/CardIcon';
 import { useCardBatchActions,useCardsData } from '../hooks';
@@ -24,7 +25,9 @@ const CardList: React.FC = () => {
     nameSearch,
     setNameSearch,
     showEditModal,
-    setShowEditModal,
+    closeEdit,
+    editLoading,
+    editError,
     showAddModal,
     setShowAddModal,
     selectedCard,
@@ -229,7 +232,7 @@ const CardList: React.FC = () => {
             <div className="modal-header">
               <h3 className="text-2xl font-extrabold text-gray-900">编辑卡密</h3>
               <button
-                onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowEditModal(false)}
+                onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => closeEdit()}
                 className="p-2 rounded-xl hover:bg-gray-100 transition-colors"
               >
                 <X className="w-5 h-5 text-gray-500" />
@@ -237,7 +240,9 @@ const CardList: React.FC = () => {
             </div>
 
             <div className="modal-body">
-              <div className="space-y-5">
+              {editLoading && <p role="status" className="mb-4 text-gray-500">加载中…</p>}
+              {editError && <div role="alert" className="mb-4 text-red-600">{editError} <button type="button" onClick={/* retryEditor 重新读取当前卡密的完整配置。 */ () => void handleEdit(selectedCard)}>重试</button></div>}
+              <fieldset disabled={editLoading || !!editError} className="space-y-5">
                 {/* 基本信息 */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
@@ -270,6 +275,7 @@ const CardList: React.FC = () => {
                 {editForm.type === 'api' && (
                   <>
                     <APIRequestBuilder
+                      key={selectedCard.id}
                       url={editForm.api_url || ''}
                       method={editForm.api_method || 'GET'}
                       timeout={editForm.api_timeout || 10}
@@ -279,23 +285,8 @@ const CardList: React.FC = () => {
                       body={editForm.api_body || ''}
                       responsePath={editForm.api_response_path || ''}
                       retryEnabled={editForm.api_retry_enabled || false}
-                      headersAction={editForm.api_headers_action || 'retain'}
-                      paramsAction={editForm.api_params_action || 'retain'}
-	                      onTest={/* editAPITest 使用当前编辑草稿发起临时 API 测试，不保存草稿。 */ () => testCardAPI({ url: editForm.api_url || '', method: editForm.api_method || 'GET', timeout_seconds: editForm.api_timeout || 10, headers: editForm.api_headers || undefined, params: editForm.api_params || undefined, content_type: editForm.api_content_type || 'application/json', body: editForm.api_body || undefined, response_path: editForm.api_response_path || undefined, retry_enabled: editForm.api_retry_enabled || false })}
-                      onChange={/* 当前回调把 API 请求编辑器字段写回编辑草稿。 */ (field, value) => setEditForm(/* currentUpdater 基于最新编辑草稿合并 API 字段。 */ current => ({
-                        ...current,
-                        ...(field === 'url' ? { api_url: String(value) } : {}),
-                        ...(field === 'method' ? { api_method: value as 'GET' | 'POST' } : {}),
-                        ...(field === 'timeout' ? { api_timeout: Number(value) } : {}),
-                        ...(field === 'headers' ? { api_headers: String(value) } : {}),
-                        ...(field === 'params' ? { api_params: String(value) } : {}),
-                        ...(field === 'contentType' ? { api_content_type: String(value) } : {}),
-                        ...(field === 'body' ? { api_body: String(value) } : {}),
-                        ...(field === 'responsePath' ? { api_response_path: String(value) } : {}),
-                        ...(field === 'retryEnabled' ? { api_retry_enabled: Boolean(value) } : {}),
-                        ...(field === 'headersAction' ? { api_headers_action: value as 'retain' | 'replace' | 'clear' } : {}),
-                        ...(field === 'paramsAction' ? { api_params_action: value as 'retain' | 'replace' | 'clear' } : {}),
-                      }))}
+                      onTest={/* editAPITest 合并同一保存草稿并绑定当前卡密与取消信号。 */ signal => testCardAPI(apiConfigFromEditForm(editForm), selectedCard.id, { signal })}
+                      onChange={/* updateRequestField 将字段修改写回当前草稿。 */ (field, value) => setEditForm(/* updateDraft 合并最新表单与字段变更。 */ current => updateAPIEditForm(current, field, value))}
                     />
                   </>
                 )}
@@ -390,19 +381,20 @@ const CardList: React.FC = () => {
                     />
                   </button>
                 </div>
-              </div>
+              </fieldset>
             </div>
 
             <div className="modal-footer">
               <div className="flex gap-3 w-full">
                 <button
-                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setShowEditModal(false)}
+                  onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => closeEdit()}
                   className="flex-1 px-6 py-3 rounded-xl font-bold bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
                 >
                   取消
                 </button>
                 <button
                   onClick={handleSaveEdit}
+                  disabled={editLoading || !!editError}
                   className="flex-1 ios-btn-primary px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2"
                 >
                   <Save className="w-4 h-4" />
@@ -512,19 +504,8 @@ const CardList: React.FC = () => {
                       body={addForm.api_body}
                       responsePath={addForm.api_response_path}
                       retryEnabled={addForm.api_retry_enabled}
-	                      onTest={/* addAPITest 使用当前新增草稿发起临时 API 测试，不创建卡密。 */ () => testCardAPI({ url: addForm.content, method: addForm.api_method, timeout_seconds: addForm.api_timeout, headers: addForm.api_headers || undefined, params: addForm.api_params || undefined, content_type: addForm.api_content_type, body: addForm.api_body || undefined, response_path: addForm.api_response_path || undefined, retry_enabled: addForm.api_retry_enabled })}
-                      onChange={/* 当前回调把 API 请求编辑器字段写回新增草稿。 */ (field, value) => setAddForm(/* currentUpdater 基于最新新增草稿合并 API 字段。 */ current => ({
-                        ...current,
-                        ...(field === 'url' ? { content: String(value) } : {}),
-                        ...(field === 'method' ? { api_method: value as 'GET' | 'POST' } : {}),
-                        ...(field === 'timeout' ? { api_timeout: Number(value) } : {}),
-                        ...(field === 'headers' ? { api_headers: String(value) } : {}),
-                        ...(field === 'params' ? { api_params: String(value) } : {}),
-                        ...(field === 'contentType' ? { api_content_type: String(value) } : {}),
-                        ...(field === 'body' ? { api_body: String(value) } : {}),
-                        ...(field === 'responsePath' ? { api_response_path: String(value) } : {}),
-                        ...(field === 'retryEnabled' ? { api_retry_enabled: Boolean(value) } : {}),
-                      }))}
+	                      onTest={/* addAPITest 使用当前新增草稿发起临时 API 测试，不创建卡密。 */ signal => testCardAPI(apiConfigFromAddForm(addForm), undefined, { signal })}
+                      onChange={/* updateRequestField 将字段修改写回当前草稿。 */ (field, value) => setAddForm(/* updateDraft 合并最新表单与字段变更。 */ current => updateAPIAddForm(current, field, value))}
                     />
                   </>
                 )}

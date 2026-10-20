@@ -660,3 +660,53 @@ func TestServicePropagatesSettingsPortErrors(t *testing.T) {
 }
 
 var _ ModelClient = (*modelClientFake)(nil)
+
+// TestServiceUpsertAIReplyNormalizesAndValidatesMode 验证 AI 工作模式规则：
+// 缺省或空白保存为仅砍价，首尾空白被去除，全场景模式可保存；非法模式被拒绝且不会触达仓储写入。
+func TestServiceUpsertAIReplyNormalizesAndValidatesMode(t *testing.T) {
+	// base 是除模式外全部合法的设置，各用例只改 AIMode。
+	base := AIReplySettings{MaxDiscountPercent: 10, MaxDiscountAmount: 20, MaxBargainRounds: 3}
+	// cases 描述输入模式与保存后的期望模式；wantErr 为 true 表示必须被拒绝。
+	cases := []struct {
+		// name 是子用例说明。
+		name string
+		// mode 是传入的原始模式。
+		mode string
+		// want 是保存到仓储的模式。
+		want string
+		// wantErr 表示该输入必须被拒绝。
+		wantErr bool
+	}{
+		{"缺省保存为仅砍价", "", "bargain_only", false},
+		{"纯空白保存为仅砍价", "   ", "bargain_only", false},
+		{"全场景含空白", " full_service ", "full_service", false},
+		{"仅砍价", "bargain_only", "bargain_only", false},
+		{"非法模式", "always_reply", "", true},
+		{"大小写不匹配视为非法", "FULL_SERVICE", "", true},
+	}
+	// tc 是当前模式场景。
+	for _, tc := range cases {
+		// repository、service 是每个用例独立的仓储与服务，避免保存结果互相影响。
+		repository := &settingsRepositoryFake{ownerID: 7, aiSettings: make(map[string]AIReplySettings)}
+		// service 保存 NewService 调用的返回结果，供随后的断言使用。
+		service := NewService(repository, nil)
+		// settings 是复制基础合法设置后仅替换 AI 模式的草稿，避免用例间共享修改。
+		settings := base
+		settings.AIMode = tc.mode
+		// err 保存 UpsertAIReply 调用返回的错误，随后断言它是否符合该场景的预期。
+		err := service.UpsertAIReply(context.Background(), 7, "acc1", settings)
+		if tc.wantErr {
+			if err == nil || !strings.Contains(err.Error(), "AI 模式无效") {
+				t.Errorf("%s: 应拒绝非法模式，got %v", tc.name, err)
+			}
+			// saved 保存本断言步骤使用的中间值。
+			if _, saved := repository.aiSettings["acc1"]; saved {
+				t.Errorf("%s: 非法模式不得写入仓储", tc.name)
+			}
+			continue
+		}
+		if err != nil || repository.aiSettings["acc1"].AIMode != tc.want {
+			t.Errorf("%s: err=%v saved=%q want %q", tc.name, err, repository.aiSettings["acc1"].AIMode, tc.want)
+		}
+	}
+}

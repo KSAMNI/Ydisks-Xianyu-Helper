@@ -11,11 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"regexp"
 	"strings"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/keywordmatch"
 	"xianyu-go/internal/xianyu/ws"
 )
 
@@ -295,7 +295,7 @@ func (r *ReplyService) keywordReply(ctx context.Context, m ChatMessage) *ReplyRe
 		return nil
 	}
 
-	// 1. 商品ID关键词优先；一条规则可关联多个商品，命中任一即可。
+	// 1. 商品ID关键词优先；一条规则可关联多个商品，且关键词中的任一候选词命中即可。
 	if m.ItemID != "" {
 		// kw 表示当前遍历过程中的关键词规则。
 		for _, kw := range kws {
@@ -368,10 +368,8 @@ func matchKeywordExpressions(expressions []string, matchType, text string) (bool
 			continue
 		}
 		if normalizedMatchType == "regexp" {
-			// pattern 是保持默认大小写不敏感且允许 RE2 内联标志覆盖的包装表达式。
-			pattern := "(?i:" + expression + ")"
-			// compiled、compileErr 保存当前正则的编译结果。
-			compiled, compileErr := regexp.Compile(pattern)
+			// compiled、compileErr 保存与保存时校验共用的默认忽略大小写正则及编译错误，已编译结果带缓存。
+			compiled, compileErr := keywordmatch.CompileExpression(expression)
 			if compileErr != nil {
 				invalidIndexes = append(invalidIndexes, expressionIndex)
 				continue
@@ -381,11 +379,31 @@ func matchKeywordExpressions(expressions []string, matchType, text string) (bool
 			}
 			continue
 		}
-		if strings.Contains(strings.ToLower(text), strings.ToLower(expression)) {
+		if keywordMatches(strings.ToLower(text), expression) {
 			return true, invalidIndexes, false
 		}
 	}
 	return false, invalidIndexes, false
+}
+
+// keywordMatches 判断已小写化的买家消息 messageLower 是否包含 contains 模式表达式 rawKeyword 中的任一候选词。
+// 表达式可使用 |、中英文逗号、顿号或换行分隔候选词；空片段会被忽略，以保持历史单关键词规则不变。
+// regexp 模式不经过此函数：其中的 | 是正则分支，不做拆分。
+func keywordMatches(messageLower, rawKeyword string) bool {
+	// term 表示由规则分隔符拆出的单个候选关键词。
+	for _, term := range strings.FieldsFunc(rawKeyword, isKeywordTermSeparator) {
+		// normalizedTerm 去除候选词首尾空白后参与不区分大小写的包含匹配。
+		normalizedTerm := strings.TrimSpace(term)
+		if normalizedTerm != "" && strings.Contains(messageLower, strings.ToLower(normalizedTerm)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isKeywordTermSeparator 判断字符 separator 是否是关键词规则中表达 OR 语义的分隔符。
+func isKeywordTermSeparator(separator rune) bool {
+	return separator == '|' || separator == ',' || separator == '，' || separator == '、' || separator == '\n' || separator == '\r'
 }
 
 // containsItemID 判断规则的商品范围字段是否覆盖目标商品标识。

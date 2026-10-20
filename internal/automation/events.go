@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"xianyu-go/internal/db"
@@ -130,10 +131,11 @@ func ExtractTaskFromWS(accountID, cookieStr string, raw map[string]any) *Task {
 		Raw:       raw,
 	}
 	switch {
-	case isBargainPendingCard(f):
+	// 砍价两个阶段与普通付款一致，必须带系统消息标记；同标题的非系统卡片不能触发免拼或发卡。
+	case isBargainPendingCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerBargainPending
 		task.IsBargain = true
-	case isBargainReadyCard(f):
+	case isBargainReadyCard(f) && isSystemEvent(f):
 		task.TriggerType = TriggerOrderPaid
 		task.IsBargain = true
 	case isOrderPaidEvent(f):
@@ -596,11 +598,17 @@ func extFields(ext string) (updateKey, contentType string) {
 	return strAny(m["updateKey"]), strAny(m["contentType"])
 }
 
-// parseUpdateKey 封装parseUpdateKey业务协调。
+// parseUpdateKey 解析平台 updateKey 中的会话和订单标识；订单在前的确认收货四段键
+// 第二段是业务阶段码而不是订单号，误用会让确认收货事实落到不存在的伪订单上。
 func parseUpdateKey(updateKey string) (chatID, orderID string) {
-	// parts 用于本次流程后续判断的parts
+	// parts 是 updateKey 按冒号切分后的字段段。
 	parts := strings.Split(updateKey, ":")
 	if len(parts) >= 2 {
+		// stageCode、stageErr 是第二段阶段码的解析结果：短纯数字说明订单号位于第一段，
+		// 且该布局不含会话标识；其他情况沿用「会话:订单」布局。
+		if stageCode, stageErr := strconv.ParseUint(parts[1], 10, 64); stageErr == nil && stageCode < 1e9 {
+			return "", directOrderID(parts[0])
+		}
 		return parts[0], parts[1]
 	}
 	return "", ""

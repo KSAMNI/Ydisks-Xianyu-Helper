@@ -280,7 +280,7 @@ func upsertOrder(ctx context.Context, execer sqlQueryExecer, dialect Dialect, or
 
 		// current 是过滤状态倒退后的候选字段，不修改调用方传入的 opts。
 		current := opts
-		if current.OrderStatus != "" && !shouldUpdateOrderStatus(existingStatus.String, current.OrderStatus) {
+		if current.OrderStatus != "" && !shouldUpdateOrderStatus(existingStatus.String, current.OrderStatus, current.PlatformSnapshot) {
 			current.OrderStatus = ""
 		}
 		// set、args 保存本次合并字段和参数，最终追加旧版本及旧账号作原子写入条件。
@@ -411,19 +411,28 @@ func NormalizeOrderAmount(raw string) (string, bool) {
 	return raw, true
 }
 
-// shouldUpdateOrderStatus 防止延迟或重复的“已付款”事件把已发货/已完成订单回退。
-// 退款、取消等分支并非线性流程，因此这里只拦截明确的历史阶段倒退。
-// shouldUpdateOrderStatus 封装shouldUpdate订单状态业务协调。
-func shouldUpdateOrderStatus(current, incoming string) bool {
+// shouldUpdateOrderStatus 判断 incoming 能否覆盖 current，防止延迟或重复的事件把订单阶段回退。
+// platformSnapshot 表示 incoming 是刚从闲鱼订单列表或详情读取的平台当前状态：只有它能让“退款中”回到
+// “待发货”（买家在发货前撤回退款），也只有它能把“已取消”改成“退款中”或“已完成”；WebSocket 等事件
+// 来源可能迟到，不能做这两类改写。其余阶段倒退对两类来源一律拦截，避免旧快照重新触发自动发货。
+func shouldUpdateOrderStatus(current, incoming string, platformSnapshot bool) bool {
 	current = NormalizeOrderStatus(current)
 	incoming = NormalizeOrderStatus(incoming)
 	if current == incoming || current == "unknown" {
 		return true
 	}
+	if current == "refunding" && incoming == "pending_ship" {
+		return platformSnapshot
+	}
+	if current == "cancelled" && (incoming == "refunding" || incoming == "completed") {
+		return platformSnapshot
+	}
 	// early 用于本次流程后续判断的early
 	early := incoming == "processing" || incoming == "paid" || incoming == "pending_ship"
 	// advanced 用于本次流程后续判断的advanced
-	advanced := current == "shipped" || current == "completed" || current == "refunding" || current == "cancelled"
+	// 部分发货状态与付款门禁（paidDeliveryBlockedReason）语义一致：已有发货副作用，迟到的待发货事件不得回退并再次触发发卡。
+	advanced := current == "shipped" || current == "completed" || current == "refunding" || current == "cancelled" ||
+		current == "partial_success" || current == "partial_pending_finalize"
 	if early && advanced {
 		return false
 	}
@@ -452,6 +461,9 @@ type OrderUpsertOpts struct {
 	ChatID        string
 	IsBargain     *bool
 	SystemShipped *bool
+	// PlatformSnapshot 表示 OrderStatus 是刚从闲鱼订单列表或详情读取的平台当前状态，而非可能迟到的事件推断；
+	// 只有平台快照能把“退款中”恢复为“待发货”或改写已取消订单，规则见 shouldUpdateOrderStatus。
+	PlatformSnapshot bool
 }
 
 // maxOrderBatchLookupSize 限制批量订单查询的 IN 参数数量，兼容 SQLite 参数上限。

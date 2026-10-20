@@ -451,3 +451,103 @@ func TestExecuteRunActionsKeepsReviewAcrossDelayedTailAction(t *testing.T) {
 		t.Fatalf("延迟恢复后运行必须收口为人工核对: %+v", final)
 	}
 }
+
+// TestExecuteRunActionsSettlesUncertainMessageWhenTailNotPerformed 验证消息结果不确定且放行的确认发货随后“明确未执行”时，
+// 运行仍收口为人工核对，而不是被当作普通失败重放发卡。
+func TestExecuteRunActionsSettlesUncertainMessageWhenTailNotPerformed(t *testing.T) {
+	// cleanup、store 分别保存：测试数据库的关闭函数；隔离的测试数据库仓储。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 保存本测试共用的数据库上下文。
+	ctx := context.Background()
+	// admin、adminErr 分别保存：规则所属的测试管理员账号；读取管理员账号的错误。
+	admin, adminErr := store.Users.GetByUsername(ctx, "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// ruleID 保存夹具规则主键。
+	ruleID := uncertainTailRule(t, store, admin.ID, "settle-acc",
+		[]db.AutomationActionInput{
+			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+			{ActionType: ActionConfirmShipment, Enabled: true},
+		})
+	// runID 保存待执行运行主键。
+	runID := uncertainTailRun(t, store, ruleID, "settle-acc", "o-settle")
+	// running 保存重新读取的运行状态。
+	running := uncertainTailRunningRun(t, store, runID)
+	// coordinator 让发卡结果不确定、确认发货明确未执行（例如会话失效且恢复失败）。
+	coordinator := newUncertainTailCoordinator(store, func(_ context.Context, _ Task, action db.AutomationAction) (actionExecutionResult, error) {
+		if action.ActionType == ActionSendCard {
+			return actionExecutionResult{reviewProof: shipmentDeliveryProof{messages: []db.AutomationDeliveryMessage{{Kind: "text", Content: "卡密内容"}}}}, uncertainAction(errors.New("平台发送响应中断"))
+		}
+		return actionExecutionResult{}, errActionNotPerformed
+	})
+	// task 保存与动作规格匹配的付款发货任务。
+	task := Task{TriggerType: TriggerOrderPaid, AccountID: "settle-acc", OrderID: "o-settle", ChatID: "chat-settle", BuyerID: "buyer-settle", ItemID: "item-uncertain", SpecName: "颜色", SpecValue: "黑"}
+	// actions 保存运行要执行的动作计划。
+	actions := []db.AutomationAction{
+		{ActionType: ActionSendCard, Enabled: true, CardID: 1, DeliveryCount: 1, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+		{ActionType: ActionConfirmShipment, Enabled: true},
+	}
+	// runErr 保存运行编排返回的错误。
+	if _, _, runErr := coordinator.executeRunActions(ctx, task, ruleID, running, actions, false); !errors.Is(runErr, errAutomationNeedsReview) {
+		t.Fatalf("确认发货明确未执行时仍须收口为人工核对: %v", runErr)
+	}
+	// settled 是落库后的运行状态。
+	settled, settledErr := store.Automation.GetRun(ctx, runID)
+	if settledErr != nil || settled.Status != "needs_review" {
+		t.Fatalf("运行必须是人工核对而不是普通失败: %+v err=%v", settled, settledErr)
+	}
+}
+
+// TestExecuteRunActionsDoesNotContinueTailAfterContextCanceled 验证调用方上下文在消息动作期间被取消时不放行确认发货，直接收口为人工核对。
+func TestExecuteRunActionsDoesNotContinueTailAfterContextCanceled(t *testing.T) {
+	// cleanup、store 分别保存：测试数据库的关闭函数；隔离的测试数据库仓储。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// admin、adminErr 分别保存：规则所属的测试管理员账号；读取管理员账号的错误。
+	admin, adminErr := store.Users.GetByUsername(context.Background(), "admin")
+	if adminErr != nil {
+		t.Fatal(adminErr)
+	}
+	// ruleID 保存夹具规则主键。
+	ruleID := uncertainTailRule(t, store, admin.ID, "cancel-acc",
+		[]db.AutomationActionInput{
+			{ActionType: ActionSendCard, DeliveryCount: 1, Enabled: true, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+			{ActionType: ActionConfirmShipment, Enabled: true},
+		})
+	// runID 保存待执行运行主键。
+	runID := uncertainTailRun(t, store, ruleID, "cancel-acc", "o-cancel")
+	// running 保存重新读取的运行状态。
+	running := uncertainTailRunningRun(t, store, runID)
+	// ctx、cancel 模拟扫描预算在外部动作期间耗尽。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// executed 收集实际执行过的动作类型。
+	executed := []string{}
+	// coordinator 保存注入可控动作结果的运行协调器。
+	coordinator := newUncertainTailCoordinator(store, func(_ context.Context, _ Task, action db.AutomationAction) (actionExecutionResult, error) {
+		executed = append(executed, action.ActionType)
+		cancel()
+		return actionExecutionResult{}, uncertainAction(errors.New("预算取消导致发送结果未知"))
+	})
+	// task 保存与动作规格匹配的付款发货任务。
+	task := Task{TriggerType: TriggerOrderPaid, AccountID: "cancel-acc", OrderID: "o-cancel", ChatID: "chat-cancel", BuyerID: "buyer-cancel", ItemID: "item-uncertain", SpecName: "颜色", SpecValue: "黑"}
+	// actions 保存运行要执行的动作计划。
+	actions := []db.AutomationAction{
+		{ActionType: ActionSendCard, Enabled: true, CardID: 1, DeliveryCount: 1, ConfigJSON: `{"spec_name":"颜色","spec_value":"黑"}`},
+		{ActionType: ActionConfirmShipment, Enabled: true},
+	}
+	// runErr 保存运行编排返回的错误。
+	if _, _, runErr := coordinator.executeRunActions(ctx, task, ruleID, running, actions, false); !errors.Is(runErr, errAutomationNeedsReview) {
+		t.Fatalf("取消后必须收口为人工核对: %v", runErr)
+	}
+	if len(executed) != 1 {
+		t.Fatalf("取消后不得放行确认发货: %v", executed)
+	}
+	// cancelled 是落库后的运行状态，不得停留在 running。
+	cancelled, cancelledErr := store.Automation.GetRun(context.Background(), runID)
+	if cancelledErr != nil || cancelled.Status != "needs_review" {
+		t.Fatalf("取消后的运行必须是人工核对: %+v err=%v", cancelled, cancelledErr)
+	}
+}

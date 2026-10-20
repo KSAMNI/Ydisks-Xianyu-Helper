@@ -149,43 +149,49 @@ export const AccountEditModal: React.FC<AccountEditModalProps> = ({
             <p className="text-xs text-gray-500 mt-1">当前Cookie长度: {editForm.cookie.length} 字符</p>
           </div>
 
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-            <div>
+          <div className="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl">
+            <div className="min-w-0">
               <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动发货</div>
-              <div className="text-xs text-gray-500">买家付款后自动发送卡密/模板消息（自动化总开关）</div>
+              <div className="text-xs text-gray-500">买家付款后自动发送卡密/模板消息（自动化总开关）；只负责发货内容，不会改变闲鱼订单状态</div>
             </div>
             <button
               type="button"
               onClick={handleAutoConfirmToggle}
-              className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${editForm.auto_confirm ? 'bg-brand' : 'bg-gray-300'}`}
+              role="switch"
+              aria-checked={editForm.auto_confirm}
+              className={`w-14 min-w-14 h-8 shrink-0 rounded-full transition-colors duration-300 relative ${editForm.auto_confirm ? 'bg-brand' : 'bg-gray-300'}`}
             >
               <span className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${editForm.auto_confirm ? 'translate-x-6' : 'translate-x-0'}`} />
             </button>
           </div>
 
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-            <div>
+          <div className="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl">
+            <div className="min-w-0">
               <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动确认发货</div>
-              <div className="text-xs text-gray-500">发完卡密后自动调闲鱼"已发货"接口；慢充业务建议关闭，避免触发买家自动收货倒计时</div>
+              <div className="text-xs text-gray-500">发完卡密后自动调闲鱼"已发货"接口，订单才会变为已发货（需同时开启上方「自动发货」）；慢充业务建议关闭，避免触发买家自动收货倒计时</div>
             </div>
             <button
               type="button"
               onClick={handleAutoConsignToggle}
-              className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${editForm.auto_consign ? 'bg-brand' : 'bg-gray-300'}`}
+              role="switch"
+              aria-checked={editForm.auto_consign}
+              className={`w-14 min-w-14 h-8 shrink-0 rounded-full transition-colors duration-300 relative ${editForm.auto_consign ? 'bg-brand' : 'bg-gray-300'}`}
             >
               <span className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${editForm.auto_consign ? 'translate-x-6' : 'translate-x-0'}`} />
             </button>
           </div>
 
-          <div className="flex items-center justify-between p-4 bg-gray-50 rounded-xl">
-            <div>
+          <div className="flex items-center justify-between gap-4 p-4 bg-gray-50 rounded-xl">
+            <div className="min-w-0">
               <div className="font-bold text-gray-900 flex items-center gap-2"><Check className="w-4 h-4 text-green-500" />自动免拼</div>
               <div className="text-xs text-gray-500">仅在收到“我已小刀，待刀成”系统消息时调用免拼；成功小刀待发货后才会发卡</div>
             </div>
             <button
               type="button"
               onClick={handleAutoBargainToggle}
-              className={`w-14 h-8 rounded-full transition-colors duration-300 relative ${editForm.auto_bargain ? 'bg-brand' : 'bg-gray-300'}`}
+              role="switch"
+              aria-checked={editForm.auto_bargain}
+              className={`w-14 min-w-14 h-8 shrink-0 rounded-full transition-colors duration-300 relative ${editForm.auto_bargain ? 'bg-brand' : 'bg-gray-300'}`}
             >
               <span className={`absolute left-1 top-1 w-6 h-6 bg-white rounded-full shadow-md transition-transform duration-300 ${editForm.auto_bargain ? 'translate-x-6' : 'translate-x-0'}`} />
             </button>

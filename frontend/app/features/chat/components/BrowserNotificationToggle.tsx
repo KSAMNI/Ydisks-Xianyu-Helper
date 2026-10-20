@@ -1,6 +1,6 @@
 import { BellRing } from 'lucide-react';
 import React from 'react';
-import { useBrowserNotificationPreference } from '../../../../shared/browser/browserNotifications';
+import { getBrowserNotificationHint, useBrowserNotificationPreference } from '../../../../shared/browser/browserNotifications';
 
 // BrowserNotificationToggle 让所有登录用户在在线聊天页管理当前浏览器的系统通知偏好。
 const BrowserNotificationToggle: React.FC = () => {
@@ -14,8 +14,10 @@ const BrowserNotificationToggle: React.FC = () => {
       : preference.supported
         ? preference.enabled ? '已开启' : '未开启'
         : '不支持通知';
+  // hint 是权限被拒绝、页面非安全上下文或浏览器不支持时的处理建议，由权限与页面环境推导，不存入状态。
+  const hint = getBrowserNotificationHint(preference.permission, typeof window === 'undefined' || window.isSecureContext !== false);
   return (
-    <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs">
+    <div title={hint || undefined} className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs">
       <BellRing className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
       <span className="font-semibold text-slate-600">浏览器提醒</span>
       <button
@@ -30,6 +32,7 @@ const BrowserNotificationToggle: React.FC = () => {
         <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${preference.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
       </button>
       <span className="text-slate-400">{statusText}</span>
+      {hint && <span className="max-w-[16rem] text-amber-600">{hint}</span>}
       {preference.error && <span className="sr-only" role="status">{preference.error}</span>}
     </div>
   );

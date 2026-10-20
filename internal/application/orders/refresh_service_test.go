@@ -26,6 +26,8 @@ type refreshRepositoryFake struct {
 	soldDeleteCount int
 	// upsertCount 保存订单写入次数。
 	upsertCount int
+	// platformSnapshots 按订单号记录最近一次写入是否标记为闲鱼平台当前状态快照。
+	platformSnapshots map[string]bool
 	// batchUpsertCount 保存订单列表或详情批次批量写入调用次数。
 	batchUpsertCount int
 	// batchFindCount 保存订单发现批量读取调用次数。
@@ -192,6 +194,10 @@ func (f *refreshRepositoryFake) UpsertOrder(_ context.Context, orderID string, o
 		return f.upsertErr
 	}
 	f.upsertCount++
+	if f.platformSnapshots == nil {
+		f.platformSnapshots = map[string]bool{}
+	}
+	f.platformSnapshots[orderID] = options.PlatformSnapshot
 	if f.orders == nil {
 		f.orders = map[string]*Order{}
 	}
@@ -683,5 +689,35 @@ func TestPersistSoldOrdersReturnsBatchWriteError(t *testing.T) {
 	discovered, updated, newIDs, remoteIDs, err := service.persistSoldOrders(context.Background(), "cookie-1", []RefreshSoldOrder{{OrderID: "failed-order", OrderStatus: "processing"}})
 	if err == nil || discovered != 0 || updated != 0 || len(newIDs) != 0 || len(remoteIDs) != 1 || !errors.Is(err, writeErr) {
 		t.Fatalf("批量写入失败结果异常: discovered=%d updated=%d new=%v remote=%v err=%v", discovered, updated, newIDs, remoteIDs, err)
+	}
+}
+
+// TestRefreshWritesAreMarkedAsPlatformSnapshots 验证已售列表同步与订单详情刷新写入的状态都标记为平台当前快照，
+// 使买家撤回退款后订单能从“退款中”恢复为“待发货”；已售恢复的写入选项同样携带该标记。
+func TestRefreshWritesAreMarkedAsPlatformSnapshots(t *testing.T) {
+	// listRepository 保存本地已为退款中的订单，模拟买家撤回退款前的状态。
+	listRepository := &refreshRepositoryFake{
+		owned:  map[string]bool{"cookie-1": true},
+		detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"},
+		orders: map[string]*Order{"order-1": {OrderID: "order-1", CookieID: "cookie-1", OrderStatus: "refunding"}},
+		rows:   []OrderRow{{OrderID: "order-1", OrderStatus: "refunding", CreatedAt: "1"}},
+	}
+	// listRuntime 返回平台订单列表中已恢复为待发货的同一订单。
+	listRuntime := &refreshRuntimeFake{soldAvailable: true, detailAvailable: true,
+		soldResult: RefreshSoldFetchResult{Orders: []RefreshSoldOrder{{OrderID: "order-1", OrderStatus: "pending_ship"}}}}
+	// listErr 保存列表同步执行结果。
+	if _, listErr := NewRefreshService(listRepository, listRuntime, 1).Refresh(context.Background(), 7, "", "all"); listErr != nil || !listRepository.platformSnapshots["order-1"] {
+		t.Fatalf("列表同步写入未标记平台快照 snapshots=%v err=%v", listRepository.platformSnapshots, listErr)
+	}
+	// singleRepository 保存单订单详情刷新的本地订单。
+	singleRepository := &refreshRepositoryFake{owned: map[string]bool{"cookie-1": true}, order: &Order{OrderID: "order-1", CookieID: "cookie-1", OrderStatus: "refunding"}, detail: &PlatformRuntimeData{UserID: 7, Value: "cookie"}}
+	// singleRuntime 返回详情中已恢复为待发货的订单状态码。
+	singleRuntime := &refreshRuntimeFake{detailAvailable: true, detailResult: RefreshDetailFetchResult{Detail: &RefreshDetail{OrderStatus: "2"}}}
+	// singleErr 保存单订单刷新执行结果。
+	if _, singleErr := NewRefreshService(singleRepository, singleRuntime, 1).RefreshSingle(context.Background(), 7, "order-1", false); singleErr != nil || !singleRepository.platformSnapshots["order-1"] {
+		t.Fatalf("详情刷新写入未标记平台快照 snapshots=%v err=%v", singleRepository.platformSnapshots, singleErr)
+	}
+	if !soldRecoveryOptions("cookie-1", RefreshSoldOrder{OrderID: "order-1", OrderStatus: "pending_ship"}).PlatformSnapshot {
+		t.Fatal("已售恢复写入未标记平台快照")
 	}
 }

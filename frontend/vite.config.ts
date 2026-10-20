@@ -41,6 +41,13 @@ export default defineConfig({
         'index.tsx',
         'chatEmojis.tsx',
         'app/features/dashboard/DashboardTrendChart.tsx',
+        // 路由页面、路由装配、应用外壳与通用 UI 同属纯展示层，业务行为由各 feature 的 Hook/状态/Action 模块验证。
+        'app/features/*/pages/**',
+        'app/router/AppRouter.tsx',
+        'app/shell/**',
+        'shared/ui/**',
+        // 顶层错误边界只渲染静态恢复界面，不含业务规则。
+        'app/errors/**',
       ],
     },
   },

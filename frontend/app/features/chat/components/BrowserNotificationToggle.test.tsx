@@ -5,7 +5,9 @@ import type { BrowserNotificationPreferenceState } from '../../../../shared/brow
 import { useBrowserNotificationPreference } from '../../../../shared/browser/browserNotifications';
 import BrowserNotificationToggle from './BrowserNotificationToggle';
 
-vi.mock('../../../../shared/browser/browserNotifications', /* browserNotificationMockFactory 提供通知开关的确定性偏好状态。 */ () => ({
+vi.mock('../../../../shared/browser/browserNotifications', /* browserNotificationMockFactory 提供通知开关的确定性偏好状态。 */ async (importOriginal) => ({
+  // 提示文案函数保持真实实现，只替换带浏览器副作用的偏好 Hook。
+  ...(await importOriginal<typeof import('../../../../shared/browser/browserNotifications')>()),
   useBrowserNotificationPreference: vi.fn(),
 }));
 
@@ -58,6 +60,7 @@ describe('BrowserNotificationToggle', /* 当前测试组验证聊天页通知开
     expect((toggle as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText('权限已拒绝')).not.toBeNull();
     expect(screen.getByRole('status').textContent).toContain('通知权限已被拒绝');
+    expect(screen.queryByText(/站点设置/)).not.toBeNull();
   });
 
   test('请求权限期间禁用开关并展示进行中状态', /* 当前回调验证异步权限请求不会被重复点击。 */ () => {
@@ -66,5 +69,25 @@ describe('BrowserNotificationToggle', /* 当前测试组验证聊天页通知开
 
     expect((screen.getByRole('switch', { name: '开启新消息系统通知' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByText('请求权限中')).not.toBeNull();
+  });
+
+  test('非安全上下文展示 HTTPS 提示', /* Docker 经 HTTP 访问时浏览器直接禁止通知。 */ () => {
+    // original 保存 jsdom 原有的安全上下文标记，用例结束后恢复。
+    const original = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
+    try {
+      useBrowserNotificationPreferenceMock.mockReturnValue(createPreferenceState({ permission: 'denied' }));
+      render(<BrowserNotificationToggle />);
+      expect(screen.queryByText(/HTTPS/)).not.toBeNull();
+    } finally {
+      if (original) Object.defineProperty(window, 'isSecureContext', original);
+      else delete (window as unknown as Record<string, unknown>).isSecureContext;
+    }
+  });
+
+  test('权限已授予时不展示任何提示', /* granted 状态界面保持简洁。 */ () => {
+    useBrowserNotificationPreferenceMock.mockReturnValue(createPreferenceState({ enabled: true, permission: 'granted' }));
+    render(<BrowserNotificationToggle />);
+    expect(screen.queryByText(/站点设置|HTTPS/)).toBeNull();
   });
 });

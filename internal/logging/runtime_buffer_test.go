@@ -195,7 +195,7 @@ func TestRuntimeBufferConcurrentAppendAndSnapshot(t *testing.T) {
 	done.Add(writers)
 	// writerIndex 表示当前启动的写入协程序号。
 	for writerIndex := 0; writerIndex < writers; writerIndex++ {
-		go func(/* index 是当前协程序号，仅用于区分写入内容。 */ index int) {
+		go func( /* index 是当前协程序号，仅用于区分写入内容。 */ index int) {
 			defer done.Done()
 			// appendIndex 表示当前协程写入的记录计数。
 			for appendIndex := 0; appendIndex < perWriter; appendIndex++ {

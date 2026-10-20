@@ -109,9 +109,13 @@ func TestAPIConfigRejectsInvalidAndCoversCompatibilityHelpers(t *testing.T) {
 	_, err := ParseAPIConfig(`{"url":"https://example.test","timeout_seconds":61}`); err == nil {
 		t.Fatal("越界超时应被拒绝")
 	}
-	if // err 是启用重试但没有幂等键的校验错误。
-	_, err := ParseAPIConfig(`{"url":"https://example.test","retry_enabled":true,"headers":{"x":"none"}}`); err == nil {
-		t.Fatal("缺少幂等键应被拒绝")
+	if // err 是启用重试但没有幂等键时的保存路径校验错误。
+	_, err := normalizeAPIConfig(`{"url":"https://example.test","retry_enabled":true,"headers":{"x":"none"}}`, ""); err == nil {
+		t.Fatal("缺少幂等键的保存请求应被拒绝")
+	}
+	if // err 是同一配置在执行路径上的解析结果；历史配置必须保持可发卡。
+	_, err := ParseAPIConfig(`{"url":"https://example.test","retry_enabled":true,"headers":{"x":"none"}}`); err != nil {
+		t.Fatalf("执行路径不应强制幂等重试前置条件: %v", err)
 	}
 	// summary 是非法配置的脱敏校验摘要。
 	summary := SummarizeAPIConfig("{")

@@ -16,7 +16,7 @@ For face or risk-control verification, use only the official Xianyu app or the o
 - **Enable/disable:** a disabled account does not process backend tasks; tasks resume when it is enabled.
 - **Edit:** change notes, automatic delivery/shipping confirmation, processing pause duration, Cookie, and long-login settings.
 - **Reauthorize by QR:** use after Cookie expiry, account disconnection, or failed profile refresh. QR login is the current production login path.
-- **AI Settings:** enable AI for this account and set bargaining limits. The system-wide API and model are configured in System and AI.
+- **AI Settings:** enable AI for this account, choose Bargaining Only or Full Service mode, and set bargaining limits. The system-wide API and model are configured in System and AI.
 - **Automatic Reviews and Daily Refresh:** open it from the account card, save settings, or click Review Now/Refresh Now for one run.
 - **Delete:** delete only after confirming that related products, rules, and orders no longer need processing.
 

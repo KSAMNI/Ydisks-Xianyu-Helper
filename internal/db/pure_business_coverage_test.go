@@ -13,7 +13,7 @@ func TestPureBusinessHelpers(t *testing.T) {
 		"":             nil,
 		"all":          nil,
 		"1":            []string{"processing", "1"},
-		"paid":         []string{"pending_ship", "paid", "2"},
+		"paid":         []string{"pending_ship", "paid", "2", "pending_delivery"},
 		"3":            []string{"shipped", "3"},
 		"completed":    []string{"completed", "4", "11"},
 		"5":            []string{"refunding", "5", "7", "9"},

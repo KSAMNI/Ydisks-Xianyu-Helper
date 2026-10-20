@@ -69,6 +69,33 @@ func TestExtractTaskFromWS_OrderCompleted(t *testing.T) {
 	}
 }
 
+// TestExtractTaskFromWS_OrderCompletedUsesOrderIDFromBusinessCodeKey 回归验证确认收货卡片使用
+// 「订单:阶段码:业务键:序号」更新键时必须记录真实订单，而不能把短数字阶段码写成伪订单。
+// 平台的确认收货带评价卡片只在该更新键中携带订单号，历史缺陷会让这些确认收货事件全部落到
+// 同一个伪订单上（线上实测 69 个报文、55 个真实订单），真实订单拿不到完成时间，自动评价
+// 因此永远没有候选。
+func TestExtractTaskFromWS_OrderCompletedUsesOrderIDFromBusinessCodeKey(t *testing.T) {
+	// raw 保存仅在 updateKey 中携带订单号、contentType=25 的卖家侧确认收货系统卡片。
+	raw := mustMap(t, `{
+	  "1":{"2":"62904549781@goofish","7":1,"10":{
+	    "reminderContent":"快给ta一个评价吧～",
+	    "reminderTitle":"买家已确认收货",
+	    "senderUserId":"buyer-4",
+	    "bizTag":"{\"sourceId\":\"C2C:p3ve6cUxmnge\",\"taskName\":\"确认收货带评价_卖家\",\"taskId\":\"p3ve6cUxmnge\"}",
+	    "extJson":"{\"msgArg1\":\"MsgCard\",\"updateKey\":\"3310145690545023995:20:BUYER_CONFIRM_RATE_SELLER:74\",\"messageId\":\"28c26984b0fa482a9650b377ffe21522\",\"contentType\":\"25\"}"
+	  }}
+	}`)
+	// task 保存从确认收货系统卡片解析出的本地订单事实任务。
+	task := ExtractTaskFromWS("acc1", "cookie", raw)
+	if task == nil || task.TriggerType != TriggerOrderCompleted || task.OrderStatus != "completed" {
+		t.Fatalf("确认收货任务解析错误: %+v", task)
+	}
+	// task.OrderID 必须是更新键第一段的真实订单号，而不是第二段的业务阶段码。
+	if task.OrderID != "3310145690545023995" {
+		t.Fatalf("阶段码更新键必须保留真实订单号，实际=%q", task.OrderID)
+	}
+}
+
 // TestExtractTaskFromWS_ServiceReviewInvitationIgnored 封装TestExtract任务FromWSServiceReviewInvitationIgnored业务协调。
 func TestExtractTaskFromWS_ServiceReviewInvitationIgnored(t *testing.T) {
 	// raw 用于本次流程后续判断的原始
@@ -194,6 +221,38 @@ func TestExtractTaskFromWS_BargainPendingCard(t *testing.T) {
 	task := ExtractTaskFromWS("acc1", "cookie", raw)
 	if task == nil || task.TriggerType != TriggerBargainPending || !task.IsBargain {
 		t.Fatalf("待刀成卡片未生成独立免拼阶段任务: %+v", task)
+	}
+}
+
+// TestExtractTaskFromWS_BargainCardsRequireSystemMarker 验证两个砍价阶段卡片缺少系统消息标记时不生成任务，
+// 与普通付款卡片的系统消息门禁一致；带系统方向、bizTag 系统标识的同标题卡片仍正常识别。
+func TestExtractTaskFromWS_BargainCardsRequireSystemMarker(t *testing.T) {
+	// cases 覆盖无方向、普通聊天方向和带系统标识的两阶段卡片。
+	cases := []struct {
+		// name 是场景名称；raw 是平台报文；want 是期望的触发类型，空字符串表示不生成任务。
+		name, raw, want string
+	}{
+		{name: "成功小刀无系统标记", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}}}}`, want: ""},
+		{name: "待刀成无系统标记", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: ""},
+		{name: "成功小刀普通聊天方向", raw: `{"1":{"7":2,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}}}}`, want: ""},
+		{name: "待刀成普通聊天方向", raw: `{"1":{"7":2,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: ""},
+		{name: "成功小刀系统 bizTag", raw: `{"1":{"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已成功小刀，待发货\"}}}}}"}},"10":{"bizTag":"{\"taskName\":\"seller_trade\"}"}}}`, want: TriggerOrderPaid},
+		{name: "待刀成系统方向", raw: `{"1":{"7":1,"6":{"3":{"5":"{\"dxCard\":{\"item\":{\"main\":{\"exContent\":{\"title\":\"我已小刀，待刀成\"}}}}}"}}}}`, want: TriggerBargainPending},
+	}
+	// testCase 是当前验证的平台报文场景。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// task 是从当前报文提取的自动化任务。
+			task := ExtractTaskFromWS("acc1", "cookie", mustMap(t, testCase.raw))
+			// got 是实际触发类型，未生成任务时为空。
+			got := ""
+			if task != nil {
+				got = task.TriggerType
+			}
+			if got != testCase.want {
+				t.Fatalf("trigger=%q want %q task=%+v", got, testCase.want, task)
+			}
+		})
 	}
 }
 

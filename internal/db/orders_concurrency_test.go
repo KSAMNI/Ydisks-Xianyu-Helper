@@ -84,7 +84,7 @@ func TestOrderUpsertConcurrentStatusNeverRegresses(t *testing.T) {
 			<-start
 			for // i 用于本次流程后续判断的i
 			i := 0; i < 100; i++ {
-				errCh <- store.Orders.Upsert(ctx, "concurrent-order", OrderUpsertOpts{
+				errCh <- upsertOrderRetryingConflicts(ctx, store, "concurrent-order", OrderUpsertOpts{
 					CookieID: "order-account", OrderStatus: status,
 				})
 			}
@@ -124,5 +124,53 @@ func TestOrderUpsertConcurrentStatusNeverRegresses(t *testing.T) {
 	if // got 用于本次流程后续判断的got
 	got := NormalizeOrderStatus(order.OrderStatus); got != "completed" {
 		t.Fatalf("completed order regressed to %q", got)
+	}
+}
+
+// maxTestOrderConflictRetries 是并发测试中调用方对 ErrOrderConflict 的最大重试轮数；
+// 每轮内部已有 maxOrderUpsertRetries 次带退避的 CAS 尝试，上限只用于防止回归时测试无限循环。
+const maxTestOrderConflictRetries = 50
+
+// upsertOrderRetryingConflicts 按 ErrOrderConflict “请重试”的公开约定在调用方重试同一写入。
+// ctx 控制数据库操作；store、orderID、opts 与 Orders.Upsert 相同。返回最后一次非冲突结果，
+// 冲突轮数耗尽时返回 ErrOrderConflict；-race 等慢速环境下单轮 CAS 可能耗尽，但状态推进规则不得因此被绕过。
+func upsertOrderRetryingConflicts(ctx context.Context, store *Store, orderID string, opts OrderUpsertOpts) error {
+	// err 保存最近一轮写入结果，非冲突错误或成功时立即返回给测试断言。
+	var err error
+	// round 是调用方重试轮次，每轮都会重新读取订单快照后再做版本比较。
+	for round := 0; round < maxTestOrderConflictRetries; round++ {
+		err = store.Orders.Upsert(ctx, orderID, opts)
+		if !errors.Is(err, ErrOrderConflict) {
+			return err
+		}
+	}
+	return err
+}
+
+// TestUpsertOrderRetryingConflictsReturnsNonConflictResult 验证测试辅助函数在无竞争时直接返回写入结果，且不吞掉非冲突错误。
+func TestUpsertOrderRetryingConflictsReturnsNonConflictResult(t *testing.T) {
+	// store、cleanup 是独立 SQLite 测试库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是不会取消的测试上下文。
+	ctx := context.Background()
+	// err 是创建订单所属用户的结果。
+	if _, err := store.Users.Create(ctx, "helper-owner", "helper-owner@example.com", "pw"); err != nil {
+		t.Fatal(err)
+	}
+	// owner 是订单所属账号的用户，外键要求订单引用已存在的账号。
+	owner, _ := store.Users.GetByUsername(ctx, "helper-owner")
+	// err 是创建订单所属账号的结果。
+	if err := store.Cookies.CreateOwned(ctx, "helper-account", "cookie", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	// err 是无竞争时首次写入订单的结果，应直接成功。
+	if err := upsertOrderRetryingConflicts(ctx, store, "helper-order", OrderUpsertOpts{CookieID: "helper-account", OrderStatus: "paid"}); err != nil {
+		t.Fatalf("无竞争写入应成功: %v", err)
+	}
+	// err 是空订单号这一非冲突校验错误，辅助函数必须原样返回而不是重试。
+	err := upsertOrderRetryingConflicts(ctx, store, "", OrderUpsertOpts{CookieID: "helper-account", OrderStatus: "paid"})
+	if err == nil || errors.Is(err, ErrOrderConflict) {
+		t.Fatalf("空订单号应返回非冲突错误，got %v", err)
 	}
 }

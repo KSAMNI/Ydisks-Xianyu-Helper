@@ -411,7 +411,9 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 		}
 		// result、rateErr 用于本次流程后续判断的result、rateErr
 		result, rateErr := c.client().RateBuyer(credential.requestContext, current, orderID, settings.RateContent)
-		if rateErr != nil || result == nil || !result.Success {
+		// alreadyRated 表示平台明确回答订单已评价；评价目标已达成，按成功收口，不再重试也不计为失败。
+		alreadyRated := rateErr != nil && mtop.IsRateAlreadyRatedErr(rateErr)
+		if !alreadyRated && (rateErr != nil || result == nil || !result.Success) {
 			// persistErr 保存动作失败前已收到的响应 Cookie，避免平台已轮换凭证却被错误路径丢弃。
 			_, persistErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, "", &credential)
 			// message 用于本次流程后续判断的消息
@@ -421,7 +423,7 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			}
 			// retryAt 保存失败运行记录的下一次自动执行时间；超过评价期限的订单属于永久失败，必须保持为零并排除后续抢占。
 			retryAt := time.Now().UTC().Add(10 * time.Minute).Unix()
-			if mtop.IsRateOrderExpiredErr(rateErr) {
+			if mtop.IsRateOrderExpiredErr(rateErr) || mtop.IsRateOrderNotRateableErr(rateErr) {
 				message = db.NoRetryErrorPrefix + ": " + message
 				retryAt = 0
 			}
@@ -441,13 +443,24 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 			continue
 		}
 		// updatedCookies 保存评价接口返回的最新 Cookie；cookieErr 表示动作成功后同步 Cookie 的落库错误。
-		updatedCookies, cookieErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, result.UpdatedCookies, &credential)
+		// responseCookies 是评价响应携带的最新 Cookie；已评价错误可能没有结果对象，此时为空。
+		responseCookies := ""
+		if result != nil {
+			responseCookies = result.UpdatedCookies
+		}
+		// updatedCookies、cookieErr 分别保存合并后的最新 Cookie 及其落库错误。
+		updatedCookies, cookieErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, responseCookies, &credential)
 		if cookieErr != nil {
 			return summary, c.quarantineAccountTaskRun(ctx, runKey, summary.Success+1, summary.Failed, cookieErr)
 		}
 		current = updatedCookies
+		// successMessage 仅在平台提示已评价时记录原因，便于运行记录区分真实评价与历史已评价。
+		successMessage := ""
+		if alreadyRated {
+			successMessage = "平台显示订单已评价，无需重复评价"
+		}
 		// finishErr 保存评价成功结果的落库错误；失败时会把运行记录隔离为人工核对。
-		finishErr := c.finishAccountTaskRun(ctx, runKey, "success", 1, 0, "", 0)
+		finishErr := c.finishAccountTaskRun(ctx, runKey, "success", 1, 0, successMessage, 0)
 		if finishErr != nil {
 			return summary, finishErr
 		}

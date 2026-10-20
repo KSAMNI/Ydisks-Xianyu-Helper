@@ -6,8 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
+
+	"xianyu-go/internal/keywordmatch"
 )
 
 // ErrInvalidInput 表示关键词回复用例缺少有效的用户、账号或请求参数。
@@ -451,10 +452,8 @@ func normalizeMatchType(raw string, expressions []string) (string, error) {
 	case KeywordMatchTypeRegexp, "regex":
 		// expressionIndex、expression 表示当前待预编译的正则位置和内容。
 		for expressionIndex, expression := range expressions {
-			// pattern 是保持大小写不敏感语义的 Go/RE2 包装表达式。
-			pattern := "(?i:" + expression + ")"
-			// compileErr 表示当前正则预编译是否失败；底层错误正文不会返回给调用方。
-			_, compileErr := regexp.Compile(pattern)
+			// compileErr 表示当前正则预编译是否失败；与运行时共用编译入口，底层错误正文不会返回给调用方。
+			_, compileErr := keywordmatch.CompileExpression(expression)
 			if compileErr != nil {
 				return "", &ValidationError{Message: fmt.Sprintf("第 %d 个正则表达式无效", expressionIndex+1)}
 			}

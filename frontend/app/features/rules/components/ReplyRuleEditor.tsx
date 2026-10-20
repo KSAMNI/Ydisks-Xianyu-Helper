@@ -115,7 +115,7 @@ const ReplyRuleEditor: React.FC<ReplyRuleEditorProps> = ({ rule,setRule,items,on
                       const nextExpressions = expressions.map(/* currentExpression 是当前行文本；currentIndex 是当前行号。 */ (currentExpression, currentIndex) => currentIndex === expressionIndex ? event.target.value : currentExpression);
                       setRule(/* current 表示当前关键词回复草稿；函数式更新同步表达式和首项兼容字段。 */ current => current ? { ...current, expressions: nextExpressions, keyword: nextExpressions[0] || '' } : current);
                     }}
-                    placeholder="关键词或正则表达式"
+                    placeholder={rule.match_type === 'regexp' ? '正则表达式，例如：在吗|在不在' : '例如：在吗 | 在不在 | 有人吗'}
                     className="flex-1 ios-input px-4 py-3 rounded-xl"
                   />
                   <button
@@ -137,7 +137,7 @@ const ReplyRuleEditor: React.FC<ReplyRuleEditorProps> = ({ rule,setRule,items,on
                 </div>
               ))}
             </div>
-            <p className="mt-2 text-xs text-gray-400">多个表达式按“或”（OR）匹配：任一表达式命中即触发回复；匹配默认忽略大小写；正则语法由后端 Go/RE2 校验。</p>
+            <p className="mt-2 text-xs text-gray-400">多个表达式按“或”（OR）匹配：任一表达式命中即触发回复；包含匹配下每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词（正则模式中的 | 是正则分支，不做拆分）；正则语法会先在浏览器校验，后端仍会按 Go/RE2 最终校验。</p>
           </div>
 
           {rule.type === 'image' ? (

@@ -117,6 +117,34 @@ func (a *Account) recordMessageReceived(receivedAt time.Time) {
 	a.runtimeMu.Unlock()
 }
 
+// dialBackoffSteps 是拨号失败按连续次数递增的退避序列，超出长度后固定使用最后一项。
+var dialBackoffSteps = []time.Duration{5 * time.Second, 15 * time.Second, 30 * time.Second, time.Minute, 2 * time.Minute}
+
+// dialBackoff 返回第 failures 次连续拨号失败后的等待时长；failures 小于 1 按 1 处理，上限为 2 分钟。
+func dialBackoff(failures int) time.Duration {
+	if failures < 1 {
+		failures = 1
+	}
+	if failures > len(dialBackoffSteps) {
+		failures = len(dialBackoffSteps)
+	}
+	return dialBackoffSteps[failures-1]
+}
+
+// dialRetryDelay 返回当前连续拨号失败次数对应的退避时长，测试可通过 dialRetryDelayFn 覆盖。
+func (a *Account) dialRetryDelay() time.Duration {
+	a.runtimeMu.Lock()
+	// failures 是连续拨号或注册网络失败次数快照。
+	failures := a.connFailures
+	// override 是测试注入的退避函数快照。
+	override := a.dialRetryDelayFn
+	a.runtimeMu.Unlock()
+	if override != nil {
+		return override(failures)
+	}
+	return dialBackoff(failures)
+}
+
 // tokenRetryDelay 封装令牌重试延迟业务协调。
 func (a *Account) tokenRetryDelay() time.Duration {
 	a.mu.Lock()

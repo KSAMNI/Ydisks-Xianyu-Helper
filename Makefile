@@ -3,7 +3,7 @@
 GO ?= go
 GOLANGCI_LINT ?= golangci-lint
 
-.PHONY: build build-int build-browser-install build-tray test test-server test-server-race test-multidb test-int vet lint architecture api-generate api-check cover cover-browser cover-frontend tidy frontend fmt comments check
+.PHONY: smoke build build-int build-browser-install build-tray test test-server test-server-race test-multidb test-int vet lint architecture api-generate api-check cover cover-browser cover-frontend tidy frontend fmt comments check
 
 ## build: 编译 server（默认，跳过 integration build tag）
 build:
@@ -42,6 +42,12 @@ test-multidb:
 ## test-int: 带 integration tag 跑测试（含 browser，需 Chromium）
 test-int:
 	$(GO) test -tags integration ./...
+
+## smoke: 构建真实二进制并启动，验证健康检查、初始化、登录、核心列表接口、前端首页和优雅退出（默认保留 Chromium；确认不可用时 SMOKE_NO_BROWSER=1）
+smoke:
+	@dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
+	$(GO) build -o "$$dir/xianyu-server" ./cmd/server && \
+	$(GO) run ./tools/smoke -bin "$$dir/xianyu-server" $(if $(SMOKE_NO_BROWSER),-no-browser,)
 
 ## vet: go vet
 vet:

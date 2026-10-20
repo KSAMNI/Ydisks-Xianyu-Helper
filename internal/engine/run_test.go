@@ -433,32 +433,110 @@ func TestRun_ConnectsAndDispatchesMessage(t *testing.T) {
 	}
 }
 
-// TestRun_DialFailureRequiresRelogin mirrors the web page: native
-// CONNECT_FAILED enters CONN_ERROR and does not auto-reconnect.
-// TestRun_DialFailureRequiresRelogin 封装Test运行DialFailureRequiresRelogin业务协调。
-func TestRun_DialFailureRequiresRelogin(t *testing.T) {
-	// acc、cleanup 用于本次流程后续判断的acc、cleanup
+// TestRun_DialFailureRetriesWithBackoff 验证拨号阶段的网络失败（如 DNS 瞬时故障）不会终止账号：
+// 前两次拨号失败后运行状态保持重连中，第三次成功即恢复在线，Run 不退出。
+func TestRun_DialFailureRetriesWithBackoff(t *testing.T) {
+	// acc、cleanup 是带本地存储的运行账号及其清理函数。
 	acc, _, _, cleanup := newRunAccount(t, &fakeRunMtop{token: "tok-1"})
 	defer cleanup()
-
-	// 拨号始终失败。
-	acc.wsDialer = &fakeDialer{results: []dialResult{{err: errFakeDial}}}
-
-	// runDone 用于本次流程后续判断的运行Done
+	acc.dialRetryDelayFn = func(int) time.Duration { return time.Millisecond }
+	// dialer 前两次返回网络错误，随后返回一条保持阻塞的健康连接。
+	dialer := &fakeDialer{results: []dialResult{{err: errFakeDial}, {err: errFakeDial}, {conn: &fakeWSConn{recvBlock: true, closeCh: make(chan struct{})}}}}
+	acc.wsDialer = dialer
+	// ctx、cancel 控制本次 Run 的生命周期。
+	ctx, cancel := context.WithCancel(context.Background())
+	// runDone 接收 Run 的返回值；测试期间不应提前退出。
 	runDone := make(chan error, 1)
-	go func() { runDone <- acc.Run(context.Background()) }()
-	select {
-	case // err 用于本次流程后续判断的err
-	err := <-runDone:
-		if !errors.Is(err, errFakeDial) {
-			t.Fatalf("Run error=%v，期望拨号错误", err)
+	go func() { runDone <- acc.Run(ctx) }()
+	// deadline 是等待账号恢复在线的上限。
+	deadline := time.Now().Add(3 * time.Second)
+	for acc.RuntimeStatus().State != RuntimeOnline && time.Now().Before(deadline) {
+		select {
+		// err 是 Run 提前退出时返回的错误，出现即说明拨号失败仍会终止账号。
+		case err := <-runDone:
+			t.Fatalf("拨号失败后 Run 不应退出: %v", err)
+		default:
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("拨号失败后 Run 未退出")
+		time.Sleep(10 * time.Millisecond)
 	}
-	if // status 用于本次流程后续判断的状态
-	status := acc.RuntimeStatus(); status.State != RuntimeAuthExpired {
-		t.Fatalf("runtime state=%q，期望 %q", status.State, RuntimeAuthExpired)
+	// status 是等待结束后的账号运行状态快照。
+	if status := acc.RuntimeStatus(); status.State != RuntimeOnline {
+		cancel()
+		t.Fatalf("重试后未恢复在线: %+v", status)
+	}
+	cancel()
+	select {
+	case <-runDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("取消后 Run 未退出")
+	}
+}
+
+// TestHandleWSOpenFailureClassifiesAndNotifies 验证拨号失败处理：网络错误只退避并保持重连中，
+// 第 3 次连续失败才发送一次离线通知；服务端 RegError 仍终止账号；ctx 取消时返回取消错误。
+func TestHandleWSOpenFailureClassifiesAndNotifies(t *testing.T) {
+	// acc、cleanup 是带本地存储的运行账号及其清理函数。
+	acc, _, _, cleanup := newRunAccount(t, &fakeRunMtop{token: "tok-1"})
+	defer cleanup()
+	acc.dialRetryDelayFn = func(int) time.Duration { return 0 }
+	// coordinator 是被测协调器。
+	coordinator := &connectionCoordinator{account: acc}
+	// attempt 是第几次连续拨号失败（从 1 开始）。
+	for attempt := 1; attempt <= 4; attempt++ {
+		// err 是失败处理的返回值，网络错误必须为 nil。
+		if err := coordinator.handleWSOpenFailure(context.Background(), errFakeDial); err != nil {
+			t.Fatalf("网络错误应退避重试而非终止: attempt=%d err=%v", attempt, err)
+		}
+		// state 是失败处理后的运行状态，必须保持重连中。
+		if state := acc.RuntimeStatus().State; state != RuntimeReconnecting {
+			t.Fatalf("状态=%q，期望重连中", state)
+		}
+		acc.runtimeMu.Lock()
+		// notified 表示离线通知是否已发送；第 3 次起应为 true。
+		notified := acc.offlineNotified
+		acc.runtimeMu.Unlock()
+		// want 是该次失败后离线通知的期望状态：第 3 次起已通知。
+		if want := attempt >= 3; notified != want {
+			t.Fatalf("attempt=%d offlineNotified=%v，期望 %v", attempt, notified, want)
+		}
+	}
+	// regErr 是服务端明确拒绝凭证的错误，必须终止账号。
+	regErr := &ws.RegError{Kind: ws.RegErrorInvalidToken, Reason: "invalid token"}
+	// err 是 RegError 经失败处理后的返回值，必须保留原错误。
+	if err := coordinator.handleWSOpenFailure(context.Background(), regErr); !errors.Is(err, regErr) {
+		t.Fatalf("RegError 应终止并保留原错误: %v", err)
+	}
+	// state 是 RegError 后的运行状态，必须为凭证失效。
+	if state := acc.RuntimeStatus().State; state != RuntimeAuthExpired {
+		t.Fatalf("RegError 后状态=%q，期望凭证失效", state)
+	}
+	// canceledCtx 模拟退避期间账号被停止。
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	acc.dialRetryDelayFn = func(int) time.Duration { return time.Minute }
+	// err 是退避期间 ctx 已取消时的返回值，必须是 context.Canceled。
+	if err := coordinator.handleWSOpenFailure(canceledCtx, errFakeDial); !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消的 ctx 应返回 context.Canceled: %v", err)
+	}
+}
+
+// TestDialBackoffSequence 验证拨号退避序列与上限：5s、15s、30s、60s、之后固定 120s，异常次数按 1 处理。
+func TestDialBackoffSequence(t *testing.T) {
+	// cases 保存连续失败次数及其期望退避时长。
+	cases := map[int]time.Duration{-1: 5 * time.Second, 0: 5 * time.Second, 1: 5 * time.Second, 2: 15 * time.Second, 3: 30 * time.Second, 4: time.Minute, 5: 2 * time.Minute, 50: 2 * time.Minute}
+	// failures、want 分别是连续失败次数和期望的退避时长。
+	for failures, want := range cases {
+		// got 是 dialBackoff 实际返回的退避时长。
+		if got := dialBackoff(failures); got != want {
+			t.Fatalf("dialBackoff(%d)=%v，期望 %v", failures, got, want)
+		}
+	}
+	// acc 使用默认退避函数验证 dialRetryDelay 读取 connFailures。
+	acc := New(Config{CookieID: "backoff", CookieStr: "unb=1"})
+	acc.connFailures = 3
+	// got 是默认退避函数在 connFailures=3 时的返回值。
+	if got := acc.dialRetryDelay(); got != 30*time.Second {
+		t.Fatalf("dialRetryDelay=%v，期望 30s", got)
 	}
 }
 

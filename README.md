@@ -69,14 +69,14 @@ links and view data.
 | --- | --- |
 | Account management | Multi-account start/stop, QR login, profile refresh, online status, login audit, and notes. |
 | Credential renewal | Scheduled Cookie/token renewal, WebSocket credential updates, recovery, cooldowns, and failure disabling. |
-| Instant messaging | Account-isolated chat, history, Xianyu emoji, text/images, official system-message recognition, keyword/default replies, and one-reply limits. |
+| Instant messaging | Account-isolated chat, history, Xianyu emoji, text/images, official system-message recognition, keyword replies (multiple expressions, contains or regular-expression matching, multi-product scope), default replies, and one-reply limits. |
 | Automation center | Unpaid-order price changes, paid delivery, staged bargain free shipping, review gifts, review reminders, failure recovery, manual-intervention notifications, and idempotency checkpoints. |
 | Account tasks | Event-driven automatic reviews based on locally recorded buyer-confirmed-receipt events, daily product refresh, manual execution, execution records, and idempotency protection. |
 | Card inventory | Text, batch cards, images, and API delivery, with batch import, quantity, and delay settings. |
 | Product management | Synchronization, manual association, list-card `isSKU`-based single- or multi-variant detection (missing or `false` means single-variant), publishing, image ordering, category lookup, and bulk listing. |
 | Delivery templates | Ordered multi-message delivery and order, buyer, card, and custom variables. |
 | Orders | Synchronization, editing, platform delivery, card resending, and exception handling. |
-| AI replies | OpenAI-compatible APIs, model discovery, end-to-end connection testing, custom prompts, bargaining rounds, and discount limits. |
+| AI replies | OpenAI-compatible APIs, model discovery, end-to-end connection testing, Bargaining Only or Full Service modes, per-product enable/disable and product-specific reference material, custom prompts, bargaining rounds, and discount limits. |
 | Notifications | Bark, DingTalk, Feishu, WeCom, Telegram, email, and custom Webhooks. |
 | Storage and security | SQLite/MySQL/PostgreSQL, embedded Goose migrations, AES-256-GCM sensitive-field encryption, log redaction, and outbound-address validation. |
 | Container deployment | PostgreSQL 17, health checks, persistent volumes, and multi-architecture GHCR images. |
@@ -345,6 +345,7 @@ make fmt
 make vet
 make lint
 make test
+make smoke   # start the real binary and verify health, setup, login, core lists, the front page, and graceful exit
 make cover
 make check
 npm --prefix frontend run typecheck
@@ -428,3 +429,14 @@ bypassing platform restrictions, or illegal activity.
 This project receives discussion and feedback from the LINUX DO community:
 
 [Visit the LINUX DO community](https://linux.do/)
+
+### Sponsor the project
+
+If this project is useful to you, you can support its continued development with USDT or USDC on the BNB Smart
+Chain (BSC, BEP-20):
+
+`0xc7b77931af39e292bfcadef6228a067ad5a69e3a`
+
+![USDT and USDC sponsor QR code on BNB Smart Chain (BEP-20)](docs/img/sponsor-bsc.png)
+
+Send USDT or USDC only on BNB Smart Chain (BEP-20). Transfers on other networks may be lost.

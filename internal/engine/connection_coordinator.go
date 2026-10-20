@@ -81,7 +81,7 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 			}
 			a.logger.Error("WS 握手失败", "err", err)
 			// retryErr 保存握手失败处理后的终止错误；非 nil 时连接循环必须退出。
-			if retryErr := a.handleWSConnectFailure(ctx, err); retryErr != nil {
+			if retryErr := c.handleWSOpenFailure(ctx, err); retryErr != nil {
 				return retryErr
 			}
 			continue
@@ -133,7 +133,7 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 			}
 			a.logger.Error("WS 注册失败", "err", err)
 			// retryErr 保存注册失败处理后的终止错误；非 nil 时连接循环必须退出。
-			if retryErr := a.handleWSConnectFailure(ctx, err); retryErr != nil {
+			if retryErr := c.handleWSOpenFailure(ctx, err); retryErr != nil {
 				return retryErr
 			}
 			continue
@@ -209,6 +209,30 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 		a.setRuntimeState(RuntimeReconnecting, "消息连接已断开，正在重新连接")
 		a.logger.Warn("WS 连接结束", "err", receiveErr, "heartbeat_err", session.HeartbeatErr)
 	}
+}
+
+// handleWSOpenFailure 处理拨号或 /reg 阶段的失败：服务端明确的 RegError（Token 无效、鉴权失败、会话被移除）
+// 仍交给 handleWSConnectFailure 终止账号；其余错误只可能是网络类瞬时故障，按递增退避重试，
+// 不判为凭证失效。ctx 取消时返回其错误；返回 nil 表示调用方应继续下一轮连接。
+func (c *connectionCoordinator) handleWSOpenFailure(ctx context.Context, openErr error) error {
+	// a 是协调器拥有的账号 facade。
+	a := c.account
+	// regErr 保存 openErr 链中的服务端 /reg 拒绝；非 nil 说明凭证或会话被平台明确拒绝。
+	var regErr *ws.RegError
+	if errors.As(openErr, &regErr) {
+		return a.handleWSConnectFailure(ctx, openErr)
+	}
+	a.clearConnectionToken(ctx)
+	a.runtimeMu.Lock()
+	a.connFailures++
+	// failures 是含本次在内的连续失败次数，仅在第 3 次时发一次离线通知。
+	failures := a.connFailures
+	a.runtimeMu.Unlock()
+	a.setRuntimeState(RuntimeReconnecting, "消息服务连接失败，正在自动重试")
+	if failures == 3 {
+		a.notifyDialRetrying(ctx, errString(openErr))
+	}
+	return sleepCtx(ctx, a.dialRetryDelay())
 }
 
 // prepareRun 建立账号生命周期、记录 worker 并执行首次 API 续期；返回 false 表示账号已禁用。

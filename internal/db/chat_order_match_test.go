@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 	"testing"
+	"time"
 )
 
 // TestMultiDB_ChatBuyerSuffixMatch 用 t 验证三方言对历史买家后缀双向匹配，保留多候选歧义及账号、商品隔离。
@@ -135,5 +136,59 @@ func TestFindLatestPendingByChat(t *testing.T) {
 	missingOrder, missingErr := store.Orders.FindLatestPendingByChat(ctx, cookieID, "simple-chat", "buyer-1", "other-item")
 	if missingErr != nil || missingOrder != nil {
 		t.Fatalf("错误商品不应命中订单: order=%+v err=%v", missingOrder, missingErr)
+	}
+}
+
+// TestFindRecentByChat 验证按会话识别近期订单：不限状态，窗口内外、账号隔离、@goofish 后缀、买家与商品过滤均正确。
+func TestFindRecentByChat(t *testing.T) {
+	// store、cleanup 保存迁移后的临时 SQLite 数据库及关闭责任。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是本测试共用的数据库上下文。
+	ctx := context.Background()
+	// _, cookieID 保存测试账号归属。
+	_, cookieID := seedAccount(t, store)
+	// writeErr 保存已发货订单初始化失败。
+	if writeErr := store.Orders.Upsert(ctx, "shipped-order", OrderUpsertOpts{
+		CookieID: cookieID, ChatID: "recent-chat", BuyerID: "buyer-1", ItemID: "item-1", OrderStatus: "shipped",
+	}); writeErr != nil {
+		t.Fatal(writeErr)
+	}
+	// since 是窗口起点，刚写入的订单 updated_at 晚于它。
+	since := time.Now().Add(-time.Hour)
+	// order、queryErr 保存带后缀会话、买家条件下的命中结果。
+	order, queryErr := store.Orders.FindRecentByChat(ctx, cookieID, "recent-chat@goofish", "buyer-1@goofish", "item-1", since)
+	if queryErr != nil || order == nil || order.OrderID != "shipped-order" {
+		t.Fatalf("窗口内已发货订单应命中: order=%+v err=%v", order, queryErr)
+	}
+	// noFilter、noFilterErr 验证买家和商品为空时不作为条件。
+	noFilter, noFilterErr := store.Orders.FindRecentByChat(ctx, cookieID, "recent-chat", "", "", since)
+	if noFilterErr != nil || noFilter == nil {
+		t.Fatalf("空买家商品条件应命中: order=%+v err=%v", noFilter, noFilterErr)
+	}
+	// 每个未命中样本必须返回 nil 订单且无错误：其他商品、其他买家、其他账号、空参数。
+	for name, call := range map[string]func() (*Order, error){
+		"other-item": func() (*Order, error) {
+			return store.Orders.FindRecentByChat(ctx, cookieID, "recent-chat", "buyer-1", "other", since)
+		},
+		"other-buyer": func() (*Order, error) {
+			return store.Orders.FindRecentByChat(ctx, cookieID, "recent-chat", "buyer-2", "item-1", since)
+		},
+		"other-account": func() (*Order, error) {
+			return store.Orders.FindRecentByChat(ctx, "other-cookie", "recent-chat", "", "", since)
+		},
+		"empty-chat":    func() (*Order, error) { return store.Orders.FindRecentByChat(ctx, cookieID, "", "", "", since) },
+		"empty-account": func() (*Order, error) { return store.Orders.FindRecentByChat(ctx, " ", "recent-chat", "", "", since) },
+	} {
+		// missed、missErr 是未命中样本的查询结果。
+		missed, missErr := call()
+		if missErr != nil || missed != nil {
+			t.Fatalf("%s 不应命中: order=%+v err=%v", name, missed, missErr)
+		}
+	}
+	// future 把窗口起点放到未来，等价于订单更新时间已超出窗口。
+	outside, outsideErr := store.Orders.FindRecentByChat(ctx, cookieID, "recent-chat", "", "", time.Now().Add(time.Hour))
+	if outsideErr != nil || outside != nil {
+		t.Fatalf("窗口外订单不应命中: order=%+v err=%v", outside, outsideErr)
 	}
 }

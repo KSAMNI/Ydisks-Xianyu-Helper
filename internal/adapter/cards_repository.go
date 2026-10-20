@@ -95,6 +95,17 @@ func (r *CardsRepository) Update(ctx context.Context, card cardsapp.Card) error 
 	return r.store.Cards.Update(ctx, &record)
 }
 
+// UpdateIfDataUnchanged 仅在数据库库存仍等于 expectedData 时整体更新卡券，返回是否写入。
+func (r *CardsRepository) UpdateIfDataUnchanged(ctx context.Context, card cardsapp.Card, expectedData string) (bool, error) {
+	// err 表示卡券适配器依赖缺失时的装配错误。
+	if err := r.validate(); err != nil {
+		return false, err
+	}
+	// record 是仅在适配器内存在的数据库更新模型。
+	record := cardDatabaseModel(card)
+	return r.store.Cards.UpdateIfDataUnchanged(ctx, &record, expectedData)
+}
+
 // UpdateDataMetadata 更新 data 卡券元数据，数据库始终保留当前库存正文。
 func (r *CardsRepository) UpdateDataMetadata(ctx context.Context, card cardsapp.Card) error {
 	// err 表示卡券适配器依赖缺失时的装配错误。

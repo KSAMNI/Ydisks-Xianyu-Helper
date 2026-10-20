@@ -699,3 +699,46 @@ func TestAutomationSchedulerRunRejectsNilContext(t *testing.T) {
 	default:
 	}
 }
+
+// TestReviewRequestRuleDueLookbackWindow 验证回溯窗口：停用期间积压的旧订单不会被补发。
+func TestReviewRequestRuleDueLookbackWindow(t *testing.T) {
+	// ago 生成距今 h 小时的 UTC 数据库时间文本。
+	ago := func(h int) string {
+		return time.Now().UTC().Add(-time.Duration(h) * time.Hour).Format("2006-01-02 15:04:05")
+	}
+	// 默认配置（72h/1 次）窗口为 96h：80h 前发货应触发，200h 前发货不应触发。
+	rule := db.AutomationRule{ConfigJSON: `{}`}
+	if !reviewRequestRuleDue(db.Order{OrderID: "a", ShippedAt: ago(80)}, rule) {
+		t.Error("默认窗口内的订单应 due")
+	}
+	if reviewRequestRuleDue(db.Order{OrderID: "b", ShippedAt: ago(200)}, rule) {
+		t.Error("超出默认回溯窗口的历史订单不应 due")
+	}
+	// 显式窗口 10h：5h 前发货且等待 1h 应触发，20h 前发货不应触发。
+	rule = db.AutomationRule{ConfigJSON: `{"after_shipped_hours":1,"max_lookback_hours":10}`}
+	if !reviewRequestRuleDue(db.Order{OrderID: "c", ShippedAt: ago(5)}, rule) {
+		t.Error("显式窗口内的订单应 due")
+	}
+	if reviewRequestRuleDue(db.Order{OrderID: "d", ShippedAt: ago(20)}, rule) {
+		t.Error("超出显式窗口的订单不应 due")
+	}
+	// 窗口小于首次等待时长时上调到首次等待时长，规则仍可触发。
+	rule = db.AutomationRule{ConfigJSON: `{"after_shipped_hours":5,"max_lookback_hours":2}`}
+	// raised 是窗口小于首次等待时长的解析配置。
+	raised := parseReviewRuleConfig(rule.ConfigJSON)
+	if raised.effectiveLookbackHours() != 5 {
+		t.Errorf("窗口应上调到首次等待时长: %d", raised.effectiveLookbackHours())
+	}
+	// 多次求评时默认窗口覆盖全部重复间隔：72+2*24+24=144h。
+	// cfg 是三次求评、默认间隔的解析配置。
+	cfg := parseReviewRuleConfig(`{"max_attempts":3}`)
+	if cfg.effectiveLookbackHours() != 144 {
+		t.Errorf("默认窗口应覆盖重复间隔: %d", cfg.effectiveLookbackHours())
+	}
+	// 非正值回溯配置被忽略，走默认窗口。
+	// ignored 是回溯配置为负值的解析配置。
+	ignored := parseReviewRuleConfig(`{"max_lookback_hours":-3}`)
+	if ignored.MaxLookbackHours != 0 {
+		t.Errorf("非正值应忽略: %+v", ignored)
+	}
+}

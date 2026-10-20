@@ -22,6 +22,9 @@ var ErrNotFound = errors.New("卡券不存在")
 // ErrForbidden 表示卡券组存在但不属于当前用户。
 var ErrForbidden = errors.New("无权操作该卡密组")
 
+// ErrDataStockChanged 表示编辑期间库存已被自动发货或其他操作修改，旧快照不得覆盖当前库存。
+var ErrDataStockChanged = errors.New("库存已被自动发货或其他操作更新，请刷新后重新编辑")
+
 // ErrNotDataType 表示只有 data 类型卡券组允许追加逐行卡密。
 var ErrNotDataType = errors.New("只有 data（批量卡密）类型支持追加卡密")
 
@@ -89,6 +92,10 @@ type Draft struct {
 	DataContent string
 	// DataContentSet 表示请求是否明确提交了库存正文；省略时 data 元数据更新保留现有库存。
 	DataContentSet bool
+	// ExpectedDataContent 是编辑者打开弹窗时看到的库存快照，用于检测编辑期间被自动发货消费的库存。
+	ExpectedDataContent string
+	// ExpectedDataContentSet 表示请求是否提交了库存快照；未提交的历史客户端保持无条件覆盖语义。
+	ExpectedDataContentSet bool
 	// ImageURL 是 image 类型的远程图片地址，与 ImagePath 互斥。
 	ImageURL string
 	// ImageURLSet 区分省略保留与显式清空；非空值兼容旧应用调用方。
@@ -129,6 +136,8 @@ type Repository interface {
 	Create(ctx context.Context, card Card) (int64, error)
 	// Update 覆盖指定卡券组的可编辑字段，但不得改变所有者。
 	Update(ctx context.Context, card Card) error
+	// UpdateIfDataUnchanged 仅在当前库存仍等于 expectedData 时覆盖 data 卡券，返回是否写入。
+	UpdateIfDataUnchanged(ctx context.Context, card Card, expectedData string) (bool, error)
 	// UpdateDataMetadata 只更新 data 卡券元数据并保留并发变化的库存正文。
 	UpdateDataMetadata(ctx context.Context, card Card) error
 	// Delete 删除指定卡券组及数据库约束允许级联清理的关联数据。
@@ -254,6 +263,17 @@ func (s *Service) Update(ctx context.Context, userID, cardID int64, draft Draft)
 	// err 表示卡券草稿未满足类型、内容或延迟范围约束的校验错误。
 	if err := validateDraft(draft); err != nil {
 		return err
+	}
+	if existing.Type == "data" && draft.ExpectedDataContentSet {
+		// updated、updateErr 保存库存快照守卫更新结果；未命中说明编辑期间库存已被消费或修改。
+		updated, updateErr := s.repository.UpdateIfDataUnchanged(ctx, cardFromDraft(existing.ID, existing.UserID, draft), draft.ExpectedDataContent)
+		if updateErr != nil {
+			return updateErr
+		}
+		if !updated {
+			return ErrDataStockChanged
+		}
+		return nil
 	}
 	return s.repository.Update(ctx, cardFromDraft(existing.ID, existing.UserID, draft))
 }

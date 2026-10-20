@@ -54,22 +54,15 @@ type apiConfigDocument struct {
 // APIConfig 是自动发货适配器读取的规范化 API 请求配置；Headers 与 Params 只在服务端内部流转。
 type APIConfig = apiConfigDocument
 
-// ParseAPIConfig 解析并校验完整 API 卡券配置，供自动化适配器读取已解密的专用配置。
+// ParseAPIConfig 解析执行所需的完整 API 卡券配置，供自动化适配器读取已解密的专用配置。
+// 执行路径只强制结构与兼容约束：历史配置即使已不满足最新的幂等重试前置条件，也必须保持可发卡，
+// 是否真正重试由发送层按本次出站请求是否携带幂等键兜底判定，避免拒绝发卡造成更大故障。
 func ParseAPIConfig(raw string) (APIConfig, error) {
-	// normalized 保存兼容旧字段、补齐默认值后的规范化 JSON。
-	normalized, err := normalizeAPIConfig(raw, "")
+	// document 保存结构与兼容归一后的执行配置；错误只表示配置无法执行。
+	document, err := normalizeAPIConfigDocument(raw, "")
 	if err != nil {
 		return APIConfig{}, err
 	}
-	// fields 保存规范化 API 配置的 JSON 字段。
-	var fields map[string]json.RawMessage
-	// normalized 已由 normalizeAPIConfig 通过 json.Marshal 生成，解析失败不可能发生。
-	_ = json.Unmarshal([]byte(normalized), &fields)
-	// document 保存解码后的 API 执行配置。
-	var document APIConfig
-	// fields 来自规范化文档，兼容字段解码和最终校验已在 normalizeAPIConfig 中完成。
-	_ = decodeAPIConfig(fields, &document)
-	_ = validateAPIConfig(document)
 	return document, nil
 }
 
@@ -124,22 +117,43 @@ func decodeAPIConfigForSummary(fields map[string]json.RawMessage) (apiConfigDocu
 	return document, nil
 }
 
-// normalizeAPIConfig 将新旧 API 配置归一化，并在更新时保留未提交的敏感模板。
+// apiIdempotencyKeyPlaceholder 是启用幂等重试时必须出现在出站请求中的稳定占位符。
+// 只有落在真正发送的载荷里才算满足前置条件：请求头必定发送，GET 的查询参数发送，POST 只发送正文。
+const apiIdempotencyKeyPlaceholder = "{idempotency_key}"
+
+// normalizeAPIConfig 归一化保存请求中的 API 配置，并强制重试时幂等键必须随请求真正发送。
 func normalizeAPIConfig(raw, existing string) (string, error) {
+	// document 保存结构与兼容归一后的执行配置。
+	document, err := normalizeAPIConfigDocument(raw, existing)
+	if err != nil {
+		return "", err
+	}
+	// err 表示幂等重试前置条件错误；保存路径必须拒绝不会真正携带幂等键的重试配置。
+	if err := validateAPIRetryIdempotency(document); err != nil {
+		return "", err
+	}
+	// document 由 JSON 字段解码而来，只包含可编码的基础值，重新编码不会失败。
+	encoded, _ := json.Marshal(document)
+	return string(encoded), nil
+}
+
+// normalizeAPIConfigDocument 归一化新旧 API 配置并校验地址、方法和超时范围等结构约束。
+// 保存路径在返回值上追加幂等重试约束，执行路径直接使用返回值；函数不返回 JSON 文本。
+func normalizeAPIConfigDocument(raw, existing string) (apiConfigDocument, error) {
 	if strings.TrimSpace(raw) == "" {
 		raw = existing
 	}
 	if strings.TrimSpace(raw) == "" {
-		return "", errors.New("API 卡密缺少配置")
+		return apiConfigDocument{}, errors.New("API 卡密缺少配置")
 	}
 	// fields 保存新旧 API 配置字段，后续会清理兼容控制字段。
 	var fields map[string]json.RawMessage
 	// err 表示配置 JSON 解析错误。
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
-		return "", fmt.Errorf("API 配置 JSON 无效: %w", err)
+		return apiConfigDocument{}, fmt.Errorf("API 配置 JSON 无效: %w", err)
 	}
 	if fields == nil {
-		return "", errors.New("API 配置必须是 JSON 对象")
+		return apiConfigDocument{}, errors.New("API 配置必须是 JSON 对象")
 	}
 	// previous 保存更新前的敏感模板，用于 retain 三态操作。
 	var previous map[string]json.RawMessage
@@ -148,11 +162,11 @@ func normalizeAPIConfig(raw, existing string) (string, error) {
 	}
 	// action 表示请求头模板的三态更新意图。
 	if err := mergeAPISecretField(fields, previous, "headers"); err != nil {
-		return "", err
+		return apiConfigDocument{}, err
 	}
 	// action 表示请求参数模板的三态更新意图。
 	if err := mergeAPISecretField(fields, previous, "params"); err != nil {
-		return "", err
+		return apiConfigDocument{}, err
 	}
 	// body 字段也可能携带调用方秘密；普通编辑未提交它时必须保留历史模板。
 	if fields["body"] == nil && previous != nil && previous["body"] != nil {
@@ -186,15 +200,13 @@ func normalizeAPIConfig(raw, existing string) (string, error) {
 	var document apiConfigDocument
 	// err 表示兼容字段解码错误。
 	if err := decodeAPIConfig(fields, &document); err != nil {
-		return "", err
+		return apiConfigDocument{}, err
 	}
-	// err 表示规范化配置校验错误。
+	// err 表示规范化配置的结构校验错误。
 	if err := validateAPIConfig(document); err != nil {
-		return "", err
+		return apiConfigDocument{}, err
 	}
-	// document 由 JSON 字段解码而来，只包含可编码的基础值，重新编码不会失败。
-	encoded, _ := json.Marshal(document)
-	return string(encoded), nil
+	return document, nil
 }
 
 // mergeAPISecretField 在请求没有提交敏感模板时保留数据库中的旧值。
@@ -270,7 +282,8 @@ func decodeAPIConfig(fields map[string]json.RawMessage, document *apiConfigDocum
 	return nil
 }
 
-// validateAPIConfig 校验 API 地址、方法、超时和幂等重试约束。
+// validateAPIConfig 校验 API 地址、请求方法和超时范围等结构约束。
+// 幂等重试的前置条件由 validateAPIRetryIdempotency 单独负责，执行路径不得复用它。
 func validateAPIConfig(document apiConfigDocument) error {
 	// parsed、err 保存 API 地址解析结果及地址格式错误。
 	parsed, err := url.Parse(strings.TrimSpace(document.URL))
@@ -283,10 +296,34 @@ func validateAPIConfig(document apiConfigDocument) error {
 	if document.Timeout < 1 || document.Timeout > 60 {
 		return errors.New("API 超时时间必须在 1 到 60 秒之间")
 	}
-	if document.RetryEnabled && !containsAPIPlaceholder(document.Headers, "{idempotency_key}") && !containsAPIPlaceholder(document.Params, "{idempotency_key}") {
-		return errors.New("启用 API 重试时，请求头或请求参数必须包含 {idempotency_key}")
-	}
 	return nil
+}
+
+// validateAPIRetryIdempotency 校验启用重试时幂等键会真正随请求发送，否则保存路径必须拒绝。
+// GET 只发送请求头和查询参数；POST 只发送请求头和正文，正文为空时才按历史兼容把参数当作正文发送。
+func validateAPIRetryIdempotency(document apiConfigDocument) error {
+	if !document.RetryEnabled || apiConfigDeliversIdempotencyKey(document) {
+		return nil
+	}
+	if document.Method == "GET" {
+		return errors.New("启用 API 重试时，GET 请求的请求头或查询参数必须包含 {idempotency_key}")
+	}
+	return errors.New("启用 API 重试时，POST 请求的请求头或请求正文必须包含 {idempotency_key}（正文为空时可用查询参数）")
+}
+
+// apiConfigDeliversIdempotencyKey 判断配置中的幂等占位符是否落在真实发送的载荷里。
+func apiConfigDeliversIdempotencyKey(document apiConfigDocument) bool {
+	if containsAPIPlaceholder(document.Headers, apiIdempotencyKeyPlaceholder) {
+		return true
+	}
+	if document.Method == "GET" {
+		return containsAPIPlaceholder(document.Params, apiIdempotencyKeyPlaceholder)
+	}
+	// POST 只有在正文为空时才会把参数回退成正文，其余情况参数不会出现在出站请求中。
+	if len(document.Body) > 0 {
+		return containsAPIPlaceholder(document.Body, apiIdempotencyKeyPlaceholder)
+	}
+	return containsAPIPlaceholder(document.Params, apiIdempotencyKeyPlaceholder)
 }
 
 // containsAPIPlaceholder 递归判断 JSON 模板中是否包含指定占位符。

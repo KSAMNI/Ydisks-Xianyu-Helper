@@ -244,7 +244,7 @@ func TestOrderHTTPAdapterCoversErrorMappingBranches(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			// adapter 保存返回当前错误的订单适配器。
 			adapter := &orderHTTPAdapter{services: orderAdapterPortFake{
-			refreshSingleFn: func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error) {
+				refreshSingleFn: func(context.Context, int64, string, bool) (orderapp.SingleRefreshResult, error) {
 					return orderapp.SingleRefreshResult{}, []error{orderapp.ErrNotFound, orderapp.ErrForbidden, orderapp.ErrRefreshDetailUnsupported, orderapp.ErrRefreshCredentialChanged, sentinel}[index]
 				},
 				refreshFn: func(context.Context, int64, string, string) (orderapp.RefreshResult, error) {

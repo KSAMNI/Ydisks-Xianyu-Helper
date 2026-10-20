@@ -113,10 +113,23 @@ export interface Item {
   multi_quantity_delivery?: number | boolean;
   /** 是否启用多数量发货兼容字段。 */
   is_multi_qty_ship?: number | boolean;
+  /** 商品级 AI 启停覆盖状态；缺省时按继承账号配置展示。 */
+  ai_override?: ItemAIOverride;
+}
+
+/** 商品级 AI 配置支持的三态覆盖策略。 */
+export type ItemAIOverride = 'inherit' | 'enabled' | 'disabled';
+
+/** 由商品级 AI 配置接口归一后的 UI 模型。 */
+export interface ItemAISettings {
+  /** 商品级 AI 启停覆盖策略。 */
+  ai_override: ItemAIOverride;
+  /** 提供给 AI 客服的商品专属资料。 */
+  item_context: string;
 }
 
 /** 由当前 feature adapter 归一后的 AutomationTriggerType UI 模型；不直接暴露 HTTP DTO。 */
-export type AutomationTriggerType = 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';
+export type AutomationTriggerType = 'order_created' | 'order_paid' | 'buyer_reviewed' | 'review_missing_timeout';
 /** 由当前 feature adapter 归一后的 AutomationActionType UI 模型；不直接暴露 HTTP DTO。 */
 export type AutomationActionType = 'confirm_shipment' | 'send_card' | 'send_text';
 
@@ -145,6 +158,8 @@ export interface ShippingRule {
   priority: number;
   /** 规则是否启用。 */
   enabled: boolean;
+  /** 规格迁移状态；非 ready 的规则不会被自动化中心命中，缺省视为就绪。 */
+  sku_migration_status?: 'pending' | 'ready' | 'needs_reconfiguration';
   /** 规则原始配置 JSON。 */
   config_json?: string;
   /** 规则动作列表。 */

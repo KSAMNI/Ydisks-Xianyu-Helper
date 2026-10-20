@@ -21,7 +21,7 @@ func (a *AutomationRules) CancelObsoletePaidRecoveryRun(ctx context.Context, run
                     WHERE o.order_id=automation_runs.order_id
                       AND o.cookie_id=automation_runs.cookie_id
                       AND o.deleted_at IS NULL
-                      AND o.order_status='pending_ship'
+                      AND o.order_status IN `+pendingShipStatusSQLList()+`
                       AND o.system_shipped=0)`, reason, run.ID, run.AttemptCount, run.Status, run.ActionCursor, boolToInt(run.ActionStarted), run.LeaseExpiresAt)
 	if err != nil {
 		return false, err
@@ -35,7 +35,7 @@ func (a *AutomationRules) CancelObsoletePaidRecoveryRun(ctx context.Context, run
 // order_paid 运行」的订单，供调度器在付款系统消息丢失时补触发自动发货。
 //
 // 兜底边界：
-//   - 只取 order_status='pending_ship'，即平台侧已确认付款、只差我方发货；
+//   - 只取 order_status 属于待发货取值集合（pending_ship、paid、2、pending_delivery，见 pendingShipStatuses），即平台侧已确认付款、只差我方发货；
 //   - 只取**完全没有任何** order_paid 运行的订单；已有运行的订单交给失败的运行恢复扫描处理，
 //     避免与恢复链重复触发、也避免形成第二个执行入口；
 //   - 砍价订单只有在“待刀成”阶段已成功免拼后才允许进入候选集合；调度器不得调用免拼接口，
@@ -63,7 +63,7 @@ SELECT order_id,item_id,buyer_id,spec_name,spec_value,quantity,amount,order_stat
        COALESCE(buyer_reviewed_at,''),COALESCE(last_review_request_at,''),review_request_count,
        created_at,updated_at
   FROM orders o
-WHERE o.order_status='pending_ship'
+WHERE o.order_status IN `+pendingShipStatusSQLList()+`
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
 	   AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
@@ -176,7 +176,7 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
        r.id,r.rule_id,COALESCE(r.raw_event_json,''),r.attempt_count,r.action_cursor,r.status
   FROM orders o
   JOIN automation_runs r ON r.order_id=o.order_id AND r.trigger_type='order_paid'
-WHERE o.order_status='pending_ship'
+WHERE o.order_status IN `+pendingShipStatusSQLList()+`
    AND o.deleted_at IS NULL
    AND COALESCE(o.chat_id,'')<>''
    AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs

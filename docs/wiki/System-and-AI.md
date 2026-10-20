@@ -20,7 +20,7 @@ Do not paste Cookies, notification tokens, or database passwords here. Use envir
 3. Save System and AI.
 4. Open the target account’s AI Settings in Account Management, enable automatic AI replies, and set negotiation limits.
 
-AI currently handles supported bargaining scenarios. Other buyer messages continue through the keyword, AI, and default reply chain. Test discount amount, percentage, and maximum rounds with a low-risk account before enabling it.
+AI handles bargaining by default; an account can switch to Full Service mode to also answer consultation, shipping, and after-sales messages, and each product can override the account setting. Messages that AI does not handle continue through the keyword, AI, and default reply chain. Test discount amount, percentage, and maximum rounds with a low-risk account before enabling it.
 
 ## Remote verification
 

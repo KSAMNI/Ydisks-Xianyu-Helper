@@ -1,7 +1,7 @@
 import { Activity,AlertCircle,DollarSign,PackageCheck,RotateCcw,TrendingUp } from 'lucide-react';
 import React,{ useState } from 'react';
 import { Area,AreaChart,CartesianGrid,ResponsiveContainer,Tooltip,XAxis,YAxis } from 'recharts';
-import { TimeRange } from '../../../../dateRange';
+import { TimeRange, validateCustomDateRange } from '../../../../dateRange';
 import { useSalesStats } from '../hooks';
 
 /** 读取设计系统颜色变量。 */
@@ -30,18 +30,39 @@ const StatCard: React.FC<{ /** title 表示卡片标题。 */ title: string; /**
 
 /** SalesStats 渲染销售统计页面。 */
 const SalesStats: React.FC = () => {
-  // [timeRange, setTimeRange] 保存当前选中的时间范围。
+  // [timeRange, setTimeRange] 保存用户当前选中的范围标签，自定义标签在点击“应用”前不会改变已生效范围。
   const [timeRange, setTimeRange] = useState<TimeRange>('7days');
-  // [customStartDate, setCustomStartDate] 保存自定义起始日期。
-  const [customStartDate, setCustomStartDate] = useState('');
-  // [customEndDate, setCustomEndDate] 保存自定义结束日期。
-  const [customEndDate, setCustomEndDate] = useState('');
-  // [customRangeVersion, setCustomRangeVersion] 保存自定义范围确认版本。
-  const [customRangeVersion, setCustomRangeVersion] = useState(0);
+  // [appliedRange, setAppliedRange] 保存真正用于请求的已生效范围，预设立即生效，自定义经校验后才生效。
+  const [appliedRange, setAppliedRange] = useState<{ /** range 是已生效的范围类型。 */ range: TimeRange; /** startDate 是已生效的自定义起始日期。 */ startDate: string; /** endDate 是已生效的自定义结束日期。 */ endDate: string }>({ range: '7days', startDate: '', endDate: '' });
+  // [draftStartDate, setDraftStartDate] 保存自定义起始日期草稿，编辑时不触发请求。
+  const [draftStartDate, setDraftStartDate] = useState('');
+  // [draftEndDate, setDraftEndDate] 保存自定义结束日期草稿，编辑时不触发请求。
+  const [draftEndDate, setDraftEndDate] = useState('');
+  // [draftError, setDraftError] 保存自定义日期草稿的行内校验错误，不影响已加载的数据。
+  const [draftError, setDraftError] = useState('');
   // sales 保存销售统计数据与加载状态。
-  const sales = useSalesStats({ range: timeRange, customStartDate, customEndDate, customRangeVersion });
+  const sales = useSalesStats({ range: appliedRange.range, customStartDate: appliedRange.startDate, customEndDate: appliedRange.endDate });
   // { 解构得到当前 Hook 返回的状态和操作函数。
   const { data, loading, error, refresh } = sales;
+
+  // selectRange 处理范围标签点击：预设范围立即生效，自定义标签只切换输入区。
+  const selectRange = (/* key 是被点击的范围标签。 */ key: TimeRange) => {
+    setTimeRange(key);
+    setDraftError('');
+    if (key !== 'custom') setAppliedRange({ range: key, startDate: '', endDate: '' });
+  };
+  // applyCustomRange 校验并应用自定义日期；校验失败只提示，不清空已加载数据；范围未变时重新加载。
+  const applyCustomRange = () => {
+    // message 是自定义日期校验结果，空字符串表示合法。
+    const message = validateCustomDateRange(draftStartDate, draftEndDate);
+    setDraftError(message);
+    if (message) return;
+    if (appliedRange.range === 'custom' && appliedRange.startDate === draftStartDate && appliedRange.endDate === draftEndDate) {
+      refresh();
+      return;
+    }
+    setAppliedRange({ range: 'custom', startDate: draftStartDate, endDate: draftEndDate });
+  };
 
   // timeRangeOptions 是预设时间范围选项。
   const timeRangeOptions = [
@@ -55,19 +76,8 @@ const SalesStats: React.FC = () => {
   // formatCurrency 格式化金额函数。
   const formatCurrency = (value: number) => `¥${Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-  if (error && !data) {
-    return (
-      <div className="p-8 flex flex-col items-center gap-3 text-red-600">
-        <AlertCircle className="w-8 h-8" />
-        <span>{error}</span>
-        <button type="button" className="ios-btn-primary px-4 py-2 rounded-xl" onClick={refresh}>重新加载</button>
-      </div>
-    );
-  }
-  if (!data) return <div className="p-8 flex justify-center text-gray-400"><Activity className="w-8 h-8 animate-spin text-brand" /></div>;
-
   // chartData 是按日聚合的趋势图数据点。
-  const chartData = data.daily.map(/* day 是服务端按日聚合的销售数据点。 */ day => ({
+  const chartData = (data?.daily ?? []).map(/* day 是服务端按日聚合的销售数据点。 */ day => ({
     name: day.date.slice(5),
     销售额: day.salesAmount,
     已收货款: day.receivedAmount,
@@ -76,7 +86,7 @@ const SalesStats: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fade-in">
-      {error && (
+      {error && data && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
           <span>{error}</span>
           <button type="button" className="font-bold underline" onClick={refresh}>重试</button>
@@ -94,7 +104,7 @@ const SalesStats: React.FC = () => {
         {timeRangeOptions.map(/* 当前回调处理集合中的单个元素。 */ option => (
           <button
             key={option.key}
-            onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setTimeRange(option.key)}
+            onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => selectRange(option.key)}
             className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${
               timeRange === option.key
                 ? 'bg-brand text-white shadow-md'
@@ -108,26 +118,40 @@ const SalesStats: React.FC = () => {
           <>
             <input
               type="date"
-              value={customStartDate}
-              onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setCustomStartDate(e.target.value)}
+              value={draftStartDate}
+              onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setDraftStartDate(e.target.value)}
               className="px-3 py-2 rounded-xl text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand"
             />
             <span className="self-center text-gray-400">-</span>
             <input
               type="date"
-              value={customEndDate}
-              onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setCustomEndDate(e.target.value)}
+              value={draftEndDate}
+              onChange={/* 当前回调处理用户交互或异步状态变化。 */ e => setDraftEndDate(e.target.value)}
               className="px-3 py-2 rounded-xl text-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-brand"
             />
             <button
-              onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setCustomRangeVersion(/* 当前回调处理用户交互或异步状态变化。 */ value => value + 1)}
+              onClick={applyCustomRange}
               className="px-4 py-2 rounded-xl text-sm font-bold bg-black text-white hover:bg-gray-800 transition-colors"
             >
               应用
             </button>
+            {draftError && <span role="alert" className="self-center text-sm text-red-600">{draftError}</span>}
           </>
         )}
       </div>
+
+      {!data && (
+        error ? (
+          <div className="p-8 flex flex-col items-center gap-3 text-red-600">
+            <AlertCircle className="w-8 h-8" />
+            <span>{error}</span>
+            <button type="button" className="ios-btn-primary px-4 py-2 rounded-xl" onClick={refresh}>重新加载</button>
+          </div>
+        ) : (
+          <div className="p-8 flex justify-center text-gray-400"><Activity className="w-8 h-8 animate-spin text-brand" /></div>
+        )
+      )}
+      {data && (<>
 
       {/* 三项核心指标 */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -242,6 +266,7 @@ const SalesStats: React.FC = () => {
           )}
         </div>
       </div>
+      </>)}
     </div>
   );
 };

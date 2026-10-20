@@ -82,6 +82,10 @@ func encodeKeywordExpressions(expressions []string, fallback, matchType string) 
 	if len(normalized) == 0 {
 		normalized = decodeKeywordExpressions("", fallback, matchType)
 	}
+	if normalized == nil {
+		// 没有任何可用表达式时编码为空数组 []，避免 nil 切片被编码成字符串 null 写入数据库。
+		normalized = []string{}
+	}
 	// encoded 保存 JSON 编码结果；字符串数组不会产生不可编码值。
 	encoded, err := json.Marshal(normalized)
 	if err != nil {

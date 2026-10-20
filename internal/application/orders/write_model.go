@@ -80,6 +80,9 @@ type UpsertOptions struct {
 	IsBargain *bool
 	// SystemShipped 表示是否由系统完成发货。
 	SystemShipped *bool
+	// PlatformSnapshot 表示 OrderStatus 来自刚读取的闲鱼订单列表或详情，可把“退款中”恢复为“待发货”；
+	// 事件推断或人工输入的状态必须保持 false。
+	PlatformSnapshot bool
 }
 
 // Writer 定义订单事务内的持久化写入能力，不暴露数据库事务类型。

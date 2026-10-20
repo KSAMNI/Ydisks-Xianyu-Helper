@@ -254,7 +254,12 @@ func (c *apiDeliveryClient) Fetch(ctx context.Context, request automation.APICar
 	// attempts 是本次请求允许执行的总次数；未开启重试时固定为一次。
 	attempts := 1
 	if config.RetryEnabled {
-		attempts = apiDeliveryRetryLimit
+		// 只有幂等键真正出现在出站请求中，重试才不会把同一份卡密重复下发。
+		if apiDeliveryCarriesIdempotencyKey(config.Method, headers, params, body, idempotencyKey) {
+			attempts = apiDeliveryRetryLimit
+		} else if c.logger != nil {
+			c.logger.Warn("API 卡启用了幂等重试但本次请求未携带幂等键，已降级为单次请求", "method", config.Method, "card_id", request.CardID, "action_id", request.ActionID)
+		}
 	}
 	// attempt 表示当前已执行的请求次数，最多不超过配置允许的总次数。
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -624,6 +629,52 @@ func apiJSONScalar(value any) string {
 		}
 		return string(encoded)
 	}
+}
+
+// apiDeliveryCarriesIdempotencyKey 判断本次真实出站请求是否携带已生成的幂等键，用于决定是否允许重试。
+// 判定必须与实际发送逻辑一致：请求头必定发送；GET 的参数进入查询串；POST 只发送正文，
+// 而正文为空时 Fetch 已把参数回退成正文，因此这里直接检查编码后的出站正文。
+func apiDeliveryCarriesIdempotencyKey(method string, headers, params map[string]any, body []byte, idempotencyKey string) bool {
+	if idempotencyKey == "" {
+		return false
+	}
+	if apiJSONValuesContainText(headers, idempotencyKey) {
+		return true
+	}
+	if method == http.MethodGet {
+		return apiJSONValuesContainText(params, idempotencyKey)
+	}
+	return bytes.Contains(body, []byte(idempotencyKey))
+}
+
+// apiJSONValuesContainText 递归判断请求头或查询参数的值中是否包含指定文本，键名不参与判断。
+func apiJSONValuesContainText(values map[string]any, expected string) bool {
+	// value 是当前模板字段的待检查值。
+	for _, value := range values {
+		if apiJSONValueContainsText(value, expected) {
+			return true
+		}
+	}
+	return false
+}
+
+// apiJSONValueContainsText 递归判断单个模板值是否包含指定文本；只有字符串及其嵌套内容可能承载占位符。
+func apiJSONValueContainsText(value any, expected string) bool {
+	// current 保存当前递归节点的动态 JSON 值。
+	switch current := value.(type) {
+	case string:
+		return strings.Contains(current, expected)
+	case map[string]any:
+		return apiJSONValuesContainText(current, expected)
+	case []any:
+		// child 表示数组中的当前递归节点。
+		for _, child := range current {
+			if apiJSONValueContainsText(child, expected) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // apiDeliveryIdempotencyKey 生成跨进程稳定且不暴露订单内容的幂等键。

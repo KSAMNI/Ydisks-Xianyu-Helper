@@ -45,6 +45,13 @@ export const getDateRange = (
   return rangeEndingAt(now, days);
 }; /* getDateRange 表示getDateRange。 */
 
+/** validateCustomDateRange 校验用户填写的自定义起止日期；合法返回空字符串，否则返回可直接展示的错误文案。 */
+export const validateCustomDateRange = (startDate: string, endDate: string): string => {
+  if (!startDate || !endDate) return '请选择开始日期和结束日期';
+  if (startDate > endDate) return '开始日期不能晚于结束日期';
+  return '';
+}; /* validateCustomDateRange 在应用自定义范围前拦截缺失或倒置的日期。 */
+
 export const getPreviousDateRange = (current: DateRange): DateRange => {
   const start = new Date(`${current.startDate}T12:00:00`); /* start 表示start。 */
   const end = new Date(`${current.endDate}T12:00:00`); /* end 表示end。 */

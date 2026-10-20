@@ -348,6 +348,11 @@ func (n *Notifications) ClaimOutbox(ctx context.Context, workerToken string, now
 		}
 		candidates = append(candidates, message)
 	}
+	// iterErr 是逐行读取中途的数据库错误；截断的候选集不能被当作本轮完整的待发送通知。
+	if iterErr := rows.Err(); iterErr != nil {
+		_ = rows.Close()
+		return nil, iterErr
+	}
 	if // err 用于本次流程后续判断的err
 	err := rows.Close(); err != nil {
 		return nil, err

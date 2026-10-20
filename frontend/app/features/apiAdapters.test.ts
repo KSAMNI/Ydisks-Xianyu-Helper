@@ -26,7 +26,7 @@ updateAccountStatus,
 updateAccountTaskSettings,
 } from './accounts/api';
 import { createDeliveryTemplate,listDeliveryTemplates,updateDeliveryTemplate } from './delivery-templates/api';
-import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,updateCard } from './cards/api';
+import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
 import { getChatMessagePage,getChatMessages,getChatSessionPage,getChatSessions,markChatRead,sendChatImage,sendChatMessage } from './chat/api';
 import { getDashboardStats,getOrderAnalytics,getValidOrders } from './dashboard/api';
 import { cancelItemPublishBatch,createItem,deleteItem,deleteItemPublishBatch,getItemDetail,getItemPublishBatch,getItemPublishBatches,getItems,previewItemPublishBatch,publishItem,recommendPublishCategory,retryFailedItemPublishBatch,startItemPublishBatch,syncItemsFromAccount,updateItem } from './items/api';
@@ -842,6 +842,23 @@ test('账号编辑子模块请求支持取消过期响应', async () => {
   expect(fetchMock.mock.calls[1][1].signal).toBeInstanceOf(AbortSignal);
   expect(fetchMock.mock.calls[2][1].signal).toBeInstanceOf(AbortSignal);
 } /* 测试回调验证：账号编辑子模块请求支持取消过期响应。 */);
+
+test('updateAccountAISettings 提交 AI 工作模式并在缺省时回退为仅砍价', /* 当前回调验证账号 AI 设置请求载荷的模式字段与默认值。 */ async () => {
+  // fetchMock 是账号 AI 设置保存接口的网络替身；每次调用返回新的响应对象，避免正文被重复读取。
+  const fetchMock = vi.fn().mockImplementation(/* 当前回调为每次请求生成独立的成功响应。 */ () => Promise.resolve(jsonResponse({ success: true })));
+  stubContractFetch(fetchMock);
+
+  await updateAccountAISettings('acc1', { ai_enabled: true, max_discount_percent: 15, ai_mode: 'full_service' });
+  await updateAccountAISettings('acc1', {});
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/settings/ai-reply/acc1', expect.objectContaining({ method: 'PUT' }));
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    ai_enabled: true, auto_adjust_price_enabled: false, max_discount_percent: 15, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'full_service',
+  });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    ai_enabled: false, auto_adjust_price_enabled: false, max_discount_percent: 10, max_discount_amount: 100, max_bargain_rounds: 3, custom_prompts: '', ai_mode: 'bargain_only',
+  });
+});
 
 test('getShippingRules exposes buyer reviewed gift rules as automation rules', async () => {
   stubContractFetch(vi.fn().mockResolvedValue(jsonResponse([{
@@ -1935,4 +1952,20 @@ test('通知编辑可单独更新收件地址', /* recipientPatchAdapterTest 检
   // body 是已经发送的请求体，用于证明没有 config 字段。
   const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
   expect(body).toEqual({ name: 'renamed', email_recipient: 'new@example.com' });
+});
+
+
+test('API 卡密编辑走专用接口，测试携带卡密标识及保留模板语义', /* cardEditorTransport 验证真实请求序列化不丢失草稿控制字段。 */ async () => {
+  // editor 是完整编辑接口的确定性响应，仅包含测试凭证。
+  const editor = { url: 'https://example.com/claim', method: 'POST', timeout_seconds: 10, content_type: 'application/json', headers: '{"Authorization":"Bearer fixture"}', params: '{}', body: '{}', response_path: 'data.content', retry_enabled: true };
+  // fetchMock 捕获完整编辑与临时测试的真实请求形状。
+  const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse(editor)).mockResolvedValueOnce(jsonResponse({ status: 'success', status_code: 200, response_content_type: 'application/json', response_fields: ['data'] }));
+  stubContractFetch(fetchMock);
+  // controller 绑定当前编辑会话的取消信号。
+  const controller = new AbortController();
+  await expect(getCardAPIEditor(3, { signal: controller.signal })).resolves.toEqual(editor);
+  expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/v1/cards/3/api-editor', expect.objectContaining({ method: 'GET', credentials: 'include' }));
+  await testCardAPI({ url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: '{"order_id":"{order_id}"}', body: '{}', retry_enabled: true }, 3, { signal: controller.signal });
+  expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/cards/test-api', expect.objectContaining({ method: 'POST' }));
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ card_id: 3, api_config: { url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: { order_id: '{order_id}' }, body: {}, retry_enabled: true, content_type: 'application/json' } });
 });

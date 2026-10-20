@@ -241,5 +241,56 @@ func TestCardAPIDTOIsRedacted(t *testing.T) {
 	}
 }
 
+// TestCardAPIRetryIdempotencyScopeContract 验证保存接口的幂等重试前置条件与真实发送载荷保持一致。
+func TestCardAPIRetryIdempotencyScopeContract(t *testing.T) {
+	// srv、cleanup 保存契约测试服务器及其清理函数。
+	srv, _, cleanup := newTestServer(t)
+	defer cleanup()
+	// handler 是本次测试使用的完整路由处理器。
+	handler := srv.Router()
+	// cookie 是已认证管理员会话。
+	cookie := loginHelper(t, handler)
+	// cases 保存按幂等键位置划分的创建请求预期。
+	cases := []struct {
+		// name 是当前用例的可读名称。
+		name string
+		// config 是提交的 API 配置对象 JSON。
+		config string
+		// wantStatus 是预期的 HTTP 状态码。
+		wantStatus int
+		// wantBody 是失败响应必须包含的错误文本片段。
+		wantBody string
+	}{
+		{
+			name:       "POST 正文携带幂等键",
+			config:     `{"url":"https://example.com/card","method":"POST","timeout_seconds":10,"retry_enabled":true,"body":{"idempotency_key":"{idempotency_key}"}}`,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:       "POST 正文非空时参数不会发送",
+			config:     `{"url":"https://example.com/card","method":"POST","timeout_seconds":10,"retry_enabled":true,"params":{"idempotency_key":"{idempotency_key}"},"body":{"order_id":"{order_id}"}}`,
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "请求正文",
+		},
+	}
+	// testCase 表示当前待提交的 API 卡密创建用例。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// request 是提交当前 API 卡券配置的创建请求。
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/cards", strings.NewReader(`{"name":`+strconv.Quote(testCase.name)+`,"type":"api","api_config":`+testCase.config+`,"enabled":true}`))
+			request.AddCookie(cookie)
+			// response 保存创建请求的 HTTP 响应。
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != testCase.wantStatus {
+				t.Fatalf("创建状态码错误 status=%d body=%s", response.Code, response.Body.String())
+			}
+			if testCase.wantBody != "" && !strings.Contains(response.Body.String(), testCase.wantBody) {
+				t.Fatalf("错误响应应提示 %q: %s", testCase.wantBody, response.Body.String())
+			}
+		})
+	}
+}
+
 // itoa 封装itoa业务协调。
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }

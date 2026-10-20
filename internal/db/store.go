@@ -29,23 +29,25 @@ type Store struct {
 	DefaultReps      *DefaultReplies
 	ItemReps         *ItemReplies
 	AIReply          *AIReply
-	Notifications    *Notifications
-	Settings         *SystemSettings
-	UserSettings     *UserSettings
-	WSMessages       *WSMessageStore
-	PublishBatches   *ItemPublishBatches
-	Tokens           *AccountTokens
-	Renewal          *RenewalStore
-	LoginLogs        *AccountLoginLogs
-	RiskLogs         *RiskControlLogs
+	// ItemAISettings 保存商品级 AI 启停覆盖与专属资料。
+	ItemAISettings *ItemAISettings
+	Notifications  *Notifications
+	Settings       *SystemSettings
+	UserSettings   *UserSettings
+	WSMessages     *WSMessageStore
+	PublishBatches *ItemPublishBatches
+	Tokens         *AccountTokens
+	Renewal        *RenewalStore
+	LoginLogs      *AccountLoginLogs
+	RiskLogs       *RiskControlLogs
 	// SecurityAudit 保存敏感配置访问审计记录。
 	SecurityAudit *SecurityAuditLogs
 	Chats         *ChatStore
 	AccountTasks  *AccountTaskStore
 	// ImageAssets 保存资源中心图片的元数据仓储，磁盘文件由应用层存储端口管理。
-	ImageAssets   *ImageAssets
-	Admin         *AdminQueries
-	Analytics     *AnalyticsQueries
+	ImageAssets *ImageAssets
+	Admin       *AdminQueries
+	Analytics   *AnalyticsQueries
 
 	credentialMu    sync.Mutex
 	credentialLocks map[string]*credentialLockEntry
@@ -94,6 +96,7 @@ func NewStore(db *sql.DB, dialect Dialect) *Store {
 		DefaultReps:       &DefaultReplies{DB: db, Dialect: dialect},
 		ItemReps:          &ItemReplies{DB: db, Dialect: dialect},
 		AIReply:           &AIReply{DB: db, Dialect: dialect, codec: codec},
+		ItemAISettings:    &ItemAISettings{DB: db, Dialect: dialect},
 		Notifications:     &Notifications{DB: db, Dialect: dialect, codec: codec},
 		Settings:          &SystemSettings{DB: db, Dialect: dialect, codec: codec},
 		UserSettings:      &UserSettings{DB: db, Dialect: dialect},

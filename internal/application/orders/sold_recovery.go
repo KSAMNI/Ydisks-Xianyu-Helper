@@ -46,7 +46,8 @@ func soldRecoveryOptions(cookieID string, remote RefreshSoldOrder) UpsertOptions
 	// options 保存平台事实；空字段由数据库按既有规则合并，禁止复制其他账号的地址和聊天上下文。
 	options := UpsertOptions{CookieID: cookieID, ItemID: remote.ItemID, BuyerID: remote.BuyerID,
 		CreatedAt: remote.CreatedAt, OrderStatus: remote.OrderStatus, Quantity: remote.Quantity, Amount: remote.Amount,
-		ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity}
+		ReceiverName: remote.ReceiverName, ReceiverPhone: remote.ReceiverPhone, ReceiverAddress: remote.ReceiverAddr, ReceiverCity: remote.ReceiverCity,
+		PlatformSnapshot: true}
 	if options.OrderStatus == "unknown" {
 		options.OrderStatus = ""
 	}

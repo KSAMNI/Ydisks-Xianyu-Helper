@@ -125,7 +125,7 @@ func TestMultiDB_ItemReplyOnceMigration(t *testing.T) {
 				t.Fatal(err)
 			}
 			goose.SetBaseFS(migrationsFS)
-			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 54); err != nil { // err 是旧schema夹具构建错误。
+			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 57); err != nil { // err 是旧schema夹具构建错误。
 				t.Fatal(err)
 			}
 			// ctx、cookieID 用于所有迁移前后的身份一致性检查。
@@ -141,7 +141,7 @@ func TestMultiDB_ItemReplyOnceMigration(t *testing.T) {
 			if _, err := target.store.DB.ExecContext(ctx, `INSERT INTO default_reply_records(cookie_id,chat_id,status) VALUES (?,'already-sent','sent'),(?,'in-flight','sending')`, cookieID, cookieID); err != nil { // err 是升级前完成与发送中状态的写入错误。
 				t.Fatal(err)
 			}
-			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 55); err != nil { // err 是新增迁移执行错误。
+			if err := goose.UpTo(target.store.DB, "migrations/"+subdir, 58); err != nil { // err 是新增迁移执行错误。
 				t.Fatal(err)
 			}
 			// chatID 是升级前已完成或发送中的会话，迁移不能让任何一个重新取得发送权。
@@ -177,7 +177,7 @@ func TestMultiDB_ItemReplyOnceMigration(t *testing.T) {
 			if _, claimed, err := target.store.DefaultReps.RecordsForItem("item").ClaimRecord(ctx, cookieID, "chat", true, false); err != nil || !claimed { // claimed、err 必须证明历史账号记录不阻止商品。
 				t.Fatalf("商品领取=%v err=%v", claimed, err)
 			}
-			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 54); err != nil { // err 是新增作用域回退错误。
+			if err := goose.DownTo(target.store.DB, "migrations/"+subdir, 57); err != nil { // err 是新增作用域回退错误。
 				t.Fatal(err)
 			}
 			// status、imageSent 验证回退只删除新商品记录，不将其混入旧账号记录。

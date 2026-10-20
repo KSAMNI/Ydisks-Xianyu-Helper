@@ -132,14 +132,14 @@ func TestCardAPIHandlerCoversValidationAndApplicationErrors(t *testing.T) {
 	// applicationErrorRecorder 保存应用层 API 测试错误响应。
 	applicationErrorRecorder := httptest.NewRecorder()
 	server.applications.apiRequestTester = cardAPICoverageTester{err: errors.New("api test failed")}
-	server.testCardAPI(applicationErrorRecorder, httptest.NewRequest(http.MethodPost, "/cards/test-api", strings.NewReader(`{"api_config":{"url":"https://example.com"}}`)))
+	server.testCardAPI(applicationErrorRecorder, httptest.NewRequest(http.MethodPost, "/cards/test-api", strings.NewReader(`{"api_config":{"url":"https://example.com"}}`)).WithContext(auth.WithSession(context.Background(), &db.Session{UserID: 1})))
 	if applicationErrorRecorder.Code != http.StatusBadRequest {
 		t.Fatalf("应用 API 测试错误 status=%d", applicationErrorRecorder.Code)
 	}
 	// successRecorder 保存应用层 API 测试成功响应。
 	successRecorder := httptest.NewRecorder()
 	server.applications.apiRequestTester = cardAPICoverageTester{result: cardsapp.APIRequestTestResult{Status: "success", StatusCode: http.StatusOK}}
-	server.testCardAPI(successRecorder, httptest.NewRequest(http.MethodPost, "/cards/test-api", strings.NewReader(`{"api_config":{"url":"https://example.com"}}`)))
+	server.testCardAPI(successRecorder, httptest.NewRequest(http.MethodPost, "/cards/test-api", strings.NewReader(`{"api_config":{"url":"https://example.com"}}`)).WithContext(auth.WithSession(context.Background(), &db.Session{UserID: 1})))
 	if successRecorder.Code != http.StatusOK {
 		t.Fatalf("成功 API 测试 status=%d body=%s", successRecorder.Code, successRecorder.Body.String())
 	}

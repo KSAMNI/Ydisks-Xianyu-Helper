@@ -56,6 +56,47 @@ func TestKeywordReply_MatchAndVariableSubst(t *testing.T) {
 	}
 }
 
+// TestKeywordReply_AnyKeywordTermMatches 验证一条规则中的任一候选词均可触发同一回复。
+func TestKeywordReply_AnyKeywordTermMatches(t *testing.T) {
+	// s、cleanup 分别提供隔离的 SQLite 仓储及测试结束后的资源释放。
+	s, cleanup := newReplyStore(t)
+	defer cleanup()
+	// ctx 是关键词持久化与回复解析共享的可取消请求上下文。
+	ctx := context.Background()
+	// insertErr 保存写入包含全部支持分隔符的 OR 关键词规则时产生的数据库错误。
+	_, insertErr := s.DB.ExecContext(ctx, `INSERT INTO keywords (cookie_id,keyword,reply,type) VALUES ('cid','在吗 | 在不在,有人吗，价格多少、怎么卖
+什么价','统一回复','text')`)
+	if insertErr != nil {
+		t.Fatalf("insert keyword rule: %v", insertErr)
+	}
+	// r 是使用该账号关键词规则进行消息解析的回复服务。
+	r := NewReplyService("cid", s, nil, nil, nil, nil)
+	// messages 收集每种分隔符右侧的候选词，确保它们均以 OR 语义命中。
+	messages := []string{"老板在吗", "在不在呀", "有人吗", "价格多少", "请问怎么卖", "什么价"}
+	// message 是当前用于验证候选词匹配的买家消息。
+	for _, message := range messages {
+		// result 保存当前消息解析得到的关键词回复。
+		result := r.resolve(ctx, chatMsg(message, "item1", "chat1"))
+		if result == nil || result.Text != "统一回复" {
+			t.Errorf("消息 %q 未命中任一关键词规则: %+v", message, result)
+		}
+	}
+}
+
+// TestKeywordMatchesIgnoresEmptyTerms 验证连续分隔符和空白不会意外匹配所有买家消息。
+func TestKeywordMatchesIgnoresEmptyTerms(t *testing.T) {
+	// matched 记录空片段被忽略后，非空候选词是否仍可按包含语义匹配。
+	matched := keywordMatches("请问价格多少", " | , ， 、 \n 价格  ")
+	if !matched {
+		t.Fatal("包含有效候选词时应命中")
+	}
+	// emptyMatched 记录仅含分隔符的规则是否会错误地作为空字符串匹配。
+	emptyMatched := keywordMatches("任意消息", " | , ， 、 \n ")
+	if emptyMatched {
+		t.Fatal("仅含分隔符的规则不得匹配任意消息")
+	}
+}
+
 // TestKeywordReply_ItemIDPriority 商品ID关键词优先于通用关键词。
 func TestKeywordReply_ItemIDPriority(t *testing.T) {
 	// s、cleanup 用于本次流程后续判断的s、cleanup

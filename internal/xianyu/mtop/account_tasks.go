@@ -101,28 +101,54 @@ func (c *ClientImpl) RateBuyer(ctx context.Context, cookiesStr, tradeID, feedbac
 	return &AccountTaskResult{Success: true, Message: firstRet(decoded.Ret), UpdatedCookies: updated}, nil
 }
 
-// IsRateOrderExpiredErr 判断评价接口是否明确拒绝超过平台评价期限的订单；该错误属于永久业务失败，不应再次请求评价接口。
-func IsRateOrderExpiredErr(err error) bool {
+// rateBizRejected 判断评价接口错误是否同时包含平台业务错误码 FAIL_BIZ_BAD_REQUEST 与任一给定原因文案。
+// 优先读取结构化 MTopResponseError.Ret，避免依赖展示文本；同时兼容测试替身或历史调用方只返回错误文本的场景，
+// 且无论哪种来源都必须同时出现错误码和原因，只有原因文案不算命中。
+func rateBizRejected(err error, reasons ...string) bool {
 	if err == nil {
 		return false
 	}
-	// responseErr 保存统一 MTOP 错误中的原始 ret，优先使用结构化平台错误避免依赖展示文本。
+	// matches 判断单条错误文本是否同时含业务错误码和任一原因文案。
+	matches := func(text string) bool {
+		// normalized 是小写副本，用于兼容错误码大小写差异。
+		normalized := strings.ToLower(text)
+		if !strings.Contains(normalized, "fail_biz_bad_request") {
+			return false
+		}
+		// reason 是候选的平台面向用户的业务原因。
+		for _, reason := range reasons {
+			if strings.Contains(normalized, reason) {
+				return true
+			}
+		}
+		return false
+	}
+	// responseErr 保存统一 MTOP 错误中的原始 ret。
 	var responseErr *MTopResponseError
 	if errors.As(err, &responseErr) {
 		// ret 表示平台返回的一条错误标记，包含错误码和面向用户的业务原因。
 		for _, ret := range responseErr.Ret {
-			// normalizedRet 保存平台错误码和原因的小写副本，用于兼容“超出/超过”两种文案。
-			normalizedRet := strings.ToLower(ret)
-			if strings.Contains(normalizedRet, "fail_biz_bad_request") &&
-				(strings.Contains(normalizedRet, "超出30天的订单不允许评价") || strings.Contains(normalizedRet, "超过30天的订单不允许评价")) {
+			if matches(ret) {
 				return true
 			}
 		}
 	}
-	// message 兼容测试替身或历史调用方只返回错误文本的场景；必须同时包含平台错误码和期限原因。
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "fail_biz_bad_request") &&
-		(strings.Contains(message, "超出30天的订单不允许评价") || strings.Contains(message, "超过30天的订单不允许评价"))
+	return matches(err.Error())
+}
+
+// IsRateOrderExpiredErr 判断评价接口是否明确拒绝超过平台评价期限的订单；该错误属于永久业务失败，不应再次请求评价接口。
+func IsRateOrderExpiredErr(err error) bool {
+	return rateBizRejected(err, "超出30天的订单不允许评价", "超过30天的订单不允许评价")
+}
+
+// IsRateAlreadyRatedErr 判断评价接口是否明确返回订单已经评价过；订单的评价目标已经达成，调用方应按成功收口而不是重试。
+func IsRateAlreadyRatedErr(err error) bool {
+	return rateBizRejected(err, "您已经评价过了", "已经评价过")
+}
+
+// IsRateOrderNotRateableErr 判断评价接口是否明确返回当前订单不能评价（平台状态不允许）；属于永久业务失败，不应再次请求。
+func IsRateOrderNotRateableErr(err error) bool {
+	return rateBizRejected(err, "当前订单不能评价")
 }
 
 // PolishItem 封装Polish商品业务协调。

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -75,6 +76,48 @@ func TestIsRateOrderExpiredErrRecognizesPermanentPlatformFailure(t *testing.T) {
 	otherErr := &MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: MTopErrorBusiness, Ret: []string{"FAIL_BIZ_BAD_REQUEST::订单状态不允许评价"}}
 	if IsRateOrderExpiredErr(otherErr) || IsRateOrderExpiredErr(fmt.Errorf("FAIL_BIZ_BAD_REQUEST::订单状态不允许评价")) {
 		t.Fatal("普通评价业务错误不应被识别为超期永久失败")
+	}
+}
+
+// TestRateBizRejectionClassifiers 验证已评价、不能评价、超期三类评价业务拒绝的识别：
+// 结构化与包装错误命中，只有原因没有错误码或无关原因不命中，三类互不串扰。
+func TestRateBizRejectionClassifiers(t *testing.T) {
+	// newErr 构造携带单条 ret 的评价接口业务错误。
+	newErr := func(ret string) error {
+		return &MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: MTopErrorBusiness, Ret: []string{ret}}
+	}
+	// cases 保存各 ret 文案及三个分类函数的期望结果（已评价、不能评价、超期）。
+	cases := []struct {
+		name                               string
+		err                                error
+		alreadyRated, notRateable, expired bool
+	}{
+		{name: "already-rated", err: newErr("FAIL_BIZ_BAD_REQUEST::亲，您已经评价过了||rate failed"), alreadyRated: true},
+		{name: "already-rated-wrapped", err: fmt.Errorf("评价动作失败: %w", newErr("FAIL_BIZ_BAD_REQUEST::亲，您已经评价过了")), alreadyRated: true},
+		{name: "not-rateable", err: newErr("FAIL_BIZ_BAD_REQUEST::当前订单不能评价||rate failed"), notRateable: true},
+		{name: "expired", err: newErr("FAIL_BIZ_BAD_REQUEST::超出30天的订单不允许评价||rate failed"), expired: true},
+		{name: "plain-text-already-rated", err: errors.New("ret=FAIL_BIZ_BAD_REQUEST::您已经评价过了"), alreadyRated: true},
+		{name: "reason-without-code", err: newErr("SYSTEM_ERROR::您已经评价过了")},
+		{name: "plain-text-reason-without-code", err: errors.New("您已经评价过了")},
+		{name: "unrelated", err: newErr("FAIL_BIZ_BAD_REQUEST::订单状态不允许评价")},
+		{name: "nil", err: nil},
+	}
+	// testCase 是当前子测试使用的错误样本及期望分类。
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			// got 是已评价分类函数对当前样本的判定结果。
+			if got := IsRateAlreadyRatedErr(testCase.err); got != testCase.alreadyRated {
+				t.Fatalf("IsRateAlreadyRatedErr=%v，期望 %v", got, testCase.alreadyRated)
+			}
+			// got 是不能评价分类函数对当前样本的判定结果。
+			if got := IsRateOrderNotRateableErr(testCase.err); got != testCase.notRateable {
+				t.Fatalf("IsRateOrderNotRateableErr=%v，期望 %v", got, testCase.notRateable)
+			}
+			// got 是超期分类函数对当前样本的判定结果。
+			if got := IsRateOrderExpiredErr(testCase.err); got != testCase.expired {
+				t.Fatalf("IsRateOrderExpiredErr=%v，期望 %v", got, testCase.expired)
+			}
+		})
 	}
 }
 

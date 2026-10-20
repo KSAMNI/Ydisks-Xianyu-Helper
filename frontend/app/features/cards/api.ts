@@ -5,6 +5,7 @@ CardBatchResponse,
 	CardMutation,
 	CardAPITestResult,
 	CardAPIConfigInput,
+  CardAPIEditor,
 MutationIDResponse,OperationResponse
 } from './models';
 import { type RequestControlOptions } from '../../../shared/http/client';
@@ -43,19 +44,23 @@ const parseTemplateJSON = (value: unknown): Record<string, unknown> | undefined 
   return parsed as Record<string, unknown>;
 };
 
+// apiConfigPayload 将编辑器模板统一转换为 HTTP 具名配置，保存与测试共用。
+const apiConfigPayload = (data: CardAPIConfigInput) => ({
+  ...data,
+  headers: parseTemplateJSON(data.headers),
+  params: parseTemplateJSON(data.params),
+  body: parseTemplateJSON(data.body),
+  content_type: data.content_type || 'application/json',
+});
+
 // cardPayload 将 feature 表单映射为新版具名 API 请求载荷，并兼容旧字符串配置。
 const cardPayload = (data: CardMutation) => ({
   name: data.name,
   type: data.type,
-  api_config: typeof data.api_config === 'string' ? data.api_config : data.api_config ? {
-    ...data.api_config,
-    headers: parseTemplateJSON(data.api_config.headers),
-    params: parseTemplateJSON(data.api_config.params),
-    body: parseTemplateJSON(data.api_config.body),
-    content_type: data.api_config.content_type || 'application/json',
-  } : undefined,
+  api_config: typeof data.api_config === 'string' ? data.api_config : data.api_config ? apiConfigPayload(data.api_config) : undefined,
   text_content: data.text_content,
   data_content: data.data_content,
+  expected_data_content: data.expected_data_content,
   image_url: data.image_url,
   image_path: data.image_path,
   description: data.description,
@@ -97,6 +102,11 @@ export const getCardDetails = async (cardId: string | number): Promise<Card> => 
   return normalizeCard(card);
 };
 
+// getCardAPIEditor 读取拥有者的完整编辑配置，关闭弹窗时可取消请求。
+export const getCardAPIEditor = async (cardId: number, options?: RequestControlOptions): Promise<CardAPIEditor> => {
+  return runContractRequest(/* signal 绑定当前编辑弹窗的请求生命周期。 */ signal => contractClient.GET('/api/v1/cards/{card_id}/api-editor', { params: { path: { card_id: String(cardId) } }, signal }), options);
+};
+
 // 批量创建卡密组（上传表格）
 export const batchCreateCards = async (file: File, options?: RequestControlOptions): Promise<CardBatchResponse> => {
   // 批量创建接口返回总行数、成功数、失败数和逐行结果。
@@ -116,9 +126,9 @@ export const appendCardData = async (cardId: string | number, content: string, o
 };
 
 // testCardAPI 发送一次临时 API 配置测试请求，不保存卡密配置。
-export const testCardAPI = async (data: CardAPIConfigInput): Promise<CardAPITestResult> => {
+export const testCardAPI = async (data: CardAPIConfigInput, cardId?: number, options?: RequestControlOptions): Promise<CardAPITestResult> => {
 	return runContractRequest(/* signal 控制 API 测试请求的取消和超时。 */ signal => contractClient.POST('/api/v1/cards/test-api', {
-		body: { api_config: cardPayload({ name: '', type: 'api', api_config: data }).api_config } as never,
+		body: { card_id: cardId, api_config: apiConfigPayload(data) },
 		signal,
-	}));
+	}), options);
 };

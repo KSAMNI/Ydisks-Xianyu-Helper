@@ -648,6 +648,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/cards/{card_id}/api-editor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** getApiV1CardsBycard_idApiEditor */
+        get: operations["getApiV1CardsBycard_idApiEditor"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/cards/{card_id}/details": {
         parameters: {
             query?: never;
@@ -1027,6 +1044,24 @@ export interface paths {
         post?: never;
         /** deleteApiV1ItemsBycookie_idByitem_id */
         delete: operations["deleteApiV1ItemsBycookie_idByitem_id"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/items/{cookie_id}/{item_id}/ai-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取商品级 AI 客服配置 */
+        get: operations["getApiV1ItemsBycookie_idByitem_idAiSettings"];
+        /** 保存商品级 AI 客服配置 */
+        put: operations["putApiV1ItemsBycookie_idByitem_idAiSettings"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2328,7 +2363,7 @@ export interface components {
             /** @description 同一条规则的多个匹配表达式；缺省时使用 keyword */
             expressions?: string[];
             /**
-             * @description 匹配模式；历史规则按 contains 处理
+             * @description 匹配模式；历史规则按 contains 处理，contains 下每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词
              * @enum {string}
              */
             match_type?: "contains" | "regexp";
@@ -2355,7 +2390,7 @@ export interface components {
             /** @description 同一条规则的多个匹配表达式；任意一个命中即使用同一条回复 */
             expressions: string[];
             /**
-             * @description contains 为大小写不敏感普通包含，regexp 为大小写不敏感 Go/RE2 正则
+             * @description contains 为大小写不敏感普通包含（每个表达式还可用 |、中英文逗号、顿号或换行分隔多个候选词，任一命中即触发），regexp 为大小写不敏感 Go/RE2 正则（| 为正则分支，不做拆分）
              * @enum {string}
              */
             match_type: "contains" | "regexp";
@@ -2417,6 +2452,8 @@ export interface components {
             max_discount_amount: number;
             max_bargain_rounds: number;
             custom_prompts: string;
+            /** @enum {string} */
+            ai_mode: "bargain_only" | "full_service";
         };
         AIReplySettingsUpdateRequest: {
             ai_enabled: boolean;
@@ -2425,6 +2462,8 @@ export interface components {
             max_discount_amount: number;
             max_bargain_rounds: number;
             custom_prompts: string;
+            /** @enum {string} */
+            ai_mode?: "bargain_only" | "full_service";
         };
         AIReplySettingsMapResponse: {
             [key: string]: components["schemas"]["AIReplySettingsResponse"];
@@ -2608,6 +2647,8 @@ export interface components {
             api_config?: components["schemas"]["APICardConfigMutation"] | string;
             text_content?: string;
             data_content?: string;
+            /** @description 编辑 data 卡库存时打开弹窗所见的库存快照；提交后服务端仅在当前库存仍与之相同时覆盖，否则返回 409。 */
+            expected_data_content?: string;
             /** @description image 类型的固定 HTTP(S) 来源；更新省略保留，显式空串清空，切换来源必须清空旧来源。 */
             image_url?: string;
             /** @description 实际执行账号 reply-images 目录内的相对路径；与 image_url 恰好一个来源，省略保留、空串清空，无浏览器上传。 */
@@ -2706,7 +2747,22 @@ export interface components {
             ready: boolean;
             validation_error?: string;
         };
+        CardAPIEditorResponse: {
+            url: string;
+            /** @enum {string} */
+            method: "GET" | "POST";
+            timeout_seconds: number;
+            content_type: string;
+            /** @description 所属用户主动编辑用的完整请求头JSON，禁止缓存和日志记录 */
+            headers: string;
+            params: string;
+            body: string;
+            response_path: string;
+            retry_enabled: boolean;
+        };
         CardAPITestRequest: {
+            /** @description 已保存卡密标识；提供时合并其模板并校验当前用户所有权 */
+            card_id?: number;
             api_config: components["schemas"]["APICardConfigMutation"] | string;
         };
         CardAPITestResponse: {
@@ -2717,6 +2773,18 @@ export interface components {
             response_fields: string[];
             extracted_value?: string;
             response_preview?: string;
+        };
+        /** @enum {string} */
+        ItemAIOverride: "inherit" | "enabled" | "disabled";
+        ItemAISettingsUpdateRequest: {
+            ai_override: components["schemas"]["ItemAIOverride"];
+            item_context: string;
+        };
+        ItemAISettingsResponse: {
+            cookie_id: string;
+            item_id: string;
+            ai_override: components["schemas"]["ItemAIOverride"];
+            item_context: string;
         };
         ItemListResponse: {
             id: number;
@@ -2731,6 +2799,7 @@ export interface components {
             is_multi_spec: boolean;
             multi_quantity_delivery: boolean;
             is_multi_qty_ship: boolean;
+            ai_override: components["schemas"]["ItemAIOverride"];
         };
         ItemListArrayResponse: components["schemas"]["ItemListResponse"][];
         ItemDetailResponse: {
@@ -6717,6 +6786,33 @@ export interface operations {
                 };
             };
             /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -6855,6 +6951,15 @@ export interface operations {
                 };
             };
             /** @description 统一错误响应 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -6954,6 +7059,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CardAppendResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1CardsBycard_idApiEditor: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                card_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CardAPIEditorResponse"];
                 };
             };
             /** @description 统一错误响应 */
@@ -9142,6 +9314,146 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getApiV1ItemsBycookie_idByitem_idAiSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAISettingsResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 统一错误响应 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    putApiV1ItemsBycookie_idByitem_idAiSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                cookie_id: string;
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ItemAISettingsUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ItemAISettingsResponse"];
                 };
             };
             /** @description 统一错误响应 */
