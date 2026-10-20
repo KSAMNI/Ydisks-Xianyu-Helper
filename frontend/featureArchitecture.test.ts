@@ -66,6 +66,7 @@ const canonicalPageEntrypoints = [
   'app/features/chat/pages/Chat.tsx',
   'app/features/dashboard/pages/Dashboard.tsx',
   'app/features/delivery-templates/pages/DeliveryTemplates.tsx',
+  'app/features/image-library/pages/ImageLibrary.tsx',
   'app/features/items/pages/ItemList.tsx',
   'app/features/logs/pages/RuntimeLogs.tsx',
   'app/features/notifications/pages/Notifications.tsx',

@@ -109,7 +109,7 @@ describe('CardList 页面组合行为', /* 当前回调验证卡密筛选、批�
     fireEvent.change(screen.getByLabelText('图片来源'), { target: { value: 'local' } });
     fireEvent.change(screen.getByLabelText('本地图片相对路径'), { target: { value: ' goods/guide.png ' } });
     expect(screen.getByText(/XIANYU_UPLOAD_DIR\/reply-images/)).toBeTruthy();
-    expect(screen.getByText(/跨账号复用/)).toBeTruthy();
+    expect(screen.getByText(/手填路径只用于兼容历史配置/)).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '添加卡密' }));
     await waitFor(/* 当前断言等待本地图片卡密提交。 */ () => expect(cardListMocks.createCard).toHaveBeenCalledWith(expect.objectContaining({ type: 'image', image_url: '', image_path: 'goods/guide.png' })));

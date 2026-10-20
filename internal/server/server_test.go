@@ -375,7 +375,7 @@ func testServerDependencies(authentication *auth.Service, databaseHealth Databas
 		AutomationIssues: ports.AutomationIssues, AutomationRules: ports.AutomationRules, Cards: ports.Cards,
 		DeliveryTemplates:      ports.DeliveryTemplates,
 		PublishAutomationRules: ports.PublishAutomationRules, DefaultReplies: ports.DefaultReplies, Keywords: ports.Keywords,
-		Settings: ports.Settings, Admin: ports.Admin, RuntimeLogs: ports.RuntimeLogs,
+		Settings: ports.Settings, Admin: ports.Admin, ImageLibrary: ports.ImageLibrary, RuntimeLogs: ports.RuntimeLogs,
 	})}
 }
 

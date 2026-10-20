@@ -5,6 +5,7 @@ import type { DefaultReplyActionsState } from '../defaultReplyActions';
 import { defaultReplyImageSource } from '../defaultReplyState';
 import type { AccountDetail,Item } from '../models';
 import { accountLabel } from '../utils';
+import { ImageLibraryPicker } from '../../../../shared/components/ImageLibraryPicker';
 
 /** DefaultReplyEditorProps 仅接收默认回复业务状态和本地参考数据，不直接调用 HTTP。 */
 interface DefaultReplyEditorProps {
@@ -117,13 +118,13 @@ export default function DefaultReplyEditor({ actions,accounts,items }: DefaultRe
               回复图片 URL
               <input type="url" value={form.reply_image_url} onChange={/* event 提供远程图片地址，不发起浏览器预览请求。 */ event => actions.setDefaultForm(/* current 是当前图文草稿。 */ current => ({ ...current, reply_image_url: event.target.value }))} placeholder="https://example.com/image.jpg" className="w-full ios-input px-4 py-3 rounded-xl mt-2" />
             </label>}
-            {imageSource === 'local' && <div className="space-y-2">
-              <label className="block text-sm font-bold text-gray-700">
-                本地图片相对路径
-                <input type="text" value={form.reply_image_path || ''} onChange={/* event 提供程序所在机器的相对文件引用。 */ event => actions.setDefaultForm(/* current 是当前图文草稿。 */ current => ({ ...current, reply_image_path: event.target.value }))} placeholder="product-a/reply.jpg" className="w-full ios-input px-4 py-3 rounded-xl mt-2" aria-describedby="default-reply-image-help" />
-              </label>
-              <p id="default-reply-image-help" className="text-xs leading-5 text-gray-500 break-all">把图片放到运行程序机器的 <code>XIANYU_UPLOAD_DIR/reply-images/{form.cookie_id}/</code> 内；未设置上传目录时使用 <code>data/uploads</code>。这里只填相对路径，使用 / 分隔。Docker 需挂载该目录；不是选择浏览器电脑的文件。每次实际发送时读取一张 PNG、JPEG 或 GIF 图片，最大 10 MiB，读取失败不会只发文字。</p>
-            </div>}
+            {imageSource === 'local' && <ImageLibraryPicker
+              value={form.reply_image_path || ''}
+              onChange={/* path 是资源中心引用或手填的相对路径，写入当前图文草稿的本地图片字段。 */ path => actions.setDefaultForm(/* current 是当前图文草稿。 */ current => ({ ...current, reply_image_path: path }))}
+              label="本地图片相对路径"
+              helpId="default-reply-image-help"
+              help={<p>把图片放到运行程序机器的 <code>XIANYU_UPLOAD_DIR/reply-images/{form.cookie_id}/</code> 内；未设置上传目录时使用 <code>data/uploads</code>。这里只填相对路径，使用 / 分隔。Docker 需挂载该目录；不是选择浏览器电脑的文件。每次实际发送时读取一张 PNG、JPEG 或 GIF 图片，最大 10 MiB，读取失败不会只发文字。</p>}
+            />}
             <label className="flex items-center justify-between p-4 bg-gray-50 rounded-xl text-sm font-bold text-gray-800">
               <span>{isItem ? '单个会话只回复一次' : '只回复一次'}<span className="block text-xs text-gray-500 font-medium mt-1">{isItem ? '同一账号、商品、会话独立去重，不影响账号兜底或其他商品；修改内容、关闭再开启均不会重置已发送记录。' : '同一账号、同一会话只发送一次账号兜底；修改内容不会自动清空记录。'}</span></span>
               <input type="checkbox" checked={form.reply_once} onChange={/* event 是用户对当前商品或账号会话去重的独立选择。 */ event => actions.setDefaultForm(/* current 是当前作用域草稿，不修改其他商品或账号设置。 */ current => ({ ...current, reply_once: event.target.checked }))} className="w-4 h-4" />

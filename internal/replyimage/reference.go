@@ -33,3 +33,27 @@ func ValidateSource(imageURL, imagePath string) error {
 	}
 	return ValidatePath(imagePath)
 }
+
+// LibraryDirectoryName 是资源中心共享图片在回复图片根目录下保留的目录名。
+// 该目录由资源中心管理；共享引用写成 `<LibraryDirectoryName>/<file_name>`，账号私有目录不参与解析。
+const LibraryDirectoryName = "_library"
+
+// LibraryReference 返回资源中心图片 fileName 对应的共享引用文本。
+// 调用方负责保证 fileName 是资源中心生成的单级文件名，本函数只拼接固定前缀。
+func LibraryReference(fileName string) string {
+	return LibraryDirectoryName + "/" + fileName
+}
+
+// LibraryFileName 判断 reference 是否为资源中心共享图片引用，并返回其中的文件名。
+// 只接受 `_library/` 加单级文件名的形式，拒绝空文件名、子目录和目录穿越，避免共享引用绕过沙箱。
+func LibraryFileName(reference string) (string, bool) {
+	// directory 是引用的首级目录名；fileName 是共享图片文件名；found 表示引用是否含分隔符。
+	directory, fileName, found := strings.Cut(reference, "/")
+	if !found || directory != LibraryDirectoryName || fileName == "" || strings.Contains(fileName, "/") {
+		return "", false
+	}
+	if ValidatePath(fileName) != nil {
+		return "", false
+	}
+	return fileName, true
+}

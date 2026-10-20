@@ -56,6 +56,10 @@ func newLocalReplyImageLoader(rootPath string) chatapp.LocalImageLoader {
 			return nil, "", "", errors.New("本地回复图片根目录不可用")
 		}
 		defer root.Close()
+		// libraryFileName、isLibrary 判断引用是否指向资源中心共享图片；共享图片不依赖账号私有目录。
+		if libraryFileName, isLibrary := replyimage.LibraryFileName(reference); isLibrary {
+			return readLocalReplyImage(ctx, root, replyimage.LibraryReference(libraryFileName))
+		}
 		if !hasExactReplyAccountDirectory(ctx, root, accountID) {
 			// cancelErr 区分账号目录不存在和扫描过程中被取消，保持取消类别可判定。
 			if cancelErr := ctx.Err(); cancelErr != nil {

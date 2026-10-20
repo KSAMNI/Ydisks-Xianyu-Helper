@@ -23,6 +23,7 @@ import (
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
+	imagelibraryapp "xianyu-go/internal/application/imagelibrary"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
@@ -122,6 +123,8 @@ type Services struct {
 	apiCardTester cardsapp.APIRequestTester
 	// publishAutomationRules 是批量发布成功后幂等准备自动化规则的应用服务。
 	publishAutomationRules *automationapp.PublishRuleService
+	// imageLibrary 是资源中心图片的上传、改名、删除和内容读取应用服务。
+	imageLibrary *imagelibraryapp.Service
 	// defaultReplies 是默认回复配置与投递记录应用服务。
 	defaultReplies *defaultreplyapp.Service
 	// keywords 是关键词规则与指定商品回复应用服务。
@@ -342,6 +345,8 @@ type TransportPorts struct {
 	Keywords               *keywordsapp.Service
 	Settings               *settingsapp.Service
 	Admin                  *adminapp.Service
+	// ImageLibrary 是资源中心图片应用服务。
+	ImageLibrary *imagelibraryapp.Service
 	// RuntimeLogs 是管理员运行日志查询用例。
 	RuntimeLogs            *logsapp.Service
 }
@@ -364,7 +369,7 @@ func (services *Services) TransportPorts() TransportPorts {
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
 		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
 		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
-		Keywords: services.keywords, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
+		Keywords: services.keywords, ImageLibrary: services.imageLibrary, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
 	}
 }
 
@@ -533,6 +538,7 @@ func New(dependencies Dependencies) (*Services, error) {
 		automationIssues:       dependencies.TransportApplications.AutomationIssues,
 		defaultReplies:         dependencies.TransportApplications.DefaultReplies,
 		keywords:               dependencies.TransportApplications.Keywords,
+		imageLibrary:           dependencies.TransportApplications.ImageLibrary,
 		settings:               dependencies.TransportApplications.Settings,
 		admin:                  dependencies.TransportApplications.Admin,
 		runtimeLogs:            dependencies.TransportApplications.RuntimeLogs,

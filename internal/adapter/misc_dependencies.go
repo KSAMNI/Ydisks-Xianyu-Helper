@@ -63,3 +63,19 @@ func (d *MiscDependencies) NewAPICardTester(logger *slog.Logger) cardsapp.APIReq
 	}
 	return NewAPICardTester(d.store, logger)
 }
+
+// NewImageLibraryRepository 创建资源中心图片元数据适配器。
+func (d *MiscDependencies) NewImageLibraryRepository() *ImageLibraryRepository {
+	if d == nil {
+		return nil
+	}
+	return NewImageLibraryRepository(d.store)
+}
+
+// NewImageLibraryStorage 创建资源中心图片文件存储，目录固定在上传目录的回复图片根下。
+func (d *MiscDependencies) NewImageLibraryStorage() *ImageLibraryStorage {
+	if d == nil {
+		return nil
+	}
+	return NewImageLibraryStorage(defaultImageLibraryRoot())
+}

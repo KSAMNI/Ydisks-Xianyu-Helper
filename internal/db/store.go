@@ -42,6 +42,8 @@ type Store struct {
 	SecurityAudit *SecurityAuditLogs
 	Chats         *ChatStore
 	AccountTasks  *AccountTaskStore
+	// ImageAssets 保存资源中心图片的元数据仓储，磁盘文件由应用层存储端口管理。
+	ImageAssets   *ImageAssets
 	Admin         *AdminQueries
 	Analytics     *AnalyticsQueries
 
@@ -104,6 +106,7 @@ func NewStore(db *sql.DB, dialect Dialect) *Store {
 		SecurityAudit:     &SecurityAuditLogs{DB: db},
 		Chats:             &ChatStore{DB: db, Dialect: dialect},
 		AccountTasks:      &AccountTaskStore{DB: db, Dialect: dialect},
+		ImageAssets:       &ImageAssets{DB: db, Dialect: dialect},
 		Admin:             &AdminQueries{DB: db},
 		Analytics:         &AnalyticsQueries{DB: db},
 		credentialLocks:   make(map[string]*credentialLockEntry),

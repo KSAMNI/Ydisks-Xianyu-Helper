@@ -1,5 +1,6 @@
 import React from 'react';
 import { AppErrorBoundary } from './app/errors/AppErrorBoundary';
+import { ImageLibraryProvider } from './app/providers/ImageLibraryProvider';
 import { SessionProvider } from './app/providers/SessionProvider';
 import { AppRouter } from './app/router/AppRouter';
 
@@ -7,7 +8,9 @@ import { AppRouter } from './app/router/AppRouter';
 const App: React.FC = () => (
   <AppErrorBoundary>
     <SessionProvider>
-      <AppRouter />
+      <ImageLibraryProvider>
+        <AppRouter />
+      </ImageLibraryProvider>
     </SessionProvider>
   </AppErrorBoundary>
 );

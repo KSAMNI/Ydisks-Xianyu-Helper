@@ -56,6 +56,7 @@ func TestOpenAPISuccessContractCoverage(t *testing.T) {
 		{name: "local-resource-mutations", run: TestOpenAPILocalResourceMutationResponses},
 		{name: "remaining-versioned-success", run: TestOpenAPIRemainingVersionedSuccessResponses},
 		{name: "runtime-logs", run: TestOpenAPIRuntimeLogResponses},
+		{name: "image-library", run: TestOpenAPIImageLibraryResponses},
 	}
 	// scenario 是当前执行的领域真实响应场景。
 	for _, scenario := range scenarios {

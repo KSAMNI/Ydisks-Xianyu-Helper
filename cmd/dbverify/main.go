@@ -8,7 +8,7 @@
 //	go run ./cmd/dbverify "sqlite://data/verify.db"
 //
 // MySQL DSN 必须带 multiStatements=true（goose 多语句迁移需要）。
-// 全部 9 步通过即说明三库的 upsert/布尔/自增主键路径均正常。
+// 全部 10 步通过即说明三库的 upsert/布尔/自增主键路径均正常。
 package main
 
 import (
@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -189,6 +190,11 @@ func main() {
 	}
 	fmt.Printf("✅ 自动化规则 + 防重 OK (rule=%d run=%d)\n", ruleID, runID)
 
+	// 10) 资源中心图片元数据（跨方言取回自增标识、改名、引用计数与删除）
+	if imageErr := verifyImageAssets(ctx, store, ids); imageErr != nil {
+		fail("❌ 资源中心图片验证失败: %v\n", imageErr)
+	}
+
 	if // err 用于本次流程后续判断的err
 	err := cleanup(); err != nil {
 		fmt.Printf("❌ 清理验证数据失败: %s\n", logsafe.Error(err))
@@ -197,6 +203,41 @@ func main() {
 	cleanup = nil
 	fmt.Println("✅ 验证数据已清理")
 	fmt.Println("\n🎉 全部验证通过")
+}
+
+// verifyImageAssets 验证资源中心图片元数据的跨方言 CRUD，并返回首个失败原因。
+// 该步骤必须覆盖 PostgreSQL 的 RETURNING 取标识路径，避免再次退化为 pgx 不支持的 LastInsertId。
+func verifyImageAssets(ctx context.Context, store *db.Store, ids verifyIDs) error {
+	// imageName 是本次验证独占的图片展示名，避免与真实数据重名。
+	imageName := ids.username + "-img"
+	// imageFileName 是本次验证独占的不可变文件名。
+	imageFileName := ids.username + ".png"
+	// imageAssetID、createErr 保存新建图片元数据标识及错误。
+	imageAssetID, createErr := store.ImageAssets.Create(ctx, db.ImageAssetRow{Name: imageName, FileName: imageFileName, MIMEType: "image/png", SizeBytes: 3, Width: 1, Height: 1})
+	if createErr != nil {
+		return fmt.Errorf("创建图片元数据: %w", createErr)
+	}
+	// imageRow、readErr 保存回读结果，确认字段完整写入。
+	imageRow, readErr := store.ImageAssets.Get(ctx, imageAssetID)
+	if readErr != nil || imageRow.Name != imageName || imageRow.FileName != imageFileName {
+		return fmt.Errorf("回读图片元数据: row=%+v err=%v", imageRow, readErr)
+	}
+	if renameErr := store.ImageAssets.Rename(ctx, imageAssetID, imageName+"-renamed"); renameErr != nil { // renameErr 是改名结果。
+		return fmt.Errorf("改名图片元数据: %w", renameErr)
+	}
+	// counts、countsErr 保存按引用文本聚合的业务引用次数。
+	counts, countsErr := store.ImageAssets.ReferenceCounts(ctx)
+	if countsErr != nil {
+		return fmt.Errorf("统计图片引用次数: %w", countsErr)
+	}
+	if _, emptyReferenced := counts[""]; emptyReferenced { // emptyReferenced 表示空引用文本被错误统计。
+		return errors.New("空图片引用不应被统计")
+	}
+	if deleteErr := store.ImageAssets.Delete(ctx, imageAssetID); deleteErr != nil { // deleteErr 是删除结果。
+		return fmt.Errorf("删除图片元数据: %w", deleteErr)
+	}
+	fmt.Printf("✅ 资源中心图片元数据 CRUD OK (id=%d)\n", imageAssetID)
+	return nil
 }
 
 // verifyCookieAndSettings 验证 Cookie 状态写入、重复 upsert 和保留字设置项的跨方言行为。
@@ -317,6 +358,7 @@ func cleanupVerifyData(ctx context.Context, store *db.Store, ids verifyIDs) erro
 		{`DELETE FROM message_notifications WHERE cookie_id=? OR channel_id IN (SELECT id FROM notification_channels WHERE user_id=? AND name=?)`, []any{ids.accountID, userID, "测试渠道"}},
 		{`DELETE FROM notification_channels WHERE user_id=? AND name=?`, []any{userID, "测试渠道"}},
 		{`DELETE FROM cards WHERE user_id=? AND name=?`, []any{userID, "测试卡组"}},
+		{`DELETE FROM image_assets WHERE name LIKE ? OR file_name=?`, []any{ids.username + "-img%", ids.username + ".png"}},
 		{`DELETE FROM item_info WHERE cookie_id=? AND item_id=?`, []any{ids.accountID, ids.itemID}},
 		{`DELETE FROM orders WHERE order_id=? OR cookie_id=?`, []any{ids.orderID, ids.accountID}},
 		{`DELETE FROM cookie_status WHERE cookie_id=?`, []any{ids.accountID}},

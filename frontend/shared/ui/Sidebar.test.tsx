@@ -4,7 +4,7 @@ import { describe, expect, test, vi } from 'vitest';
 import Sidebar from './Sidebar';
 
 describe('Sidebar', /* 当前测试组验证全局聊天新消息状态在侧边栏中的可见标记。 */ () => {
-  test('发货模板入口位于自动化规则上方', /* 当前回调验证两个相关自动化入口保持连续且符合操作顺序。 */ () => {
+  test('资源中心入口位于发货模板之后且两个入口都在自动化规则上方', /* 当前回调验证相关自动化入口保持连续且符合操作顺序。 */ () => {
     // navigationHandler 是侧边栏导航测试使用的无副作用回调。
     const navigationHandler = vi.fn();
     // logoutHandler 是侧边栏注销测试使用的无副作用回调。
@@ -17,7 +17,8 @@ describe('Sidebar', /* 当前测试组验证全局聊天新消息状态在侧边
 
     // navigationLabels 保存侧边栏按钮的可见顺序，包含业务入口和底部操作入口。
     const navigationLabels = screen.getAllByRole('button').map(/* button 是当前侧边栏中的可见按钮。 */ button => button.textContent?.trim() || '');
-    expect(navigationLabels.indexOf('发货模板')).toBe(navigationLabels.indexOf('自动化规则') - 1);
+    expect(navigationLabels.indexOf('资源中心')).toBe(navigationLabels.indexOf('发货模板') + 1);
+    expect(navigationLabels.indexOf('发货模板')).toBe(navigationLabels.indexOf('自动化规则') - 2);
   });
 
   test('未查看聊天消息时仅在在线聊天入口显示红点', /* 当前回调验证红点出现与消失不依赖页面标题状态。 */ () => {

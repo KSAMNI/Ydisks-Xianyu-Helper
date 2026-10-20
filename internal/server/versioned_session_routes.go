@@ -22,6 +22,7 @@ func (s *Server) mountHealthAndVersionedRoutes(r chi.Router) {
 	s.mountVersionedPasswordLoginRoutes(r)
 	s.mountVersionedAutomationRoutes(r)
 	s.mountVersionedRuntimeLogRoutes(r)
+	s.mountVersionedImageLibrary(r)
 }
 
 // mountVersionedSession 挂载会话 API 的 `/api/v1` 兼容入口，复用现有 handler。

@@ -3427,6 +3427,224 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/image-library":
+    get:
+      operationId: getApiV1ImageLibrary
+      summary: getApiV1ImageLibrary
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageLibraryListResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      operationId: postApiV1ImageLibrary
+      summary: postApiV1ImageLibrary
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                name: {type: string, maxLength: 100, description: 可选展示名；省略时使用上传文件名。}
+                file: {type: string, format: binary, description: PNG、JPEG 或 GIF 图片，最大 10 MiB。}
+      responses:
+        '201':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageLibraryAssetResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/image-library/{asset_id}":
+    patch:
+      operationId: patchApiV1ImageLibraryByasset_id
+      summary: patchApiV1ImageLibraryByasset_id
+      parameters:
+          - name: asset_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageLibraryRenameRequest'
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageLibraryAssetResponse'
+        '400':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      operationId: deleteApiV1ImageLibraryByasset_id
+      summary: deleteApiV1ImageLibraryByasset_id
+      parameters:
+          - name: asset_id
+            in: path
+            required: true
+            schema:
+              type: string
+          - name: force
+            in: query
+            required: false
+            description: 已确认删除仍被业务配置引用的图片。
+            schema:
+              type: string
+              enum: ['1', 'true']
+      security: [{cookieAuth: []}]
+      responses:
+        '200':
+          description: 成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationResponse'
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  "/api/v1/image-library/{asset_id}/content":
+    get:
+      operationId: getApiV1ImageLibraryByasset_idContent
+      summary: getApiV1ImageLibraryByasset_idContent
+      parameters:
+          - name: asset_id
+            in: path
+            required: true
+            schema:
+              type: string
+      security: [{cookieAuth: []}]
+      x-contract-success-exception:
+        kind: binary
+      responses:
+        '200':
+          description: 图片内容
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+            image/gif:
+              schema:
+                type: string
+                format: binary
+        '401':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: 统一错误响应
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   "/api/v1/items":
     get:
       operationId: getApiV1Items
@@ -9221,6 +9439,35 @@ components:
           minimum: 0
         capacity:
           type: integer
+    ImageLibraryAssetResponse:
+      type: object
+      required: [id, name, reference, mime_type, size_bytes, width, height, usage_count, created_at, updated_at]
+      properties:
+        id: {type: integer}
+        name: {type: string}
+        reference: {type: string, description: 业务配置应保存的引用文本，固定为 _library/<文件名>。}
+        mime_type: {type: string}
+        size_bytes: {type: integer}
+        width: {type: integer}
+        height: {type: integer}
+        usage_count: {type: integer, description: 当前卡片、发货模板和默认回复引用该图片的次数。}
+        created_at: {type: string}
+        updated_at: {type: string}
+      additionalProperties: true
+    ImageLibraryListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ImageLibraryAssetResponse'}
+      additionalProperties: true
+    ImageLibraryRenameRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, maxLength: 100, description: 新的图片展示名；只影响展示，不改变已有引用。}
+      additionalProperties: true
     ErrorResponse:
       type: object
       required: [code, message]

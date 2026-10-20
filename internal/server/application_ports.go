@@ -13,6 +13,7 @@ import (
 	chatapp "xianyu-go/internal/application/chat"
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
+	imagelibraryapp "xianyu-go/internal/application/imagelibrary"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
 	logsapp "xianyu-go/internal/application/logs"
@@ -355,6 +356,20 @@ type KeywordsPort interface {
 	DeleteItemReply(context.Context, int64, string, string) error
 }
 
+// ImageLibraryPort 定义资源中心图片的上传、改名、删除和内容读取用例。
+type ImageLibraryPort interface {
+	// List 返回全部图片及其业务引用次数。
+	List(context.Context) ([]imagelibraryapp.Asset, error)
+	// Upload 保存一张已解码的图片并返回新图片元数据。
+	Upload(context.Context, imagelibraryapp.UploadInput) (imagelibraryapp.Asset, error)
+	// Rename 只修改图片展示名，已有业务引用保持不变。
+	Rename(context.Context, int64, string) (imagelibraryapp.Asset, error)
+	// Delete 删除图片；仍被业务配置引用且 force 为假时返回 ErrImageInUse。
+	Delete(context.Context, int64, bool) error
+	// Content 读取图片二进制内容。
+	Content(context.Context, int64) (imagelibraryapp.Content, error)
+}
+
 // SettingsPort 定义系统、用户和账号 AI 设置能力。
 type SettingsPort interface {
 	IsSensitiveSettingKey(string) bool
@@ -466,6 +481,8 @@ type ApplicationPorts struct {
 	settings SettingsPort
 	// admin 是管理员用户与统计用例。
 	admin AdminPort
+	// imageLibrary 是资源中心图片用例。
+	imageLibrary ImageLibraryPort
 	// runtimeLogs 是管理员运行日志查询用例。
 	runtimeLogs RuntimeLogsPort
 }
@@ -506,6 +523,8 @@ type ApplicationPortsInput struct {
 	AutomationRules             AutomationRulesPort
 	DeliveryTemplates           DeliveryTemplatesPort
 	Cards                       CardsPort
+	// ImageLibrary 是资源中心图片用例。
+	ImageLibrary                 ImageLibraryPort
 	// RuntimeLogs 是管理员运行日志查询用例。
 	RuntimeLogs                 RuntimeLogsPort
 	APIRequestTester            APIRequestTesterPort
@@ -532,7 +551,7 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
 		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
 		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
-		keywords: input.Keywords, settings: input.Settings, admin: input.Admin, runtimeLogs: input.RuntimeLogs,
+		keywords: input.Keywords, imageLibrary: input.ImageLibrary, settings: input.Settings, admin: input.Admin, runtimeLogs: input.RuntimeLogs,
 	}
 }
 
@@ -561,7 +580,7 @@ func (ports *ApplicationPorts) validate() error {
 		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues},
 		{"automation_rules", ports.automationRules}, {"cards", ports.cards}, {"publish_automation_rules", ports.publishAutomationRules},
 		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
-		{"runtime_logs", ports.runtimeLogs},
+		{"image_library", ports.imageLibrary}, {"runtime_logs", ports.runtimeLogs},
 	}
 	// requiredPort 是当前必须在 Server 构造前绑定的应用 Port 名称。
 	for _, requiredPort := range required {
@@ -618,6 +637,11 @@ func (server *Server) itemSyncApplication() ItemSyncPort {
 // cardsApplication 返回卡券库存用例。
 func (server *Server) cardsApplication() CardsPort {
 	return server.applicationServiceSet().cards
+}
+
+// imageLibraryApplication 返回资源中心图片用例。
+func (server *Server) imageLibraryApplication() ImageLibraryPort {
+	return server.applicationServiceSet().imageLibrary
 }
 
 // accountTaskApplication 返回账号自动化任务用例。
