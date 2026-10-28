@@ -13,21 +13,26 @@ import (
 	"xianyu-go/internal/xianyu/mtop"
 )
 
-// fakeAccountTaskClient 用于本次流程后续判断的fake账号任务Client
+// fakeAccountTaskClient 是账号任务测试使用的平台客户端替身，只记录调用次数并返回预置响应。
 type fakeAccountTaskClient struct {
-	pendingCalls int
-	rateCalls    int
-	polishCalls  int
-	pending      []mtop.PendingRateOrder
-	pendingErr   error
-	rateErr      error
-	items        []mtop.ItemListItem
+	// rateCalls 记录评价接口被调用的次数。
+	rateCalls int
+	// polishCalls 记录擦亮接口被调用的次数。
+	polishCalls int
+	// rateErr 保存评价接口要返回的平台错误。
+	rateErr error
+	// items 是商品列表查询返回的在售商品。
+	items []mtop.ItemListItem
 	// fetchItemsCalls 记录商品列表查询次数，用于确认空列表成功不会触发下一轮调度重试。
 	fetchItemsCalls int
-	fetchItemsErr   error
-	fetchPageSize   int
-	fetchMaxPages   int
-	polishErr       error
+	// fetchItemsErr 保存商品列表查询要返回的平台错误。
+	fetchItemsErr error
+	// fetchPageSize 记录商品列表查询使用的每页数量。
+	fetchPageSize int
+	// fetchMaxPages 记录商品列表查询使用的最大页数。
+	fetchMaxPages int
+	// polishErr 保存擦亮接口要返回的平台错误。
+	polishErr error
 }
 
 // cancelingAccountTaskClient 在评价动作已经返回成功前取消调用方上下文，用于验证补偿收口不会依赖已取消请求。
@@ -45,16 +50,7 @@ func (c *cancelingAccountTaskClient) RateBuyer(_ context.Context, cookiesStr, tr
 	return &mtop.AccountTaskResult{Success: true, Message: "ok"}, nil
 }
 
-// FetchPendingRateOrders 封装FetchPendingRate订单列表业务协调。
-func (f *fakeAccountTaskClient) FetchPendingRateOrders(context.Context, string, int, int) (*mtop.PendingRateResult, error) {
-	f.pendingCalls++
-	if f.pendingErr != nil {
-		return nil, f.pendingErr
-	}
-	return &mtop.PendingRateResult{Orders: f.pending}, nil
-}
-
-// RateBuyer 封装Rate买家业务协调。
+// RateBuyer 记录评价接口调用次数并返回预置的评价结果或错误。
 func (f *fakeAccountTaskClient) RateBuyer(context.Context, string, string, string) (*mtop.AccountTaskResult, error) {
 	f.rateCalls++
 	if f.rateErr != nil {
@@ -131,13 +127,13 @@ func TestScanAccountTasksTreatsEmptyItemListAsSuccess(t *testing.T) {
 	}
 }
 
-// TestAccountTaskRateIsOrderIdempotent 封装Test账号任务RateIs订单Idempotent业务协调。
+// TestAccountTaskRateIsOrderIdempotent 验证同一订单只评价一次：首轮成功后写入评价事实，第二轮不再发现候选也不再请求平台。
 func TestAccountTaskRateIsOrderIdempotent(t *testing.T) {
 	// store、cleanup 用于本次流程后续判断的store、cleanup
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
 	// client 用于本次流程后续判断的client
-	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "order-1"}, {TradeID: "order-2"}}}
+	client := &fakeAccountTaskClient{}
 	// center 用于本次流程后续判断的center
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
 	// ctx 用于本次流程后续判断的ctx
@@ -153,10 +149,10 @@ func TestAccountTaskRateIsOrderIdempotent(t *testing.T) {
 	if err != nil || first.Success != 2 || client.rateCalls != 2 {
 		t.Fatalf("first=%+v calls=%d err=%v", first, client.rateCalls, err)
 	}
-	// second、err 用于本次流程后续判断的second、err
-	second, err := center.RunAccountTask(ctx, "cid", TaskAutoRate)
-	if err != nil || second.Skipped != 2 || client.rateCalls != 2 {
-		t.Fatalf("second=%+v calls=%d err=%v", second, client.rateCalls, err)
+	// second、secondErr 保存第二轮评价结果及错误；首轮已写入评价事实的订单不再进入候选，因此发现与跳过都为 0。
+	second, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+	if secondErr != nil || second.Found != 0 || second.Skipped != 0 || client.rateCalls != 2 {
+		t.Fatalf("second=%+v calls=%d err=%v", second, client.rateCalls, secondErr)
 	}
 }
 
@@ -170,8 +166,8 @@ func TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests(t *testing.T
 	// expiredErr 保存平台明确拒绝超过 30 天订单的业务错误。
 	expiredErr := &mtop.MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: mtop.MTopErrorBusiness,
 		Ret: []string{"FAIL_BIZ_BAD_REQUEST::超出30天的订单不允许评价||rate failed"}}
-	// client 模拟待评价列表持续返回同一超期订单，并统计评价请求次数。
-	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "expired-order"}}, rateErr: expiredErr}
+	// client 让评价接口持续返回同一超期错误，并统计评价请求次数。
+	client := &fakeAccountTaskClient{rateErr: expiredErr}
 	// center 是注入平台错误替身后的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
 	// settingsErr 保存自动评价设置写入错误。
@@ -274,7 +270,7 @@ func TestScanAccountTasksRunsEnabledRateConfiguration(t *testing.T) {
 	// ctx 是本测试扫描和任务执行共用的上下文。
 	ctx := context.Background()
 	// client 保存扫描器使用的本地账号任务平台替身。
-	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "scan-order"}}}
+	client := &fakeAccountTaskClient{}
 	// logs 捕获扫描器的脱敏完成日志，验证下一轮成功状态可被观察。
 	var logs bytes.Buffer
 	// center 保存注入账号任务平台替身的自动化中心。
@@ -288,8 +284,8 @@ func TestScanAccountTasksRunsEnabledRateConfiguration(t *testing.T) {
 	}
 	seedLocalCompletedOrders(t, store, ctx, "scan-order")
 	center.scanAccountTasks(ctx)
-	if client.pendingCalls != 0 || client.rateCalls != 1 {
-		t.Fatalf("扫描器不应扫描平台待评价列表 pending=%d rate=%d", client.pendingCalls, client.rateCalls)
+	if client.rateCalls != 1 {
+		t.Fatalf("扫描器应只按本地候选订单评价一次 rate=%d", client.rateCalls)
 	}
 	if !strings.Contains(logs.String(), "自动评价扫描完成") || !strings.Contains(logs.String(), "success=1") {
 		t.Fatalf("缺少自动评价完成日志: %s", logs.String())
@@ -314,7 +310,7 @@ func TestAccountTaskRateFinishFailureQuarantinesExternalSuccess(t *testing.T) {
 		t.Fatal(triggerErr)
 	}
 	// client 记录远端评价调用次数，验证本地状态异常不会触发同一轮的重复外部动作。
-	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "order-finish-failure"}}}
+	client := &fakeAccountTaskClient{}
 	// center 是待验证账号任务结果隔离逻辑的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
 	// settingsErr 表示写入自动评价设置时的数据库错误。
@@ -361,7 +357,7 @@ func TestAccountTaskRateFinishAndQuarantineFailureJoinsErrors(t *testing.T) {
 		t.Fatal(triggerErr)
 	}
 	// client 记录已经成功执行的远端评价动作。
-	client := &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "order-double-failure"}}}
+	client := &fakeAccountTaskClient{}
 	// center 是待验证双重落库错误传播逻辑的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
 	// settingsErr 表示写入自动评价设置时的数据库错误。
@@ -399,14 +395,14 @@ func TestAccountTaskRateCancellationQuarantinesAndBlocksRetry(t *testing.T) {
 	defer cancel()
 	// client 在评价动作返回成功前取消 requestCtx，并保留调用次数用于重试断言。
 	client := &cancelingAccountTaskClient{
-		fakeAccountTaskClient: &fakeAccountTaskClient{pending: []mtop.PendingRateOrder{{TradeID: "order-cancelled"}}},
+		fakeAccountTaskClient: &fakeAccountTaskClient{},
 		cancel:                cancel,
 	}
 	// center 是待验证取消后补偿收口逻辑的自动化中心。
 	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
-	// runErr 保存外部评价已完成但调用方取消后的人工核对错误。
+	// runErr 保存外部评价已完成但调用方取消后的人工核对错误；取消后最先失败的本地写入是卖家评价事实。
 	_, runErr := center.RunAccountTask(requestCtx, "cid", TaskAutoRate)
-	if !errors.Is(runErr, errAutomationNeedsReview) || !strings.Contains(runErr.Error(), "保存账号任务运行结果失败") {
+	if !errors.Is(runErr, errAutomationNeedsReview) || !strings.Contains(runErr.Error(), "账号任务本地持久化失败") {
 		t.Fatalf("取消后的外部成功应隔离运行，err=%v", runErr)
 	}
 	if client.rateCalls != 1 {
@@ -520,12 +516,13 @@ func TestAccountTaskSessionExpiredRecoversOnceAndBlocksFurtherAPIRequests(t *tes
 		t.Fatal(err)
 	}
 	client.rateErr = nil
-	if // err 用于本次流程后续判断的err
-	_, err := center.RunAccountTask(ctx, "cid", TaskAutoRate); err != nil {
-		t.Fatalf("凭证变化后应自动解除阻断: %v", err)
+	// resumedSummary、resumedErr 保存凭证变化后人工入口解除阻断并越过冷却的执行结果。
+	resumedSummary, resumedErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
+	if resumedErr != nil {
+		t.Fatalf("凭证变化后应自动解除阻断: %v", resumedErr)
 	}
-	if client.rateCalls != 1 {
-		t.Fatalf("凭证变化后失败订单仍在冷却期，不应再次评价 rate=%d", client.rateCalls)
+	if client.rateCalls != 2 || resumedSummary.Success != 1 {
+		t.Fatalf("凭证变化后人工入口应越过冷却重新评价该订单: summary=%+v rate=%d", resumedSummary, client.rateCalls)
 	}
 }
 
@@ -540,7 +537,6 @@ func TestAccountTaskStopsRemainingOrdersOnSessionExpired(t *testing.T) {
 	sessionErr := &mtop.SessionExpiredError{API: "评价接口", Ret: []string{"FAIL_SYS_SESSION_EXPIRED::Session过期"}}
 	// client 用于本次流程后续判断的client
 	client := &fakeAccountTaskClient{
-		pending: []mtop.PendingRateOrder{{TradeID: "order-1"}, {TradeID: "order-2"}},
 		rateErr: sessionErr,
 	}
 	// recoverer 用于本次流程后续判断的recoverer
@@ -575,9 +571,8 @@ func TestAccountTaskStopsRemainingOrdersOnMTopTokenExpired(t *testing.T) {
 	ctx := context.Background()
 	// tokenErr 模拟业务请求经过自身 Token 重试后仍无法恢复的错误。
 	tokenErr := &mtop.MTopResponseError{API: "评价接口", Kind: mtop.MTopErrorTokenExpired, HTTPStatus: 200}
-	// client 预置两个订单，确认第一个 Token 失效后不会继续消费第二个订单。
+	// client 记录评价请求次数；本地预置两个候选订单，确认第一个 Token 失效后不会继续消费第二个订单。
 	client := &fakeAccountTaskClient{
-		pending: []mtop.PendingRateOrder{{TradeID: "order-1"}, {TradeID: "order-2"}},
 		rateErr: tokenErr,
 	}
 	// recoverer 记录 Token 失效后触发的统一凭证恢复。

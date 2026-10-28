@@ -135,6 +135,8 @@ func (s *AccountTaskStore) Enabled(ctx context.Context) ([]AccountTaskSettings, 
 
 // DueAutoRateOrderIDs 返回由买家确认收货 WebSocket 标记、尚可由本地自动评价任务消费的订单号。
 // 它只读取本地 orders 表，绝不为了发现待评价订单向平台发起列表请求。
+// 已写入 seller_rated_at 的订单表示卖家侧评价事实已完成（含平台回答已评价），必须排除；
+// 否则按完成时间排序的候选窗口会被历史已评价订单长期占满，新完成订单无法进入评价。
 func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
@@ -142,6 +144,7 @@ func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID str
 	// rows、err 分别保存按确认收货时间排序的本地候选订单和查询错误。
 	rows, err := s.DB.QueryContext(ctx, `SELECT order_id FROM orders
 		WHERE cookie_id=? AND deleted_at IS NULL AND order_status='completed' AND completed_at<>''
+		AND COALESCE(seller_rated_at,'')=''
 		AND NOT EXISTS (SELECT 1 FROM order_automation_stops stops WHERE stops.cookie_id=orders.cookie_id AND stops.order_id=orders.order_id)
 		ORDER BY completed_at,order_id LIMIT ?`, cookieID, limit)
 	if err != nil {
@@ -160,6 +163,18 @@ func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID str
 		orderIDs = append(orderIDs, orderID)
 	}
 	return orderIDs, rows.Err()
+}
+
+// MarkOrderSellerRated 为 cookieID 账号的 orderID 订单记录卖家侧评价事实，返回数据库错误。
+// 只在外部评价动作成功（含平台明确回答已评价）后调用；已存在值不覆盖，保证重放不会改写首次评价时间。
+// 返回 nil 但未更新行属于正常情况：该订单已被评价过，或订单行已被并发逻辑删除，调用方不得据此重放外部动作。
+func (s *AccountTaskStore) MarkOrderSellerRated(ctx context.Context, cookieID, orderID string) error {
+	// now 保存写入的 RFC3339 UTC 评价时间，跨方言统一为可解释文本而不是会话相关的本地时间。
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// err 保存事实写入的数据库错误；cookie_id 参与条件，避免跨账号写入同一订单标识。
+	_, err := s.DB.ExecContext(ctx, `UPDATE orders SET seller_rated_at=?,updated_at=CURRENT_TIMESTAMP
+		WHERE order_id=? AND cookie_id=? AND COALESCE(seller_rated_at,'')=''`, now, orderID, cookieID)
+	return err
 }
 
 // ClaimRun creates a run or atomically reclaims a due failed run.
@@ -229,6 +244,16 @@ func (s *AccountTaskStore) FinishRun(ctx context.Context, runKey, status string,
 	_, err := s.DB.ExecContext(ctx, `UPDATE account_task_runs SET status=?,success_count=?,failed_count=?,error_message=?,next_retry_at=CASE WHEN ?='failed' AND attempt_count>=? THEN 0 ELSE ? END,finished_at=? WHERE run_key=?`,
 		status, success, failed, message, status, accountTaskMaxAttempts, nextRetryAt, time.Now().UTC().Unix(), runKey)
 	return err
+}
+
+// RunNextRetryAt 返回运行记录持久化的下一次自动重试时间，用于判断自动重试是否已经耗尽。
+// FinishRun 在累计执行次数达到上限时会把该字段置 0，因此 0 表示运行不会再被自动抢占。
+func (s *AccountTaskStore) RunNextRetryAt(ctx context.Context, runKey string) (int64, error) {
+	// nextRetryAt 保存下一次自动执行时间；0 表示该运行没有后续自动重试。
+	var nextRetryAt int64
+	// err 保存读取运行重试时间的数据库错误；记录不存在必须返回错误，不能伪装成“已耗尽”。
+	err := s.DB.QueryRowContext(ctx, `SELECT next_retry_at FROM account_task_runs WHERE run_key=?`, runKey).Scan(&nextRetryAt)
+	return nextRetryAt, err
 }
 
 // MarkRateScan 封装MarkRateScan业务协调。

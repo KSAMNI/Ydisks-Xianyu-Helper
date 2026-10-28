@@ -17,71 +17,15 @@ import (
 // RateCreateAPI 用于本次流程后续判断的RateCreateAPI
 const (
 	RateCreateAPI       = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.rate.create/4.0/"
-	PendingRateListAPI  = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.merchant.rate.list/1.0/"
 	PolishItemAPI       = "https://h5api.m.goofish.com/h5/mtop.taobao.idle.item.polish/2.0/"
 	PolishItemBackupAPI = "https://h5api.m.goofish.com/h5/mtop.idle.item.polish/1.0/"
 )
-
-// PendingRateOrder 用于本次流程后续判断的PendingRate订单
-type PendingRateOrder struct {
-	TradeID string `json:"trade_id"`
-	ItemID  string `json:"item_id"`
-}
-
-// PendingRateResult 用于本次流程后续判断的PendingRate结果
-type PendingRateResult struct {
-	Orders         []PendingRateOrder
-	UpdatedCookies string
-}
 
 // AccountTaskResult 用于本次流程后续判断的账号任务结果
 type AccountTaskResult struct {
 	Success        bool
 	Message        string
 	UpdatedCookies string
-}
-
-// FetchPendingRateOrders 封装FetchPendingRate订单列表业务协调。
-func (c *ClientImpl) FetchPendingRateOrders(ctx context.Context, cookiesStr string, page, pageSize int) (*PendingRateResult, error) {
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 || pageSize > 100 {
-		pageSize = 50
-	}
-	// data 用于本次流程后续判断的数据
-	data := map[string]any{"pageNumber": page, "rowsPerPage": pageSize, "queryType": "ORDER",
-		"rateSearchParam": map[string]any{"sellerRateStatus": "5"}}
-	// decoded、updated、err 用于本次流程后续判断的decoded、updated、err
-	decoded, updated, err := c.accountTaskRequest(ctx, cookiesStr, firstNonEmptyURL(c.RateListURL, PendingRateListAPI),
-		"mtop.taobao.idle.merchant.rate.list", "1.0", data, "https://seller.goofish.com/")
-	if err != nil {
-		return nil, err
-	}
-	// module 用于本次流程后续判断的module
-	module, _ := decoded.Data["module"].(map[string]any)
-	// items 用于本次流程后续判断的商品列表
-	items, _ := module["items"].([]any)
-	// orders 用于本次流程后续判断的订单列表
-	orders := make([]PendingRateOrder, 0, len(items))
-	// seen 用于本次流程后续判断的seen
-	seen := make(map[string]struct{}, len(items))
-	// item 表示当前遍历过程中的商品
-	for _, item := range items {
-		// tradeID 用于本次流程后续判断的tradeID
-		tradeID := findStringField(item, "tradeId", "trade_id", "orderId", "orderNo", "order_no")
-		if tradeID == "" {
-			continue
-		}
-		if // ok 用于本次流程后续判断的ok
-		_, ok := seen[tradeID]; ok {
-			continue
-		}
-		seen[tradeID] = struct{}{}
-		orders = append(orders, PendingRateOrder{TradeID: tradeID,
-			ItemID: findStringField(item, "itemId", "item_id")})
-	}
-	return &PendingRateResult{Orders: orders, UpdatedCookies: updated}, nil
 }
 
 // RateBuyer 封装Rate买家业务协调。
@@ -292,10 +236,6 @@ func (c *ClientImpl) accountTaskRequestOnce(ctx context.Context, cookiesStr, end
 	query.Set("v", version)
 	// responseType 用于本次流程后续判断的响应类型
 	responseType := "originaljson"
-	if api == "mtop.taobao.idle.merchant.rate.list" {
-		responseType = "json"
-		query.Set("valueType", "string")
-	}
 	query.Set("type", responseType)
 	query.Set("accountSite", "xianyu")
 	query.Set("dataType", "json")
@@ -363,49 +303,4 @@ func firstNonEmptyURL(configured, fallback string) string {
 		return configured
 	}
 	return fallback
-}
-
-// findStringField 封装findString字段业务协调。
-func findStringField(value any, keys ...string) string {
-	// wanted 用于本次流程后续判断的wanted
-	wanted := make(map[string]struct{}, len(keys))
-	// key 表示当前遍历过程中的key
-	for _, key := range keys {
-		wanted[key] = struct{}{}
-	}
-	// walk 用于本次流程后续判断的walk
-	var walk func(any) string
-	walk = func(v any) string {
-		switch // x 用于本次流程后续判断的x
-		x := v.(type) {
-		case map[string]any:
-			// key、child 表示当前遍历过程中的key、child
-			for key, child := range x {
-				if // ok 用于本次流程后续判断的ok
-				_, ok := wanted[key]; ok {
-					if // text 用于本次流程后续判断的文本
-					text := mtopString(child); text != "" {
-						return text
-					}
-				}
-			}
-			// child 表示当前遍历过程中的child
-			for _, child := range x {
-				if // text 用于本次流程后续判断的文本
-				text := walk(child); text != "" {
-					return text
-				}
-			}
-		case []any:
-			// child 表示当前遍历过程中的child
-			for _, child := range x {
-				if // text 用于本次流程后续判断的文本
-				text := walk(child); text != "" {
-					return text
-				}
-			}
-		}
-		return ""
-	}
-	return walk(value)
 }

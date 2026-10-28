@@ -219,6 +219,9 @@ func NewWithDependencies(store *db.Store, senders SenderProvider, logger *slog.L
 			return center.dependencies.recoverer
 		},
 		logger: center.logger,
+		notifier: func() Notifier {
+			return center.dependencies.notifier
+		},
 	}
 	center.runs = automationRunCoordinator{
 		store:                    store,

@@ -135,7 +135,7 @@ func TestAccountTaskRunGapBranches(t *testing.T) {
 		// runner 没有仓储。
 		runner := &accountTaskCoordinator{client: func() AccountTaskClient { return &accountTaskFlowClient{} }}
 		// rateErr 是自动评价流程在本场景下返回的错误，用于断言失败是否落库并停止批次。
-		if _, rateErr := runner.runAutoRate(ctx, settings); rateErr == nil {
+		if _, rateErr := runner.runAutoRate(ctx, settings, false); rateErr == nil {
 			t.Fatal("应报存储未初始化")
 		}
 	})
@@ -144,7 +144,7 @@ func TestAccountTaskRunGapBranches(t *testing.T) {
 		flow := good()
 		flow.dueOrderIDs = nil
 		// rateErr 是自动评价流程在本场景下返回的错误，用于断言失败是否落库并停止批次；summary 是账号任务流程返回的统计摘要（发现、成功、失败数量）。
-		if summary, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings); rateErr != nil || summary.Found != 0 {
+		if summary, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings, false); rateErr != nil || summary.Found != 0 {
 			t.Fatalf("summary=%+v err=%v", summary, rateErr)
 		}
 	})
@@ -153,7 +153,7 @@ func TestAccountTaskRunGapBranches(t *testing.T) {
 		flow := good()
 		flow.runtimeDataErr = errors.New("凭证不可读")
 		// rateErr 是自动评价流程在本场景下返回的错误，用于断言失败是否落库并停止批次。
-		if _, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings); rateErr == nil {
+		if _, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings, false); rateErr == nil {
 			t.Fatal("凭证读取失败应报错")
 		}
 	})
@@ -162,7 +162,7 @@ func TestAccountTaskRunGapBranches(t *testing.T) {
 		flow := good()
 		flow.markRateErr = errors.New("写入失败")
 		// rateErr 是自动评价流程在本场景下返回的错误，用于断言失败是否落库并停止批次。
-		if _, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings); rateErr == nil {
+		if _, rateErr := newAccountTaskFlowCoordinator(flow, &accountTaskFlowClient{}).runAutoRate(ctx, settings, false); rateErr == nil {
 			t.Fatal("扫描时间保存失败应报错")
 		}
 	})
@@ -173,7 +173,7 @@ func TestAccountTaskRunGapBranches(t *testing.T) {
 		// client 的评价调用返回普通错误。
 		client := &accountTaskFlowClient{rateErr: errors.New("平台拒绝")}
 		// rateErr 是自动评价流程在本场景下返回的错误，用于断言失败是否落库并停止批次。
-		if _, rateErr := newAccountTaskFlowCoordinator(flow, client).runAutoRate(ctx, settings); rateErr == nil {
+		if _, rateErr := newAccountTaskFlowCoordinator(flow, client).runAutoRate(ctx, settings, false); rateErr == nil {
 			t.Fatal("终态写入失败应报错")
 		}
 	})

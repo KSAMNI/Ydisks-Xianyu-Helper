@@ -38,6 +38,8 @@ const (
 	EventAutomationBuyerReviewed = "automation_buyer_reviewed"
 	// EventAutomationReviewMissingTimeout 表示“求评价”自动化任务的终态通知。
 	EventAutomationReviewMissingTimeout = "automation_review_missing_timeout"
+	// EventAutomationAutoRate 表示账号级自动评价达到终态失败或需要人工核对时的终态通知。
+	EventAutomationAutoRate = "automation_auto_rate"
 	// EventManualDeliveryResult 表示人工发货结果通知；它与四种自动化任务分开筛选。
 	EventManualDeliveryResult = "manual_delivery_result"
 	// EventManualInterventionRequired 表示自动化已停止且必须由用户人工判断或处理。
@@ -241,6 +243,45 @@ func (n *Notifier) NotifyManualIntervention(ctx context.Context, triggerType, ac
 		},
 		SubscriptionFallbackTypes: []string{sourceEventType},
 	}, strings.TrimSpace(idempotencyKey))
+}
+
+// NotifyAutoRateFailure 将账号级自动评价的终态失败写入通知 outbox。
+// status 取 failed（自动重试耗尽或永久失败）或 needs_review（运行被隔离为人工核对）。
+// reason 只能是失败原因摘要，idempotencyKey 必须由运行键与终态构成，保证同一运行同一终态只通知一次。
+// 正文只包含账号标识、订单标识、任务类型和失败原因，禁止写入 Cookie、Token、凭证或收货信息。
+func (n *Notifier) NotifyAutoRateFailure(ctx context.Context, accountID, orderID, status, reason, idempotencyKey string) {
+	if n == nil || strings.TrimSpace(accountID) == "" || strings.TrimSpace(idempotencyKey) == "" {
+		return
+	}
+	// level、statusLabel 保存终态对应的告警级别和用户可见状态名称。
+	level, statusLabel := autoRateFailureStage(status)
+	// reasonText 保存通知可用的失败原因摘要；空原因必须给出明确兜底，不能留空。
+	reasonText := fallback(strings.TrimSpace(reason), "执行结果无法确认")
+	// message 汇总任务类型、订单与原因，便于用户直接定位需要核对的订单。
+	message := fmt.Sprintf("任务：自动评价\n账号：%s\n订单：%s\n状态：%s\n原因：%s",
+		accountID, fallback(strings.TrimSpace(orderID), "尚未关联订单"), statusLabel, reasonText)
+	n.notifyEvent(ctx, NotificationEvent{
+		AccountID: accountID,
+		Type:      EventAutomationAutoRate,
+		Level:     level,
+		Title:     "自动评价" + statusLabel,
+		Body:      message,
+		Fields: map[string]string{
+			"任务类型": "自动评价",
+			"订单ID": orderID,
+			"状态":   statusLabel,
+			"原因":   reasonText,
+		},
+	}, strings.TrimSpace(idempotencyKey))
+}
+
+// autoRateFailureStage 把自动评价终态编码转换为通知级别和中文状态名称。
+// 未知编码按普通失败处理，避免调用方新增状态时通知静默丢失。
+func autoRateFailureStage(status string) (level, label string) {
+	if strings.TrimSpace(status) == "needs_review" {
+		return "critical", "需要人工处理"
+	}
+	return "warn", "失败"
 }
 
 // automationEventType 将自动化触发编码转换为通知筛选编码。
@@ -533,6 +574,8 @@ func eventLabel(eventType string) string {
 		return "评价赠品"
 	case EventAutomationReviewMissingTimeout:
 		return "求评价"
+	case EventAutomationAutoRate:
+		return "自动评价"
 	case EventManualDeliveryResult:
 		return "手动发货结果"
 	case EventManualInterventionRequired:

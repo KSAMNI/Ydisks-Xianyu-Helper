@@ -30,8 +30,6 @@ func TestAccountTaskEndpointsAndParsing(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Query().Get("api") {
-		case "mtop.taobao.idle.merchant.rate.list":
-			_, _ = w.Write([]byte(`{"ret":["SUCCESS::调用成功"],"data":{"module":{"items":[{"tradeInfo":{"tradeId":"order-1"},"item":{"itemId":"item-1"}},{"orderNo":"order-2","itemId":"item-2"}]}}}`))
 		case "mtop.taobao.idle.rate.create":
 			_, _ = w.Write([]byte(`{"ret":["SUCCESS::调用成功"],"data":{}}`))
 		case "mtop.taobao.idle.item.polish":
@@ -43,14 +41,9 @@ func TestAccountTaskEndpointsAndParsing(t *testing.T) {
 	defer server.Close()
 
 	// client 用于本次流程后续判断的client
-	client := &ClientImpl{HTTPClient: server.Client(), RateListURL: server.URL, RateCreateURL: server.URL, PolishItemURL: server.URL}
+	client := &ClientImpl{HTTPClient: server.Client(), RateCreateURL: server.URL, PolishItemURL: server.URL}
 	// cookies 用于本次流程后续判断的cookies
 	cookies := "unb=123; _m_h5_tk=token_1"
-	// pending、err 用于本次流程后续判断的pending、err
-	pending, err := client.FetchPendingRateOrders(context.Background(), cookies, 1, 50)
-	if err != nil || len(pending.Orders) != 2 || pending.Orders[0].TradeID != "order-1" || pending.Orders[0].ItemID != "item-1" {
-		t.Fatalf("pending=%+v err=%v", pending, err)
-	}
 	// rate、err 用于本次流程后续判断的rate、err
 	rate, err := client.RateBuyer(context.Background(), cookies, "order-1", "交易愉快")
 	if err != nil || !rate.Success || received["tradeId"] != "order-1" || received["feedback"] != "交易愉快" {
@@ -172,13 +165,13 @@ func TestAccountTaskRequestRefreshesWhenOnlyUnrelatedCookieChanges(t *testing.T)
 	var logs bytes.Buffer
 	// client 使用本地 HTTP 服务替代业务接口和官方 Token 接口，并接入测试日志器。
 	client := &ClientImpl{
-		HTTPClient:  server.Client(),
-		Logger:      slog.New(slog.NewTextHandler(&logs, nil)),
-		RateListURL: server.URL + "/rate",
-		TokenURL:    server.URL + "/token",
+		HTTPClient:    server.Client(),
+		Logger:        slog.New(slog.NewTextHandler(&logs, nil)),
+		RateCreateURL: server.URL + "/rate",
+		TokenURL:      server.URL + "/token",
 	}
 	// result、err 保存令牌刷新后业务请求的结果和错误。
-	result, err := client.FetchPendingRateOrders(context.Background(), "unb=123; _m_h5_tk=old_token_1", 1, 50)
+	result, err := client.RateBuyer(context.Background(), "unb=123; _m_h5_tk=old_token_1", "trade-1", "好评")
 	if err != nil || result == nil || rateCalls != 2 || tokenCalls != 1 {
 		t.Fatalf("令牌过期未按要求刷新并重试: result=%+v rate_calls=%d token_calls=%d err=%v", result, rateCalls, tokenCalls, err)
 	}
@@ -204,9 +197,9 @@ func TestAccountTaskRequestRejectsTokenSuccessWithoutSigningCookieRotation(t *te
 	}))
 	defer server.Close()
 	// client 使用本地服务替代业务接口和官方 Token 接口。
-	client := &ClientImpl{HTTPClient: server.Client(), RateListURL: server.URL + "/rate", TokenURL: server.URL + "/token"}
+	client := &ClientImpl{HTTPClient: server.Client(), RateCreateURL: server.URL + "/rate", TokenURL: server.URL + "/token"}
 	// result、err 保存刷新未轮换签名 Cookie 时的结果和错误。
-	result, err := client.FetchPendingRateOrders(context.Background(), "unb=123; _m_h5_tk=old_token_1", 1, 50)
+	result, err := client.RateBuyer(context.Background(), "unb=123; _m_h5_tk=old_token_1", "trade-1", "好评")
 	if result != nil || err == nil || !IsMTopTokenExpiredErr(err) {
 		t.Fatalf("未轮换签名 Cookie 应保留 Token 过期分类: result=%+v err=%v", result, err)
 	}

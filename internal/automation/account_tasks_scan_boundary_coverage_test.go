@@ -30,8 +30,8 @@ func TestScanAccountTasksCoversStatusPauseSessionAndPolishBranches(t *testing.T)
 		t.Fatal(statusErr)
 	}
 	center.scanAccountTasks(ctx)
-	if client.pendingCalls != 0 || client.polishCalls != 0 {
-		t.Fatalf("停用账号不应执行任务 pending=%d polish=%d", client.pendingCalls, client.polishCalls)
+	if client.polishCalls != 0 {
+		t.Fatalf("停用账号不应执行任务 polish=%d", client.polishCalls)
 	}
 	// resumeErr 表示恢复账号启用状态时的状态更新错误。
 	if resumeErr := store.Cookies.SetStatus(ctx, "cid", true); resumeErr != nil {
@@ -42,8 +42,8 @@ func TestScanAccountTasksCoversStatusPauseSessionAndPolishBranches(t *testing.T)
 		t.Fatal(pauseErr)
 	}
 	center.scanAccountTasks(ctx)
-	if client.pendingCalls != 0 || client.polishCalls != 0 {
-		t.Fatalf("暂停账号不应执行任务 pending=%d polish=%d", client.pendingCalls, client.polishCalls)
+	if client.polishCalls != 0 {
+		t.Fatalf("暂停账号不应执行任务 polish=%d", client.polishCalls)
 	}
 	// clearPauseErr 表示取消账号暂停时的数据库错误。
 	if _, clearPauseErr := store.Cookies.SetPause(ctx, "cid", 0); clearPauseErr != nil {
@@ -56,8 +56,8 @@ func TestScanAccountTasksCoversStatusPauseSessionAndPolishBranches(t *testing.T)
 	}
 	center.taskRunner.sessionExpired.Store("cid", fingerprint)
 	center.scanAccountTasks(ctx)
-	if client.pendingCalls != 0 || client.polishCalls != 0 {
-		t.Fatalf("会话阻断账号不应执行任务 pending=%d polish=%d", client.pendingCalls, client.polishCalls)
+	if client.polishCalls != 0 {
+		t.Fatalf("会话阻断账号不应执行任务 polish=%d", client.polishCalls)
 	}
 	center.taskRunner.sessionExpired.Delete("cid")
 	// updateErr 表示清除旧运行状态并重新启用设置时的数据库错误。

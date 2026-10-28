@@ -37,6 +37,9 @@ type accountTaskFlowRepository struct {
 	// markPolishCalls、markPolishDate 保存擦亮日期成功写入的调用次数和日期。
 	markPolishCalls int
 	markPolishDate  string
+	// markSellerRatedErr 保存“卖家已评价”事实写入错误；markSellerRatedOrders 保存已成功写入事实的订单标识。
+	markSellerRatedErr    error
+	markSellerRatedOrders []string
 	// runtimeData、runtimeDataErr 保存凭证指纹读取结果和错误。
 	runtimeData    db.CookieRuntimeData
 	runtimeDataErr error
@@ -95,6 +98,15 @@ func (repository *accountTaskFlowRepository) MarkPolished(_ context.Context, _ s
 		repository.markPolishDate = date
 	}
 	return repository.markPolishErr
+}
+
+// MarkOrderSellerRated 记录“卖家已评价”事实写入结果：有预置错误时返回该错误且不记录订单。
+func (repository *accountTaskFlowRepository) MarkOrderSellerRated(_ context.Context, _ string, orderID string) error {
+	if repository.markSellerRatedErr != nil {
+		return repository.markSellerRatedErr
+	}
+	repository.markSellerRatedOrders = append(repository.markSellerRatedOrders, orderID)
+	return nil
 }
 
 // accountTaskFlowClient 是账号任务平台调用的可控内存客户端。
@@ -198,7 +210,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// nilClientCoordinator 保存客户端未装配的评价协调器。
 	nilClientCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}}, nil)
 	// nilClientResultErr 保存客户端缺失错误。
-	if _, nilClientResultErr := nilClientCoordinator.runAutoRate(context.Background(), baseSettings); nilClientResultErr == nil {
+	if _, nilClientResultErr := nilClientCoordinator.runAutoRate(context.Background(), baseSettings, false); nilClientResultErr == nil {
 		t.Fatal("缺少自动评价客户端不应成功")
 	}
 	// valueErr 是 Cookie 读取失败的底层错误。
@@ -206,7 +218,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// valueCoordinator 保存 Cookie 读取失败的评价协调器。
 	valueCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{valueErr: valueErr, dueOrderIDs: []string{"trade"}}, &accountTaskFlowClient{})
 	// valueResultErr 保存 Cookie 读取错误。
-	if _, valueResultErr := valueCoordinator.runAutoRate(context.Background(), baseSettings); !errors.Is(valueResultErr, valueErr) {
+	if _, valueResultErr := valueCoordinator.runAutoRate(context.Background(), baseSettings, false); !errors.Is(valueResultErr, valueErr) {
 		t.Fatalf("Cookie 读取错误=%v", valueResultErr)
 	}
 	// dueOrderIDsErr 是本地买家确认收货订单查询失败的底层错误。
@@ -214,7 +226,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// dueOrderIDsCoordinator 保存本地订单查询失败的评价协调器。
 	dueOrderIDsCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{value: "cookie", dueOrderIDsErr: dueOrderIDsErr}, &accountTaskFlowClient{})
 	// dueOrderIDsResultErr 保存本地订单查询错误。
-	if _, dueOrderIDsResultErr := dueOrderIDsCoordinator.runAutoRate(context.Background(), baseSettings); !errors.Is(dueOrderIDsResultErr, dueOrderIDsErr) {
+	if _, dueOrderIDsResultErr := dueOrderIDsCoordinator.runAutoRate(context.Background(), baseSettings, false); !errors.Is(dueOrderIDsResultErr, dueOrderIDsErr) {
 		t.Fatalf("本地已完成订单查询错误=%v", dueOrderIDsResultErr)
 	}
 	// claimErr 是评价运行记录抢占失败的底层错误。
@@ -222,7 +234,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// claimCoordinator 保存运行记录抢占失败的评价协调器。
 	claimCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}, claimed: true, claimErr: claimErr}, &accountTaskFlowClient{})
 	// claimResultErr 保存运行记录抢占错误。
-	if _, claimResultErr := claimCoordinator.runAutoRate(context.Background(), baseSettings); !errors.Is(claimResultErr, claimErr) {
+	if _, claimResultErr := claimCoordinator.runAutoRate(context.Background(), baseSettings, false); !errors.Is(claimResultErr, claimErr) {
 		t.Fatalf("评价运行记录抢占错误=%v", claimResultErr)
 	}
 	// skippedRepository 保存并发运行记录已被其他 worker 抢占的场景。
@@ -230,7 +242,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// skippedCoordinator 保存并发跳过场景的评价协调器。
 	skippedCoordinator := newAccountTaskFlowCoordinator(skippedRepository, &accountTaskFlowClient{})
 	// skippedSummary、skippedErr 保存跳过结果。
-	skippedSummary, skippedErr := skippedCoordinator.runAutoRate(context.Background(), baseSettings)
+	skippedSummary, skippedErr := skippedCoordinator.runAutoRate(context.Background(), baseSettings, false)
 	if skippedErr != nil || skippedSummary.Skipped != 1 {
 		t.Fatalf("并发跳过结果=%+v err=%v", skippedSummary, skippedErr)
 	}
@@ -239,7 +251,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// failedCoordinator 保存平台返回失败结果的评价协调器。
 	failedCoordinator := newAccountTaskFlowCoordinator(failedRepository, &accountTaskFlowClient{rateResult: &mtop.AccountTaskResult{Success: false, Message: "平台拒绝"}})
 	// failedSummary、failedErr 保存评价失败结果。
-	failedSummary, failedErr := failedCoordinator.runAutoRate(context.Background(), baseSettings)
+	failedSummary, failedErr := failedCoordinator.runAutoRate(context.Background(), baseSettings, false)
 	if failedErr != nil || failedSummary.Failed != 1 {
 		t.Fatalf("评价失败结果=%+v err=%v", failedSummary, failedErr)
 	}
@@ -248,7 +260,7 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// markCoordinator 保存扫描时间写入失败的评价协调器。
 	markCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{value: "cookie", markRateErr: markError}, &accountTaskFlowClient{})
 	// markResultErr 保存扫描时间写入错误。
-	if _, markResultErr := markCoordinator.runAutoRate(context.Background(), baseSettings); !errors.Is(markResultErr, markError) {
+	if _, markResultErr := markCoordinator.runAutoRate(context.Background(), baseSettings, false); !errors.Is(markResultErr, markError) {
 		t.Fatalf("扫描时间写入错误=%v", markResultErr)
 	}
 	// cookieUpdateErr 是平台返回新 Cookie 后的持久化错误。
@@ -256,8 +268,47 @@ func TestAccountTaskRateCoversFailureAndCompensationBranches(t *testing.T) {
 	// cookieUpdateCoordinator 保存 Cookie 持久化失败的评价协调器。
 	cookieUpdateCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{value: "old", dueOrderIDs: []string{"trade"}, claimed: true, updateErr: cookieUpdateErr}, &accountTaskFlowClient{rateResult: &mtop.AccountTaskResult{Success: true, UpdatedCookies: "new"}})
 	// cookieUpdateResultErr 保存 Cookie 持久化错误。
-	if _, cookieUpdateResultErr := cookieUpdateCoordinator.runAutoRate(context.Background(), baseSettings); !errors.Is(cookieUpdateResultErr, cookieUpdateErr) {
+	if _, cookieUpdateResultErr := cookieUpdateCoordinator.runAutoRate(context.Background(), baseSettings, false); !errors.Is(cookieUpdateResultErr, cookieUpdateErr) {
 		t.Fatalf("评价 Cookie 持久化错误=%v", cookieUpdateResultErr)
+	}
+}
+
+// TestAccountTaskRateRecordsSellerRatedFact 验证自动评价只在动作成功（含平台回答已评价）后写入卖家评价事实，写入失败必须隔离为人工核对。
+func TestAccountTaskRateRecordsSellerRatedFact(t *testing.T) {
+	// baseSettings 保存自动评价流程共用的账号任务配置。
+	baseSettings := db.AccountTaskSettings{CookieID: "account", RateContent: "感谢光临"}
+	// successRepository 保存评价成功后应写入卖家评价事实的仓储。
+	successRepository := &accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}, claimed: true}
+	// successSummary、successErr 保存成功评价结果及错误。
+	successSummary, successErr := newAccountTaskFlowCoordinator(successRepository, &accountTaskFlowClient{}).runAutoRate(context.Background(), baseSettings, false)
+	if successErr != nil || successSummary.Success != 1 || len(successRepository.markSellerRatedOrders) != 1 || successRepository.markSellerRatedOrders[0] != "trade" {
+		t.Fatalf("评价成功后应写入卖家评价事实: summary=%+v rated=%v err=%v", successSummary, successRepository.markSellerRatedOrders, successErr)
+	}
+	// alreadyRatedErr 保存平台明确回答订单已经评价过的业务错误。
+	alreadyRatedErr := &mtop.MTopResponseError{API: "mtop.taobao.idle.rate.create", Kind: mtop.MTopErrorBusiness,
+		Ret: []string{"FAIL_BIZ_BAD_REQUEST::亲，您已经评价过了"}}
+	// alreadyRepository 保存平台回答已评价的仓储，该订单同样必须写入评价事实。
+	alreadyRepository := &accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}, claimed: true}
+	// alreadySummary、alreadyErr 保存已评价收口结果及错误。
+	alreadySummary, alreadyErr := newAccountTaskFlowCoordinator(alreadyRepository, &accountTaskFlowClient{rateErr: alreadyRatedErr}).runAutoRate(context.Background(), baseSettings, false)
+	if alreadyErr != nil || alreadySummary.Success != 1 || len(alreadyRepository.markSellerRatedOrders) != 1 {
+		t.Fatalf("平台已评价应按成功收口并写入事实: summary=%+v rated=%v err=%v", alreadySummary, alreadyRepository.markSellerRatedOrders, alreadyErr)
+	}
+	// failedRepository 保存平台拒绝评价的仓储；失败订单不得写入评价事实，否则该订单会永久漏评价。
+	failedRepository := &accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}, claimed: true}
+	// failedSummary、failedErr 保存普通失败结果及错误。
+	failedSummary, failedErr := newAccountTaskFlowCoordinator(failedRepository, &accountTaskFlowClient{rateErr: errors.New("平台拒绝")}).runAutoRate(context.Background(), baseSettings, false)
+	if failedErr != nil || failedSummary.Failed != 1 || len(failedRepository.markSellerRatedOrders) != 0 {
+		t.Fatalf("评价失败不应写入事实: summary=%+v rated=%v err=%v", failedSummary, failedRepository.markSellerRatedOrders, failedErr)
+	}
+	// factErr 是卖家评价事实写入失败的底层错误。
+	factErr := errors.New("mark seller rated failed")
+	// factRepository 保存评价事实写入失败的仓储。
+	factRepository := &accountTaskFlowRepository{value: "cookie", dueOrderIDs: []string{"trade"}, claimed: true, markSellerRatedErr: factErr}
+	// factSummary、factResultErr 保存事实写入失败后的收口结果及错误。
+	factSummary, factResultErr := newAccountTaskFlowCoordinator(factRepository, &accountTaskFlowClient{}).runAutoRate(context.Background(), baseSettings, false)
+	if !errors.Is(factResultErr, errAutomationNeedsReview) || factSummary.Success != 0 {
+		t.Fatalf("事实写入失败必须隔离为人工核对: summary=%+v err=%v", factSummary, factResultErr)
 	}
 }
 
@@ -350,7 +401,7 @@ func TestAccountTaskCoordinatorCoversPropagationAndRecoveryBranches(t *testing.T
 	blockedCoordinator := newAccountTaskFlowCoordinator(&accountTaskFlowRepository{runtimeDataErr: fingerprintErr}, &accountTaskFlowClient{})
 	blockedCoordinator.sessionExpired.Store("account", "fingerprint")
 	// blockedResultErr 保存会话阻断复核错误。
-	if _, blockedResultErr := blockedCoordinator.runConfiguredAccountTask(context.Background(), db.AccountTaskSettings{CookieID: "account"}, TaskAutoRate); !errors.Is(blockedResultErr, fingerprintErr) {
+	if _, blockedResultErr := blockedCoordinator.runConfiguredAccountTask(context.Background(), db.AccountTaskSettings{CookieID: "account"}, TaskAutoRate, false); !errors.Is(blockedResultErr, fingerprintErr) {
 		t.Fatalf("会话阻断复核错误=%v", blockedResultErr)
 	}
 	// finishError、quarantineError 保存两次任务终态写入错误。

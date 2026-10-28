@@ -175,6 +175,82 @@ func TestDueAutoRateOrderIDsOnlyReturnsLocallyCompletedOrders(t *testing.T) {
 	}
 }
 
+// TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates 验证卖家评价事实只写一次、不跨账号生效，并使该订单退出自动评价候选。
+func TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是订单事实写入与候选读取共用的数据库上下文。
+	ctx := context.Background()
+	// created、createErr 保存测试用户初始化结果；账号凭证外键要求存在归属用户。
+	created, createErr := store.Users.Create(ctx, "rated-user", "rated-user@example.com", "pw")
+	if createErr != nil || !created {
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, createErr)
+	}
+	// user、userErr 保存账号归属所需的用户身份及读取错误。
+	user, userErr := store.Users.GetByUsername(ctx, "rated-user")
+	if userErr != nil || user == nil {
+		t.Fatalf("读取测试用户失败: user=%+v err=%v", user, userErr)
+	}
+	// cookieErr 保存目标账号的凭证写入错误。
+	cookieErr := store.Cookies.Save(ctx, "rated-account", "sid=rated", user.ID)
+	// otherCookieErr 保存其他账号的凭证写入错误，用于证明评价事实不会跨账号生效。
+	otherCookieErr := store.Cookies.Save(ctx, "rated-other-account", "sid=other", user.ID)
+	if cookieErr != nil || otherCookieErr != nil {
+		t.Fatalf("保存测试账号失败: rated=%v other=%v", cookieErr, otherCookieErr)
+	}
+	// ratedErr 保存已评价订单的事实写入错误。
+	ratedErr := store.Orders.Upsert(ctx, "rated-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
+	// pendingErr 保存待评价订单的事实写入错误，用于证明排除只作用于已评价订单。
+	pendingErr := store.Orders.Upsert(ctx, "pending-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
+	if ratedErr != nil || pendingErr != nil {
+		t.Fatalf("写入测试订单失败: rated=%v pending=%v", ratedErr, pendingErr)
+	}
+	// completedErr 保存已评价订单的确认收货时间写入错误；完成时间是候选门槛。
+	completedErr := store.Automation.MarkOrderEventTime(ctx, "rated-order", "completed_at")
+	// pendingCompletedErr 保存待评价订单的确认收货时间写入错误。
+	pendingCompletedErr := store.Automation.MarkOrderEventTime(ctx, "pending-order", "completed_at")
+	if completedErr != nil || pendingCompletedErr != nil {
+		t.Fatalf("写入确认收货时间失败: rated=%v pending=%v", completedErr, pendingCompletedErr)
+	}
+	// wrongAccountErr 保存跨账号写入尝试的返回错误；该尝试必须不匹配任何行。
+	if wrongAccountErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-other-account", "rated-order"); wrongAccountErr != nil {
+		t.Fatalf("跨账号写入应静默不匹配: %v", wrongAccountErr)
+	}
+	// beforeMark、beforeErr 保存跨账号尝试后的候选集合，两笔订单都必须仍在候选内。
+	beforeMark, beforeErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
+	if beforeErr != nil || len(beforeMark) != 2 {
+		t.Fatalf("跨账号写入后候选错误: candidates=%v err=%v", beforeMark, beforeErr)
+	}
+	// markErr 保存卖家评价事实的首次写入错误。
+	if markErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); markErr != nil {
+		t.Fatalf("写入卖家评价事实失败: %v", markErr)
+	}
+	// firstRatedAt 保存首次写入的评价时间文本，必须非空。
+	var firstRatedAt string
+	// scanErr 保存首次评价时间读取的数据库错误。
+	scanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&firstRatedAt)
+	if scanErr != nil || firstRatedAt == "" {
+		t.Fatalf("首次评价时间读取失败: value=%q err=%v", firstRatedAt, scanErr)
+	}
+	// repeatErr 保存重复写入的返回错误；已存在值必须保留首次时间。
+	if repeatErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); repeatErr != nil {
+		t.Fatalf("重复写入应幂等: %v", repeatErr)
+	}
+	// secondRatedAt 保存重复写入后的评价时间文本。
+	var secondRatedAt string
+	// secondScanErr 保存重复写入后评价时间读取的数据库错误。
+	secondScanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&secondRatedAt)
+	if secondScanErr != nil || secondRatedAt != firstRatedAt {
+		t.Fatalf("重复写入不应覆盖首次时间: first=%q second=%q err=%v", firstRatedAt, secondRatedAt, secondScanErr)
+	}
+	// candidates、candidateErr 保存排除已评价订单后的候选集合。
+	candidates, candidateErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
+	if candidateErr != nil || len(candidates) != 1 || candidates[0] != "pending-order" {
+		t.Fatalf("已评价订单必须排除: candidates=%v err=%v", candidates, candidateErr)
+	}
+}
+
 // TestAccountTaskStoreNoRetryRunIsNotReclaimed 验证账号任务永久失败记录不会被自动或人工入口再次抢占。
 func TestAccountTaskStoreNoRetryRunIsNotReclaimed(t *testing.T) {
 	// store、cleanup 保存本地迁移数据库及其释放函数。
@@ -211,5 +287,69 @@ func TestAccountTaskStoreNoRetryRunIsNotReclaimed(t *testing.T) {
 	manualClaim, manualErr := store.AccountTasks.ClaimRunImmediately(ctx, run, 101)
 	if manualErr != nil || manualClaim {
 		t.Fatalf("永久失败记录不应被人工入口重新抢占: claimed=%v err=%v", manualClaim, manualErr)
+	}
+}
+
+// TestAccountTaskRunNextRetryAtReportsExhaustion 验证运行记录下一次自动重试时间的读取，以及达到执行上限后置零的语义。
+func TestAccountTaskRunNextRetryAtReportsExhaustion(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是运行重试状态读取测试使用的数据库上下文。
+	ctx := context.Background()
+	// created、createErr 保存测试用户初始化结果。
+	created, createErr := store.Users.Create(ctx, "retry-user", "retry-user@example.com", "pw")
+	if createErr != nil || !created {
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, createErr)
+	}
+	// user、userErr 保存测试用户及其查询错误。
+	user, userErr := store.Users.GetByUsername(ctx, "retry-user")
+	if userErr != nil {
+		t.Fatal(userErr)
+	}
+	// cookieErr 保存测试账号 Cookie 初始化错误。
+	if cookieErr := store.Cookies.Save(ctx, "retry-cookie", "sid=test", user.ID); cookieErr != nil {
+		t.Fatal(cookieErr)
+	}
+	// runKey 是本次运行记录的稳定业务键。
+	const runKey = "rate:retry-cookie:order-1"
+	// run 是自动评价运行记录的最小业务身份。
+	run := AccountTaskRun{RunKey: runKey, CookieID: "retry-cookie", TaskType: "auto_rate", TargetID: "order-1"}
+	// claimed、claimErr 保存首次抢占结果。
+	claimed, claimErr := store.AccountTasks.ClaimRun(ctx, run, 1000)
+	if claimErr != nil || !claimed {
+		t.Fatalf("首次抢占失败: claimed=%v err=%v", claimed, claimErr)
+	}
+	// nextRetryAt、readErr 保存运行中的下一次自动重试时间，未失败时保持为零。
+	nextRetryAt, readErr := store.AccountTasks.RunNextRetryAt(ctx, runKey)
+	if readErr != nil || nextRetryAt != 0 {
+		t.Fatalf("运行中记录的重试时间异常: next_retry_at=%d err=%v", nextRetryAt, readErr)
+	}
+	// finishErr 保存首次失败结果写入错误。
+	if finishErr := store.AccountTasks.FinishRun(ctx, runKey, "failed", 0, 1, "平台临时失败", 1600); finishErr != nil {
+		t.Fatal(finishErr)
+	}
+	nextRetryAt, readErr = store.AccountTasks.RunNextRetryAt(ctx, runKey)
+	if readErr != nil || nextRetryAt != 1600 {
+		t.Fatalf("未达上限的失败必须保留冷却时间: next_retry_at=%d err=%v", nextRetryAt, readErr)
+	}
+	// attempt 表示继续累计执行次数；累计达到上限 6 次时数据库必须把 next_retry_at 置零。
+	for attempt := 2; attempt <= 6; attempt++ {
+		claimed, claimErr = store.AccountTasks.ClaimRun(ctx, run, int64(10000+attempt))
+		if claimErr != nil || !claimed {
+			t.Fatalf("第 %d 次抢占失败: claimed=%v err=%v", attempt, claimed, claimErr)
+		}
+		// finishErr 保存本轮失败结果写入错误；写入成功后才会判断是否达到执行上限。
+		if finishErr := store.AccountTasks.FinishRun(ctx, runKey, "failed", 0, 1, "平台临时失败", 9000); finishErr != nil {
+			t.Fatal(finishErr)
+		}
+	}
+	nextRetryAt, readErr = store.AccountTasks.RunNextRetryAt(ctx, runKey)
+	if readErr != nil || nextRetryAt != 0 {
+		t.Fatalf("达到执行上限后必须清除自动重试时间: next_retry_at=%d err=%v", nextRetryAt, readErr)
+	}
+	// missingErr 保存读取不存在运行记录的错误；缺失记录不能伪装成“已耗尽”。
+	if _, missingErr := store.AccountTasks.RunNextRetryAt(ctx, "rate:retry-cookie:missing"); missingErr == nil {
+		t.Fatal("不存在的运行记录必须返回错误")
 	}
 }

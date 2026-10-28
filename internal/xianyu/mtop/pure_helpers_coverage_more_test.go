@@ -51,10 +51,6 @@ func TestAccountTaskPureHelpersCoversBoundaries(t *testing.T) {
 func TestAccountTaskRequestsRejectMissingPlatformToken(t *testing.T) {
 	// client 是不包含外部网络调用的最小平台客户端。
 	client := &ClientImpl{}
-	// pendingErr 保存分页参数归一化后因缺少令牌返回的错误。
-	if _, pendingErr := client.FetchPendingRateOrders(context.Background(), "unb=1", 0, 0); pendingErr == nil {
-		t.Fatal("missing token should reject pending rate request")
-	}
 	// rateErr 保存空评价文本采用默认文案后因缺少令牌返回的错误。
 	if _, rateErr := client.RateBuyer(context.Background(), "unb=1", "trade", " "); rateErr == nil {
 		t.Fatal("missing token should reject rate request")

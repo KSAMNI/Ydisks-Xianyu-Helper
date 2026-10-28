@@ -52,6 +52,8 @@ export type NotificationEventType =
   | 'automation_order_paid'
   | 'automation_buyer_reviewed'
   | 'automation_review_missing_timeout'
+  /** 账号级自动评价的终态失败与人工核对类别，与四类订单触发任务分开订阅。 */
+  | 'automation_auto_rate'
   | 'manual_delivery_result'
   | 'manual_intervention_required'
   | 'system_error';

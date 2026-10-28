@@ -68,11 +68,6 @@ func faultOperations() []faultOperation {
 			_, err := c.CheckLoginStatusContext(ctx, faultCookies)
 			return err
 		}},
-		{"pending-rate", func(ctx context.Context, c *ClientImpl) error {
-			// err 保存被测调用返回的错误，用于断言失败路径或成功路径是否符合预期。
-			_, err := c.FetchPendingRateOrders(ctx, faultCookies, 1, 10)
-			return err
-		}},
 		{"rate-buyer", func(ctx context.Context, c *ClientImpl) error {
 			// err 保存被测调用返回的错误，用于断言失败路径或成功路径是否符合预期。
 			_, err := c.RateBuyer(ctx, faultCookies, "t1", "好评")
@@ -112,7 +107,7 @@ func faultClient(server *httptest.Server) *ClientImpl {
 	base := server.URL + "/"
 	return &ClientImpl{
 		HTTPClient: server.Client(), TokenURL: base, ConsignURL: base, FreeShippingURL: base, AdjustPriceURL: base,
-		OrderDetailURL: base, SoldOrdersURL: base, LoginUserURL: base, RateCreateURL: base, RateListURL: base,
+		OrderDetailURL: base, SoldOrdersURL: base, LoginUserURL: base, RateCreateURL: base,
 		PolishItemURL: base, PolishItemBackupURL: base, ChatUserQueryURL: base, ChatItemSearchURL: base,
 	}
 }

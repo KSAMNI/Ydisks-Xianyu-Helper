@@ -69,6 +69,7 @@ func TestAccountTaskStoreCoversClosedDatabaseOperations(t *testing.T) {
 		}(),
 		store.AccountTasks.FinishRun(ctx, run.RunKey, "failed", 0, 1, "error", 2),
 		store.AccountTasks.MarkRateScan(ctx, "cid", 1),
+		store.AccountTasks.MarkOrderSellerRated(ctx, "cid", "closed-order"),
 		store.AccountTasks.MarkPolished(ctx, "cid", "2026-08-26", 1),
 		func() error {
 			// err 表示任务历史读取在关闭数据库后的底层错误。

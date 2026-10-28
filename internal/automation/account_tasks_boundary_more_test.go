@@ -96,7 +96,7 @@ func TestAccountTaskCoordinatorCoversStateAndTaskGuards(t *testing.T) {
 	// unsupportedCoordinator 保存用于未知任务类型检查的协调器。
 	unsupportedCoordinator := &accountTaskCoordinator{repository: &accountTaskBoundaryRepository{}, logger: slog.Default()}
 	// unsupportedErr 保存未知任务类型错误。
-	if _, unsupportedErr := unsupportedCoordinator.runConfiguredAccountTask(context.Background(), db.AccountTaskSettings{CookieID: "account"}, "unknown"); unsupportedErr == nil {
+	if _, unsupportedErr := unsupportedCoordinator.runConfiguredAccountTask(context.Background(), db.AccountTaskSettings{CookieID: "account"}, "unknown", true); unsupportedErr == nil {
 		t.Fatal("未知账号任务类型不应成功")
 	}
 }

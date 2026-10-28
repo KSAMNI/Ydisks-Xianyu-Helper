@@ -65,6 +65,7 @@ export const notificationEvents: NotificationEventMeta[] = [
   { value: 'automation_order_paid', label: '付款发货', description: '买家付款后，自动发货任务的成功或失败结果' },
   { value: 'automation_buyer_reviewed', label: '评价赠品', description: '买家评价后，评价赠品任务的成功或失败结果' },
   { value: 'automation_review_missing_timeout', label: '求评价', description: '订单超时未评价时，求评价任务的成功或失败结果' },
+  { value: 'automation_auto_rate', label: '自动评价', description: '账号级自动评价达到重试上限、永久失败或需要人工核对时通知，普通失败仍会自动重试因此不通知' },
   { value: 'manual_delivery_result', label: '手动发货结果', description: '人工发货或确认发货的结果，不属于自动化任务分类' },
   { value: 'manual_intervention_required', label: '需要人工处理', description: '自动化因结果不确定、状态缺失或无法安全续跑而停止，需要用户检查订单' },
   { value: 'token_renewal', label: '续期通知', description: 'Cookie/token 续期和自动恢复过程' },

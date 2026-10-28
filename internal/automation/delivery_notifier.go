@@ -28,6 +28,15 @@ type manualInterventionNotifier interface {
 	NotifyManualIntervention(ctx context.Context, triggerType, accountID, orderID, itemID, buyerID, action, reason, chatID, idempotencyKey string)
 }
 
+// autoRateFailureNotifier 定义账号级自动评价终态通知能力；统一通知器实现该能力。
+// 不具备该能力的旧通知器保持静默，不得影响评价动作结果。
+type autoRateFailureNotifier interface {
+	// NotifyAutoRateFailure 发送一次自动评价终态失败或人工核对通知。
+	// status 取 failed（重试耗尽或永久失败）或 needs_review（运行被隔离为人工核对）；
+	// reason 只能是失败原因摘要，idempotencyKey 必须由运行键与终态构成以保证同一终态只通知一次。
+	NotifyAutoRateFailure(ctx context.Context, accountID, orderID, status, reason, idempotencyKey string)
+}
+
 // notifyResult 根据规则执行终态发送通知；只要运行进入 success，就通知自动化已完成，避免 sent_count 为零时静默丢失结果。
 // runID 与 status 会传给持久化 outbox，防止恢复扫描对同一运行重复排队。
 func (n deliveryNotifier) notifyResult(ctx context.Context, task Task, runID int64, status string, sent int, errMsg string) {

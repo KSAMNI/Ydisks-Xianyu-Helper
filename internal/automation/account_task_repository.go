@@ -26,6 +26,8 @@ type AccountTaskRepository interface {
 	Enabled(ctx context.Context) ([]db.AccountTaskSettings, error)
 	// DueAutoRateOrderIDs 返回由本地买家确认收货事件确认、可消费的订单号。
 	DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error)
+	// MarkOrderSellerRated 记录订单的卖家侧评价事实，使已评价订单不再进入自动评价候选。
+	MarkOrderSellerRated(ctx context.Context, cookieID, orderID string) error
 	// ClaimRun 抢占可重复执行的任务运行记录。
 	ClaimRun(ctx context.Context, run db.AccountTaskRun, now int64) (bool, error)
 	// ClaimRunImmediately 抢占人工立即执行的任务运行记录。
@@ -42,6 +44,13 @@ type AccountTaskRepository interface {
 // 锁只保护本地读取与持久化，不得覆盖外部平台调用。
 type accountTaskCredentialLocker interface {
 	LockAccountCredentials(accountID string) func()
+}
+
+// accountTaskRunStateReader 表示能够回读单条运行记录重试状态的仓储能力。
+// 它只用于判断自动评价是否已经耗尽自动重试；不具备该能力的旧测试替身按“未耗尽”处理。
+type accountTaskRunStateReader interface {
+	// RunNextRetryAt 返回运行记录的下一次自动重试时间，0 表示没有后续自动重试。
+	RunNextRetryAt(ctx context.Context, runKey string) (int64, error)
 }
 
 // storeAccountTaskRepository 将完整 Store 适配为账号任务窄 repository。
@@ -106,6 +115,11 @@ func (r storeAccountTaskRepository) DueAutoRateOrderIDs(ctx context.Context, coo
 	return r.store.AccountTasks.DueAutoRateOrderIDs(ctx, cookieID, limit)
 }
 
+// MarkOrderSellerRated 委托写入订单的卖家侧评价事实。
+func (r storeAccountTaskRepository) MarkOrderSellerRated(ctx context.Context, cookieID, orderID string) error {
+	return r.store.AccountTasks.MarkOrderSellerRated(ctx, cookieID, orderID)
+}
+
 // ClaimRun 委托任务运行抢占。
 func (r storeAccountTaskRepository) ClaimRun(ctx context.Context, run db.AccountTaskRun, now int64) (bool, error) {
 	return r.store.AccountTasks.ClaimRun(ctx, run, now)
@@ -120,6 +134,14 @@ func (r storeAccountTaskRepository) ClaimRunImmediately(ctx context.Context, run
 func (r storeAccountTaskRepository) FinishRun(ctx context.Context, runKey, status string, success, failed int, message string, nextRetryAt int64) error {
 	return r.store.AccountTasks.FinishRun(ctx, runKey, status, success, failed, message, nextRetryAt)
 }
+
+// RunNextRetryAt 委托运行记录下一次自动重试时间查询，供自动评价终态通知判断重试是否耗尽。
+func (r storeAccountTaskRepository) RunNextRetryAt(ctx context.Context, runKey string) (int64, error) {
+	return r.store.AccountTasks.RunNextRetryAt(ctx, runKey)
+}
+
+// storeAccountTaskRunStateCheck 确保 Store 适配器实现运行重试状态回读能力。
+var _ accountTaskRunStateReader = storeAccountTaskRepository{}
 
 // MarkRateScan 委托自动评价扫描时间写入。
 func (r storeAccountTaskRepository) MarkRateScan(ctx context.Context, cookieID string, at int64) error {

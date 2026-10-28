@@ -36,9 +36,14 @@ test('旧版统一交易开关归一为自动化与人工处理开关',
     'manual_delivery_result', 'manual_intervention_required',
   ]));
   expect(notificationEvents.filter(
-    // event 是当前通知事件定义，用于统计自动化任务类别数量。
-    event => event.value.startsWith('automation_'),
+    // event 是当前通知事件定义，用于统计四类订单触发的自动化任务；账号级自动评价是独立类别，不计入这四类。
+    event => event.value.startsWith('automation_') && event.value !== 'automation_auto_rate',
   )).toHaveLength(4);
+  expect(notificationEvents.find(
+    // event 是当前通知事件定义，用于确认账号级自动评价可被单独订阅并显示中文名称。
+    event => event.value === 'automation_auto_rate',
+  )?.label).toBe('自动评价');
+  expect(notificationEventSummary(['automation_auto_rate'])).toBe('自动评价');
   expect(notificationEventSummary(['manual_intervention_required'])).toBe('需要人工处理');
   });
 

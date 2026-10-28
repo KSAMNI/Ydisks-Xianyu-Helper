@@ -85,7 +85,6 @@ type ClientImpl struct {
 	SoldOrdersURL       string
 	LoginUserURL        string
 	RateCreateURL       string
-	RateListURL         string
 	PolishItemURL       string
 	PolishItemBackupURL string
 	ChatUserQueryURL    string

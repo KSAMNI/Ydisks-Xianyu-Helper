@@ -174,7 +174,7 @@ func (o *Orders) RecoverSoldOwnership(ctx context.Context, userID int64, cookieI
 	}
 	// 清理账户相关字段并切换归属后，通用 Upsert 只在同事务内合并卖家订单事实并恢复软删除。
 	if _, err := transaction.ExecContext(ctx, `UPDATE orders SET cookie_id=?,chat_id='',paid_at='',shipped_at='',
-		completed_at='',buyer_reviewed_at='' WHERE order_id=? AND cookie_id=? AND version=?`,
+		completed_at='',buyer_reviewed_at='',seller_rated_at='' WHERE order_id=? AND cookie_id=? AND version=?`,
 		cookieID, expected.OrderID, expected.CookieID, expected.Version+1); err != nil {
 		return err
 	}

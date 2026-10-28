@@ -123,12 +123,12 @@ func (r stoppedRateRepository) CheckOrderAutomation(context.Context, string, str
 func TestAutoRateHonorsStopAndQueryFailure(t *testing.T) {
 	for _, stopErr := range []error{db.ErrOrderAutomationStopped, errors.New("synthetic query failure")} { // stopErr 区分用户主动停用与数据库故障。
 		// repository 是可领取的本地账号任务场景。
-		repository := &accountTaskFlowRepository{value: "synthetic", dueOrderIDs: []string{"order"}, claimed: true}
+		repository := &accountTaskFlowRepository{value: "synthetic", dueOrderIDs: []string{"order"}, claimed: true, immediateClaimed: true}
 		// center 复用现有夹具并注入本场景的停用端口。
 		center := newAccountTaskFlowCoordinator(repository, &accountTaskFlowClient{rateErr: errors.New("must not reach platform")})
 		center.repository = stoppedRateRepository{accountTaskFlowRepository: repository, stopErr: stopErr}
 		// summary、err 验证停用按跳过收口，其余故障按错误返回。
-		summary, err := center.runAutoRate(context.Background(), db.AccountTaskSettings{CookieID: "account", RateContent: "好评"})
+		summary, err := center.runAutoRate(context.Background(), db.AccountTaskSettings{CookieID: "account", RateContent: "好评"}, true)
 		if errors.Is(stopErr, db.ErrOrderAutomationStopped) {
 			if err != nil || summary.Skipped != 1 {
 				t.Fatalf("skip=%+v err=%v", summary, err)

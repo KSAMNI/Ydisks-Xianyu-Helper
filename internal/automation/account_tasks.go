@@ -74,6 +74,8 @@ type accountTaskCoordinator struct {
 	senders SenderProvider
 	// recoverer 返回构造期固定的凭证恢复器。
 	recoverer func() CredentialRecoverer
+	// notifier 返回构造期固定的通知器；为空或实现不具备自动评价通知能力时保持静默，不影响评价结果。
+	notifier func() Notifier
 	// logger 记录账号任务扫描、凭证恢复和 Cookie 持久化异常；空商品列表是成功态，使用 Info 记录。
 	logger interface {
 		Debug(string, ...any)
@@ -107,6 +109,8 @@ func (c *accountTaskCoordinator) accountAutomationAllowed(ctx context.Context, a
 }
 
 // runAccountTask 执行指定账号任务，并在执行前检查账号状态门禁。
+// 该入口只服务人工触发（管理页「立即执行」），因此固定以 manual=true 继续下发；
+// 定时扫描必须直接调用 runConfiguredAccountTask 并传 manual=false，禁止走本入口。
 func (c *accountTaskCoordinator) runAccountTask(ctx context.Context, accountID, taskType string) (AccountTaskSummary, error) {
 	// allowed、err 用于本次流程后续判断的allowed、err
 	allowed, err := c.accountAutomationAllowed(ctx, accountID)
@@ -121,11 +125,13 @@ func (c *accountTaskCoordinator) runAccountTask(ctx context.Context, accountID, 
 	if err != nil {
 		return AccountTaskSummary{TaskType: taskType}, err
 	}
-	return c.runConfiguredAccountTask(ctx, settings, taskType)
+	return c.runConfiguredAccountTask(ctx, settings, taskType, true)
 }
 
-// runConfiguredAccountTask 封装运行Configured账号任务业务协调。
-func (c *accountTaskCoordinator) runConfiguredAccountTask(ctx context.Context, settings db.AccountTaskSettings, taskType string) (AccountTaskSummary, error) {
+// runConfiguredAccountTask 执行已读取配置的账号任务，并在执行前检查 Session 阻断。
+// settings 是账号任务配置；taskType 决定具体任务；manual 表示是否由人工入口触发，
+// 人工触发允许越过失败运行的冷却时间，定时扫描必须传 false 以保留重试退避。
+func (c *accountTaskCoordinator) runConfiguredAccountTask(ctx context.Context, settings db.AccountTaskSettings, taskType string, manual bool) (AccountTaskSummary, error) {
 	if // blocked、err 用于本次流程后续判断的blocked、err
 	blocked, err := c.accountTaskSessionBlocked(ctx, settings.CookieID); err != nil {
 		return AccountTaskSummary{TaskType: taskType}, err
@@ -140,9 +146,9 @@ func (c *accountTaskCoordinator) runConfiguredAccountTask(ctx context.Context, s
 	)
 	switch taskType {
 	case TaskAutoRate:
-		summary, err = c.runAutoRate(ctx, settings)
+		summary, err = c.runAutoRate(ctx, settings, manual)
 	case TaskAutoPolish:
-		summary, err = c.runAutoPolish(ctx, settings, beijingNow(), true)
+		summary, err = c.runAutoPolish(ctx, settings, beijingNow(), manual)
 	default:
 		return AccountTaskSummary{TaskType: taskType}, fmt.Errorf("不支持的账号任务: %s", taskType)
 	}
@@ -187,7 +193,7 @@ func (c *accountTaskCoordinator) scanAccountTasks(ctx context.Context) {
 		}
 		if setting.AutoRateEnabled {
 			// summary、err 保存本轮自动评价扫描结果及其错误；成功结果必须落一条可检索日志。
-			summary, err := c.runConfiguredAccountTask(ctx, setting, TaskAutoRate)
+			summary, err := c.runConfiguredAccountTask(ctx, setting, TaskAutoRate, false)
 			if err != nil {
 				if errors.Is(err, errAccountTaskCredentialRenewed) {
 					c.logger.Info("自动评价扫描因凭证续期暂停，下一轮自动重试", "account", setting.CookieID, "err", err)
@@ -353,8 +359,31 @@ func newAccountTaskCompensationContext(parent context.Context) (context.Context,
 	return context.WithTimeout(context.WithoutCancel(parent), 5*time.Second)
 }
 
-// runAutoRate 只消费 WebSocket 已确认收货的本地完成订单；它不会以远端 MTOP 列表扫描发现候选订单。
-func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.AccountTaskSettings) (AccountTaskSummary, error) {
+// finishAutoRateRun 收口自动评价运行，并在进入终态失败或人工核对时发送一次账号级通知。
+// accountID、orderID、runKey 共同标识本次运行，只用于通知正文与幂等键，不包含凭证。
+// status 是期望的运行终态，nextRetryAt 是请求写入的下一次重试时间，message 是失败原因摘要。
+// 通知失败只影响通知链路，不会改变评价动作结果，也不会让运行停留在 running。
+func (c *accountTaskCoordinator) finishAutoRateRun(ctx context.Context, accountID, orderID, runKey, status string, success, failed int, message string, nextRetryAt int64) error {
+	// finishErr 保存运行状态写入结果；只有写入成功后才会判断是否达到终态失败。
+	finishErr := c.finishAccountTaskRun(ctx, runKey, status, success, failed, message, nextRetryAt)
+	c.notifyAutoRateTerminal(ctx, accountID, orderID, runKey, status, message, nextRetryAt, finishErr)
+	return finishErr
+}
+
+// quarantineAutoRateRun 把外部动作结果未知的自动评价运行隔离为人工核对，并发送一次人工处理通知。
+// reason 是触发隔离的本地故障；通知正文只包含错误文本，不含 Cookie、Token 或收货信息。
+func (c *accountTaskCoordinator) quarantineAutoRateRun(ctx context.Context, accountID, orderID, runKey string, success, failed int, reason error) error {
+	// quarantineErr 保存人工核对状态写入结果，同时作为通知触发条件。
+	quarantineErr := c.quarantineAccountTaskRun(ctx, runKey, success, failed, reason)
+	c.notifyAutoRateTerminal(ctx, accountID, orderID, runKey, autoRateNotifyStatusNeedsReview, errorString(reason), 0, quarantineErr)
+	return quarantineErr
+}
+
+// runAutoRate 只消费 WebSocket 已确认收货、且尚无卖家侧评价事实的本地完成订单；它不会以远端 MTOP 列表扫描发现候选订单。
+// 评价成功（含平台回答已评价）后写入 orders.seller_rated_at，使该订单不再进入后续候选窗口。
+// manual 表示本次执行是否来自人工入口：人工入口允许越过失败运行的冷却时间立即重试，
+// 定时扫描必须传 false，使 10 分钟退避、6 次累计上限与永久失败排除继续生效。
+func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.AccountTaskSettings, manual bool) (AccountTaskSummary, error) {
 	// summary 用于本次流程后续判断的summary
 	summary := AccountTaskSummary{TaskType: TaskAutoRate}
 	if c.repository == nil {
@@ -387,9 +416,8 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 	for _, orderID := range orderIDs {
 		// runKey 用于本次流程后续判断的运行Key
 		runKey := "rate:" + settings.CookieID + ":" + orderID
-		// claimed、err 用于本次流程后续判断的claimed、err
-		claimed, err := c.repository.ClaimRun(ctx, db.AccountTaskRun{RunKey: runKey, CookieID: settings.CookieID,
-			TaskType: TaskAutoRate, TargetID: orderID}, time.Now().UTC().Unix())
+		// claimed、err 保存本次运行领取结果及其数据库错误；人工入口只越过冷却时间，不越过次数上限与永久失败排除。
+		claimed, err := c.claimRateRun(ctx, runKey, settings.CookieID, orderID, manual)
 		if err != nil {
 			return summary, err
 		}
@@ -403,7 +431,7 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 				return summary, stopErr
 			}
 			// finishErr 保留本地取消收口失败，禁止伪报成功。
-			if finishErr := c.finishAccountTaskRun(ctx, runKey, "canceled", 0, 0, stopErr.Error(), 0); finishErr != nil {
+			if finishErr := c.finishAutoRateRun(ctx, settings.CookieID, orderID, runKey, "canceled", 0, 0, stopErr.Error(), 0); finishErr != nil {
 				return summary, finishErr
 			} // finishErr 保留本地收口失败，禁止伪报成功。
 			summary.Skipped++
@@ -428,7 +456,7 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 				retryAt = 0
 			}
 			// finishErr 保存失败结果的落库错误；失败时隔离运行记录，避免错误状态不明导致重放。
-			finishErr := c.finishAccountTaskRun(ctx, runKey, "failed", 0, 1, message, retryAt)
+			finishErr := c.finishAutoRateRun(ctx, settings.CookieID, orderID, runKey, "failed", 0, 1, message, retryAt)
 			if finishErr != nil {
 				return summary, errors.Join(rateErr, persistErr, finishErr)
 			}
@@ -451,16 +479,20 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 		// updatedCookies、cookieErr 分别保存合并后的最新 Cookie 及其落库错误。
 		updatedCookies, cookieErr := c.persistTaskCookieSession(ctx, settings.CookieID, current, responseCookies, &credential)
 		if cookieErr != nil {
-			return summary, c.quarantineAccountTaskRun(ctx, runKey, summary.Success+1, summary.Failed, cookieErr)
+			return summary, c.quarantineAutoRateRun(ctx, settings.CookieID, orderID, runKey, summary.Success+1, summary.Failed, cookieErr)
 		}
 		current = updatedCookies
+		// ratedFactErr 保存“卖家已评价”事实写入错误；外部动作已经成功，写入失败必须隔离运行记录而不是允许自动重放。
+		if ratedFactErr := c.repository.MarkOrderSellerRated(ctx, settings.CookieID, orderID); ratedFactErr != nil {
+			return summary, c.quarantineAutoRateRun(ctx, settings.CookieID, orderID, runKey, summary.Success+1, summary.Failed, ratedFactErr)
+		}
 		// successMessage 仅在平台提示已评价时记录原因，便于运行记录区分真实评价与历史已评价。
 		successMessage := ""
 		if alreadyRated {
 			successMessage = "平台显示订单已评价，无需重复评价"
 		}
 		// finishErr 保存评价成功结果的落库错误；失败时会把运行记录隔离为人工核对。
-		finishErr := c.finishAccountTaskRun(ctx, runKey, "success", 1, 0, successMessage, 0)
+		finishErr := c.finishAutoRateRun(ctx, settings.CookieID, orderID, runKey, "success", 1, 0, successMessage, 0)
 		if finishErr != nil {
 			return summary, finishErr
 		}
@@ -472,6 +504,20 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 		return summary, fmt.Errorf("保存自动评价扫描时间: %w", markErr)
 	}
 	return summary, nil
+}
+
+// claimRateRun 领取单个订单的评价运行记录；manual 决定是否允许越过失败运行的冷却时间。
+// runKey 是该订单在本账号下的稳定运行键，accountID 与 orderID 组成运行记录归属，
+// 返回值表示本次是否成功领取；人工入口仍受 6 次累计上限和永久失败前缀约束。
+func (c *accountTaskCoordinator) claimRateRun(ctx context.Context, runKey, accountID, orderID string, manual bool) (bool, error) {
+	// run 保存本次评价动作对应的运行记录身份，不包含任何凭证内容。
+	run := db.AccountTaskRun{RunKey: runKey, CookieID: accountID, TaskType: TaskAutoRate, TargetID: orderID}
+	// now 是领取时间，写入运行记录的开始时间并参与冷却判断。
+	now := time.Now().UTC().Unix()
+	if manual {
+		return c.repository.ClaimRunImmediately(ctx, run, now)
+	}
+	return c.repository.ClaimRun(ctx, run, now)
 }
 
 // runAutoPolish 封装运行AutoPolish业务协调。

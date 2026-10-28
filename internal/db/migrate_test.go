@@ -197,9 +197,9 @@ func TestMigrate_ExistingAutomationRunsReceiveEmptyDeliveryProof(t *testing.T) {
 	if enabledAutoConsign != 1 || disabledAutoConsign != 0 {
 		t.Fatalf("迁移回填 auto_consign 错误: enabled=%d disabled=%d", enabledAutoConsign, disabledAutoConsign)
 	}
-	// finalVersion、versionErr 验证升级已包含独立自动免拼、砍价阶段、资源中心图片与商品默认回复/订单自动化停止迁移，不能仅证明旧 delivery_proof 列存在。
+	// finalVersion、versionErr 验证升级已包含独立自动免拼、砍价阶段、资源中心图片、商品默认回复、订单自动化停止与订单卖家评价事实迁移，不能仅证明旧 delivery_proof 列存在。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
-	if versionErr != nil || finalVersion != 59 {
+	if versionErr != nil || finalVersion != 60 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	if !tableExists(t, rawDB, "order_ownership_repairs") {
@@ -282,13 +282,13 @@ func TestMigrate_UpgradesDatabaseWithMainChatVersions(t *testing.T) {
 	if !columnExists(t, rawDB, "automation_rule_actions", "delivery_template_id") {
 		t.Fatal("automation_rule_actions should reference delivery templates")
 	}
-	// finalVersion、versionErr 验证迁移账本已推进到订单自动化停止的 00059，或记录读取失败。
+	// finalVersion、versionErr 验证迁移账本已推进到订单卖家评价事实的 00060，或记录读取失败。
 	finalVersion, versionErr := goose.GetDBVersion(rawDB)
 	if versionErr != nil {
 		t.Fatalf("read final migration version: %v", versionErr)
 	}
-	if finalVersion != 59 {
-		t.Fatalf("final migration version=%d, want 59", finalVersion)
+	if finalVersion != 60 {
+		t.Fatalf("final migration version=%d, want 60", finalVersion)
 	}
 	if !columnExists(t, rawDB, "keywords", "keyword_expressions") || !columnExists(t, rawDB, "keywords", "match_type") {
 		t.Fatal("keywords should include expression collection and match type columns")
@@ -433,14 +433,15 @@ func TestLatestMigrationsDownUpSQLite(t *testing.T) {
 		{"automation_runs", "delivery_proof"},
 		{"keywords", "keyword_expressions"},
 		{"keywords", "match_type"},
+		{"orders", "seller_rated_at"},
 	} {
 		if !columnExists(t, d, c.table, c.col) {
 			t.Fatalf("column missing after re-up: %s.%s", c.table, c.col)
 		}
 	}
-	// finalVersion、versionErr 验证完整回滚后重新升级仍到达最新迁移 00059。
+	// finalVersion、versionErr 验证完整回滚后重新升级仍到达最新迁移 00060。
 	finalVersion, versionErr := goose.GetDBVersion(d)
-	if versionErr != nil || finalVersion != 59 {
+	if versionErr != nil || finalVersion != 60 {
 		t.Fatalf("final migration version=%d err=%v", finalVersion, versionErr)
 	}
 	// val 用于本次流程后续判断的val
