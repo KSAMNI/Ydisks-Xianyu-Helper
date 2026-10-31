@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -267,6 +268,10 @@ type Service struct {
 	itemCatalog ChatItemCatalog
 	// sessionOperations 按账号和会话串行化人工发送与本地删除，不影响不同会话或后台自动化。
 	sessionOperations *sessionOperationGate
+	// identityFailureMu 保护 identityFailures；只做内存读写，不得在持有期间发起平台 I/O。
+	identityFailureMu sync.Mutex
+	// identityFailures 记录“账号+会话”最近一次身份查询失败时间，冷却期内不再重试，防止聊天页轮询放大为批量平台请求。
+	identityFailures map[string]time.Time
 }
 
 // New 创建聊天历史应用服务；空端口会导致构造结果不可用。

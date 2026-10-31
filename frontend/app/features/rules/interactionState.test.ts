@@ -55,6 +55,8 @@ describe('Rules feature interaction state',
     () => {
     expect(selectRulesTab('reply')).toBe('reply');
     expect(selectRulesTab('default')).toBe('default');
+    expect(selectRulesTab('greeting')).toBe('greeting');
+    expect(selectRulesTab('logs')).toBe('logs');
     expect(selectRulesTab('unknown')).toBe('automation');
     });
   });

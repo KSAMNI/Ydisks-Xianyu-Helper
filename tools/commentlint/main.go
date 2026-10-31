@@ -226,11 +226,12 @@ func isFrozenGoFile(relativePath string) bool {
 
 // shouldSkipDirectory 判断目录是否为依赖、构建产物或运行时数据目录。
 func shouldSkipDirectory(path, root string) bool {
-	// relativePath 用统一的分隔符表达目录，避免跨平台判断差异。
+	// relativePath 用统一的分隔符表达目录，避免跨平台判断差异；Windows 下 filepath.Rel 返回反斜杠，必须归一化。
 	relativePath, err := filepath.Rel(root, path)
 	if err != nil {
 		return false
 	}
+	relativePath = filepath.ToSlash(relativePath)
 	// ignoredNames 是不属于业务源码、不能进入注释门禁的目录集合。
 	ignoredNames := map[string]bool{
 		".git": true, "vendor": true, "node_modules": true, "dist": true,
@@ -241,7 +242,8 @@ func shouldSkipDirectory(path, root string) bool {
 	}
 	// ignoredPath 表示当前检查的被忽略目录前缀。
 	for ignoredPath := range ignoredNames {
-		if strings.HasPrefix(relativePath, ignoredPath+string(filepath.Separator)) {
+		// 前缀比较必须与归一化后的路径使用同一分隔符，否则 Windows 下 data/sub 不会被识别。
+		if strings.HasPrefix(relativePath, ignoredPath+"/") {
 			return true
 		}
 	}

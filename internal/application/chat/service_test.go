@@ -336,19 +336,28 @@ func (r *readMessageRepository) FindInboundParsedJSONContaining(context.Context,
 	return r.values, r.err
 }
 
-// blockingIdentityResolver 用于让所有身份工作器停在平台查询阶段，稳定触发排队上下文取消分支。
-type blockingIdentityResolver struct {
-	// started 通知已经进入平台查询的工作器数量。
-	started chan<- struct{}
-	// release 控制阻塞查询统一结束。
-	release <-chan struct{}
+// countingIdentityResolver 记录平台身份查询次数，并可在指定次数返回错误，用于验证批量查询的上限与停止行为。
+type countingIdentityResolver struct {
+	// calls 统计已发起的平台查询次数；顺序查询下无需额外同步。
+	calls *int
+	// failAt 为大于零时表示第几次查询返回 err。
+	failAt int
+	// err 是 failAt 次查询返回的平台错误。
+	err error
+	// onCall 在每次查询开始时被调用，可用于在测试中取消上下文。
+	onCall func()
 }
 
-// Resolve 等待测试释放信号后返回空的非敏感身份。
-func (r blockingIdentityResolver) Resolve(context.Context, string, string) (Identity, error) {
-	r.started <- struct{}{}
-	<-r.release
-	return Identity{}, nil
+// Resolve 记录一次查询并按配置返回错误或固定身份。
+func (r countingIdentityResolver) Resolve(context.Context, string, string) (Identity, error) {
+	*r.calls++
+	if r.onCall != nil {
+		r.onCall()
+	}
+	if r.failAt > 0 && *r.calls == r.failAt {
+		return Identity{}, r.err
+	}
+	return Identity{PeerName: "名称", PeerAvatar: "头像"}, nil
 }
 
 // historyOnlyRepository 仅实现历史读取端口，用于验证可选会话维护能力缺失时的错误。
@@ -783,4 +792,19 @@ func TestReportPlatformReadIsOptionalAndPreservesReporterError(t *testing.T) {
 	if emptyErr != nil || reporter.calls != 1 {
 		t.Fatalf("空消息不应触发上报: error=%v calls=%d", emptyErr, reporter.calls)
 	}
+}
+
+// blockingIdentityResolver 用于让所有身份工作器停在平台查询阶段，稳定触发排队上下文取消分支。
+type blockingIdentityResolver struct {
+	// started 通知已经进入平台查询的工作器数量。
+	started chan<- struct{}
+	// release 控制阻塞查询统一结束。
+	release <-chan struct{}
+}
+
+// Resolve 等待测试释放信号后返回空的非敏感身份。
+func (r blockingIdentityResolver) Resolve(context.Context, string, string) (Identity, error) {
+	r.started <- struct{}{}
+	<-r.release
+	return Identity{}, nil
 }

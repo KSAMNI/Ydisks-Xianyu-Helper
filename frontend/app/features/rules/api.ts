@@ -10,6 +10,7 @@ DefaultReply,
 DefaultReplyResponse,
 ItemDefaultReply,
 Item,
+ItemGreetingRule,
 DeliveryTemplate,
 DeliveryTemplateBinding,
 KeywordTypedResponse,
@@ -21,8 +22,10 @@ ShippingRule
 } from './models';
 import { type RequestControlOptions } from '../../../shared/http/client';
 import { contractClient, runContractRequest } from '../../../shared/api-contract/client';
+import type { AutomationAuditEventListTransport,AutomationAuditEventTransport } from '../../../shared/api-contract/automation';
 import { collectionFrom,objectFrom } from '../../../shared/http/contract';
 export type * from './models';
+import type { AuditDeliveredCard,AutomationAuditEvent,AutomationAuditPage,AutomationAuditQuery } from './auditModels';
 
 /** 发货模板创建和更新请求体。 */
 interface DeliveryTemplateWritePayload {
@@ -696,3 +699,97 @@ export const updateItemDefaultReply = async (cookieID: string, itemID: string, r
 /** deleteItemDefaultReply 删除商品专属配置，使之后的消息重新使用账号兜底。 */
 export const deleteItemDefaultReply = async (cookieID: string, itemID: string): Promise<OperationResponse> =>
   runContractRequest(/* signal 控制商品默认回复删除。 */ signal => contractClient.DELETE('/api/v1/reply-rules/items/{cookie_id}/{item_id}', { params: { path: { cookie_id: cookieID, item_id: itemID } }, signal }));
+// Item Greeting
+// normalizeItemGreeting 把服务端规则 DTO 归一为 UI 模型，缺失字段使用安全默认值。
+const normalizeItemGreeting = (raw: unknown): ItemGreetingRule => {
+  // dto 是待归一的原始规则对象。
+  const dto = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  return {
+    id: typeof dto.id === 'number' ? dto.id : 0,
+    cookie_id: typeof dto.cookie_id === 'string' ? dto.cookie_id : '',
+    name: typeof dto.name === 'string' ? dto.name : '',
+    enabled: dto.enabled === true,
+    reply_content: typeof dto.reply_content === 'string' ? dto.reply_content : '',
+    reply_image_url: typeof dto.reply_image_url === 'string' ? dto.reply_image_url : '',
+    item_ids: Array.isArray(dto.item_ids) ? dto.item_ids.filter(/* itemID 是服务端返回的商品标识。 */ (itemID): itemID is string => typeof itemID === 'string') : [],
+  };
+};
+
+// getItemGreetings 读取商品首次回复规则；accountID 为空时返回当前用户全部账号的规则。
+export const getItemGreetings = async (accountID?: string, options?: RequestControlOptions): Promise<ItemGreetingRule[]> => {
+  // response 保存规则列表接口的成功响应。
+  const response = await runContractRequest(/* signal 控制首次回复规则读取的取消和超时。 */ signal => contractClient.GET('/api/v1/reply-rules/greetings', { params: { query: { cookie_id: accountID || undefined } }, signal }), options) as unknown;
+  return collectionFrom<unknown>(response, ['data', 'items', 'rules']).map(normalizeItemGreeting);
+};
+
+// saveItemGreeting 创建（id 为 0）或更新商品首次回复规则，返回服务端确认的规则。
+export const saveItemGreeting = async (rule: ItemGreetingRule): Promise<ItemGreetingRule> => {
+  // body 是创建和更新共用的请求载荷。
+  const body = { cookie_id: rule.cookie_id, name: rule.name, enabled: rule.enabled, reply_content: rule.reply_content, reply_image_url: rule.reply_image_url, item_ids: rule.item_ids };
+  // response 保存写入接口返回的规则。
+  const response = rule.id
+    ? await runContractRequest(/* signal 控制首次回复规则更新请求的取消和超时。 */ signal => contractClient.PUT('/api/v1/reply-rules/greetings/{id}', { params: { path: { id: rule.id } }, body, signal }))
+    : await runContractRequest(/* signal 控制首次回复规则创建请求的取消和超时。 */ signal => contractClient.POST('/api/v1/reply-rules/greetings', { body, signal }));
+  return normalizeItemGreeting(response);
+};
+
+// deleteItemGreeting 删除商品首次回复规则。
+export const deleteItemGreeting = async (id: number): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制首次回复规则删除请求的取消和超时。 */ signal => contractClient.DELETE('/api/v1/reply-rules/greetings/{id}', { params: { path: { id } }, signal }));
+
+// clearItemGreetingRecords 清空账号的首次回复发送记录，使买家下次咨询时重新触发。
+export const clearItemGreetingRecords = async (cookieID: string): Promise<OperationResponse> =>
+  runContractRequest(/* signal 控制首次回复记录清理请求的取消和超时。 */ signal => contractClient.POST('/api/v1/reply-rules/greetings/clear-records/{cookie_id}', { params: { path: { cookie_id: cookieID } }, body: {} as never, signal }));
+
+// normalizeAuditEvent 把传输层事件转换为 UI 模型；秒级时间换算为毫秒。
+const normalizeAuditEvent = (item: AutomationAuditEventTransport): AutomationAuditEvent => ({
+  id: item.id,
+  cookieId: item.cookie_id,
+  orderId: item.order_id,
+  itemId: item.item_id,
+  ruleId: item.rule_id,
+  runId: item.run_id,
+  triggerType: item.trigger_type,
+  source: item.source,
+  eventType: item.event_type,
+  status: item.status,
+  actionType: item.action_type,
+  summary: item.summary,
+  reason: item.reason,
+  createdAtMs: item.created_at * 1000,
+});
+
+// getAutomationAuditEvents 分页读取规则日志；调用方通过 signal 在筛选变化或卸载时取消旧请求。
+export const getAutomationAuditEvents = async (query: AutomationAuditQuery, options?: RequestControlOptions): Promise<AutomationAuditPage> => {
+  // response 是通过契约客户端读取的分页响应，空筛选项省略。
+  const response: AutomationAuditEventListTransport = await runContractRequest(/* signal 绑定当前规则日志请求的生命周期。 */ signal => contractClient.GET('/api/v1/automation-audit-events', {
+    params: {
+      query: {
+        cookie_id: query.cookieId || undefined,
+        status: query.status || undefined,
+        trigger_type: query.triggerType || undefined,
+        search: query.search.trim() || undefined,
+        run_id: query.runId > 0 ? query.runId : undefined,
+        page: query.page,
+        page_size: query.pageSize,
+      },
+    },
+    signal,
+  }), options);
+  return { events: response.data.map(normalizeAuditEvent), total: response.total, totalPages: Math.max(1, response.total_pages) };
+};
+
+// getAuditOrderDeliveredCards 按需读取订单已发出的卡密正文；只在用户主动点击查看时调用，升级前的订单返回空数组。
+export const getAuditOrderDeliveredCards = async (orderId: string, options?: RequestControlOptions): Promise<AuditDeliveredCard[]> => {
+  // result 是订单已发卡密响应，明文只存在于本次请求结果中。
+  const result = await runContractRequest(/* signal 绑定当前查看操作的生命周期。 */ signal => contractClient.GET('/api/v1/orders/{order_id}/delivered-cards', {
+    params: { path: { order_id: orderId } },
+    signal,
+  }), options);
+  return result.data.map(/* item 是一条传输层售出记录。 */ item => ({
+    id: item.id,
+    cardName: item.card_name,
+    content: item.content,
+    deliveredAtMs: (item.sold_at || item.created_at) * 1000,
+  }));
+};

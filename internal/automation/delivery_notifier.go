@@ -22,6 +22,13 @@ type triggerAwareNotifier interface {
 	NotifyAutomationRunForTrigger(ctx context.Context, triggerType string, runID int64, accountID, buyerID, itemID, status, message, chatID string)
 }
 
+// outboxPreparingNotifier 定义只计算通知 outbox 记录、不执行写入的可选能力，
+// 使调用方能把通知与业务状态变更放进同一个数据库事务。
+type outboxPreparingNotifier interface {
+	// PrepareAutomationRunOutbox 按触发类别计算终态通知应写入的 outbox 记录；渠道查询失败返回错误。
+	PrepareAutomationRunOutbox(ctx context.Context, triggerType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) ([]db.NotificationOutboxInput, error)
+}
+
 // manualInterventionNotifier 定义没有自动化运行主键的阶段异常通知能力。
 type manualInterventionNotifier interface {
 	// NotifyManualIntervention 按稳定业务键发送一条必须人工处理的通知。
@@ -128,4 +135,18 @@ func (n deliveryNotifier) notifyManualIntervention(ctx context.Context, task Tas
 		return
 	}
 	capable.NotifyManualIntervention(ctx, task.TriggerType, task.AccountID, task.OrderID, task.ItemID, task.BuyerID, action, reason, task.ChatID, idempotencyKey)
+}
+
+// prepareRunNeedsReviewOutbox 计算「运行需要人工核对」通知应写入的 outbox 记录，正文与 notifyRunNeedsReview 一致。
+// supported 为 false 表示没有通知器或通知器不支持事务内入队，调用方应改用 notifyRunNeedsReview 的尽力通知路径。
+func (n deliveryNotifier) prepareRunNeedsReviewOutbox(ctx context.Context, run db.AutomationRun, reason string) (messages []db.NotificationOutboxInput, supported bool, err error) {
+	// preparer、ok 保存通知器是否支持只计算 outbox 记录。
+	preparer, ok := n.current().(outboxPreparingNotifier)
+	if n.current() == nil || !ok {
+		return nil, false, nil
+	}
+	// messages 的正文复用统一的失败通知格式。
+	body := fmt.Sprintf("🚨 %s失败（订单 %s）：%s", "付款发货", run.OrderID, "需要人工核对："+reason)
+	messages, err = preparer.PrepareAutomationRunOutbox(ctx, run.TriggerType, run.ID, run.CookieID, run.BuyerID, run.ItemID, "needs_review", body, run.ChatID)
+	return messages, true, err
 }

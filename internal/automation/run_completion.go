@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/logging"
 )
 
 // executePreparedRule 执行已通过准入的 task/rule/run 并负责检查点结果收口；ctx 的取消不影响短时补偿写入。
@@ -13,6 +16,11 @@ import (
 func (r automationRunCoordinator) executePreparedRule(ctx context.Context, task Task, rule db.AutomationRule, run *db.AutomationRun) (outcome ruleExecutionResult, resultErr error) {
 	outcome.Status = ruleExecutionFailed
 	outcome.RunID = run.ID
+	// 把运行关联标识挂到 ctx：动作执行中的 MTOP 请求、发卡、通知等下游日志无需逐处传参即可按 run_id 串联。
+	ctx = logging.With(ctx, slog.Int64("run_id", run.ID), slog.String("account", task.AccountID), slog.String("order_id", task.OrderID), slog.String("trigger", string(task.TriggerType)), slog.Int64("rule_id", rule.ID))
+	// runStarted 是本次运行开始执行动作的时刻，用于输出运行耗时。
+	runStarted := time.Now()
+	r.audit.record(ctx, task, auditEvent{eventType: auditEventRunStarted, status: db.AuditStatusRunning, ruleID: rule.ID, runID: run.ID, summary: fmt.Sprintf("开始执行，共 %d 个动作", len(task.ActionPlan))})
 	// status 是运行完成时写入数据库的结果状态。
 	status := "success"
 	// errMsg 是运行完成时记录的可重试或人工核对原因。
@@ -49,10 +57,12 @@ func (r automationRunCoordinator) executePreparedRule(ctx context.Context, task 
 		if r.hasNotifier() {
 			r.notifyResult(finishCtx, task, run.ID, status, sent, errMsg)
 		}
+		r.audit.runFinished(ctx, task, rule.ID, run.ID, status, sent, errMsg)
 		if status == "success" {
 			outcome.Status = ruleExecutionSucceeded
 			r.logger.Info("自动化规则执行成功", "run_id", run.ID, "account", task.AccountID,
-				"order_id", task.OrderID, "trigger", task.TriggerType, "sent_count", sent)
+				"order_id", task.OrderID, "trigger", task.TriggerType, "sent_count", sent,
+				"duration", time.Since(runStarted).Round(time.Millisecond))
 		}
 	}()
 	// actions 是当前规则生成的完整动作计划。
@@ -88,6 +98,7 @@ func (r automationRunCoordinator) executePreparedRule(ctx context.Context, task 
 			r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, actionErr.Error())
 			notifyCancel()
 		}
+		r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, actionErr.Error())
 		return outcome, actionErr
 	}
 	if actionErr != nil {
@@ -111,6 +122,7 @@ func (r automationRunCoordinator) executePreparedRule(ctx context.Context, task 
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
+			r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, reason)
 			return outcome, fmt.Errorf("%w: %v", errAutomationNeedsReview, actionErr)
 		}
 		status, errMsg = "failed", actionErr.Error()
@@ -141,6 +153,7 @@ func (r automationRunCoordinator) executePreparedRule(ctx context.Context, task 
 				r.notifyResult(notifyCtx, task, run.ID, "needs_review", sent, reason)
 				notifyCancel()
 			}
+			r.audit.runFinished(ctx, task, rule.ID, run.ID, db.AuditStatusNeedsReview, sent, reason)
 			return outcome, fmt.Errorf("%w: %v", errAutomationNeedsReview, incrementErr)
 		}
 	}

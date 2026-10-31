@@ -31,3 +31,19 @@ Enter a service URL and secret only when you already have a trusted remote servi
 ## Change login credentials
 
 Enter the current password to change the management username and password. The new password and confirmation must match. Leave the new-password fields blank to change only the username. Sign in again with the new credentials and keep them separate from the Xianyu account password.
+
+## AI connection test
+
+In the AI model settings, **Test connection** sends a real minimal chat request with the entered API URL, key and model, so you can verify the whole chain before enabling AI for an account. For OpenAI-compatible providers the base URL usually ends with `/v1`.
+
+## Renewal log retention
+
+"Renewal log retention (days)" in Basic settings controls automatic cleanup of credential-renewal logs: 0–365, default 10; 0 disables cleanup.
+
+## Login protection
+
+Only **failed** logins are counted: 30 failures per IP or 10 per username/email within 5 minutes temporarily reject further attempts ("too many login attempts", HTTP 429 with `Retry-After`); a successful login clears that account's counter. Behind a reverse proxy, make sure the real client IP is forwarded.
+
+## Sensitive-settings audit
+
+Reading or changing sensitive settings (API keys, SMTP, notification credentials) writes an audit record containing the user, action, resource and key names, outcome and time. The secret values themselves are never recorded.

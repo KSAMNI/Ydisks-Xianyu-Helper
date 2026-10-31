@@ -24,8 +24,10 @@ import (
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	imagelibraryapp "xianyu-go/internal/application/imagelibrary"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	libraryapp "xianyu-go/internal/application/library"
 	lifecycleapp "xianyu-go/internal/application/lifecycle"
 	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
@@ -115,6 +117,8 @@ type Services struct {
 	analytics *analyticsapp.Service
 	// automationIssues 是自动化异常查询与人工处理应用服务。
 	automationIssues *automationapp.IssueService
+	// automationAudit 是规则日志（自动化行为审计）分页查询应用服务。
+	automationAudit *automationapp.AuditService
 	// automationRules 是自动化规则校验、分页和持久化应用服务。
 	automationRules *automationapp.RuleService
 	// deliveryTemplates 是发货模板 CRUD 应用服务。
@@ -129,6 +133,10 @@ type Services struct {
 	imageLibrary *imagelibraryapp.Service
 	// defaultReplies 是默认回复配置与投递记录应用服务。
 	defaultReplies *defaultreplyapp.Service
+	// itemGreetings 是商品首次回复规则应用服务。
+	itemGreetings *itemgreetingapp.Service
+	// library 是本地资源库（图片库、商品模板、模板发布预检）应用服务。
+	library *libraryapp.Service
 	// keywords 是关键词规则与指定商品回复应用服务。
 	keywords *keywordsapp.Service
 	// settings 是系统、用户和账号 AI 设置应用服务。
@@ -338,6 +346,7 @@ type TransportPorts struct {
 	NotificationChannels        *notificationsapp.ChannelService
 	Analytics                   *analyticsapp.Service
 	AutomationIssues            *automationapp.IssueService
+	AutomationAudit             *automationapp.AuditService
 	AutomationRules             *automationapp.RuleService
 	DeliveryTemplates           *deliveryapp.Service
 	Cards                       *cardsapp.Service
@@ -349,7 +358,10 @@ type TransportPorts struct {
 	Settings               *settingsapp.Service
 	Admin                  *adminapp.Service
 	// ImageLibrary 是资源中心图片应用服务。
-	ImageLibrary *imagelibraryapp.Service
+	ImageLibrary  *imagelibraryapp.Service
+	ItemGreetings *itemgreetingapp.Service
+	// Library 是本地资源库应用服务。
+	Library *libraryapp.Service
 	// RuntimeLogs 是管理员运行日志查询用例。
 	RuntimeLogs *logsapp.Service
 }
@@ -370,8 +382,8 @@ func (services *Services) TransportPorts() TransportPorts {
 		AccountLongLogin: services.accountLongLogin, AccountSettings: services.accountSettings, AccountRuntime: services.accountRuntime,
 		AccountSummaries: services.accountSummaries, AccountTasks: services.accountTasks, Chat: services.chat,
 		UncertainNotifications: services.uncertainNotifications, NotificationChannels: services.notificationChannels,
-		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
-		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies,
+		Analytics: services.analytics, AutomationIssues: services.automationIssues, AutomationAudit: services.automationAudit, AutomationRules: services.automationRules, DeliveryTemplates: services.deliveryTemplates,
+		Cards: services.cards, APICardTester: services.apiCardTester, PublishAutomationRules: services.publishAutomationRules, DefaultReplies: services.defaultReplies, ItemGreetings: services.itemGreetings, Library: services.library,
 		Keywords: services.keywords, ImageLibrary: services.imageLibrary, Settings: services.settings, Admin: services.admin, RuntimeLogs: services.runtimeLogs,
 	}
 }
@@ -385,18 +397,90 @@ func New(dependencies Dependencies) (*Services, error) {
 	if transportValidationErr := dependencies.TransportApplications.Validate(); transportValidationErr != nil {
 		return nil, fmt.Errorf("transport 应用服务无效: %w", transportValidationErr)
 	}
+	// sessionRecovery 统一适配平台 Session 失效分类、诊断日志和账号运行时恢复。
+	sessionRecovery := dependencies.SessionRecovery
 	// orderServices、orderRefreshJobs、orderBuildErr 分别是订单用例集合、刷新任务门面及其构造错误。
 	orderServices, orderRefreshJobs, orderBuildErr := buildOrderServices(dependencies)
 	if orderBuildErr != nil {
 		return nil, orderBuildErr
 	}
-	// accountProfile 保存账号资料刷新用例的构造结果。
+	// batchServices、batchServicesErr 分别是批量发布服务集合及其组合期错误。
+	batchServices, batchServicesErr := buildItemBatchServices(dependencies, sessionRecovery, dependencies.AutomationDependencies)
+	if batchServicesErr != nil {
+		return nil, batchServicesErr
+	}
+	// catalogServices、libraryService、catalogErr 分别是商品目录服务集合、本地资源库服务及其组合期错误。
+	catalogServices, libraryService, catalogErr := buildCatalogAndLibrary(dependencies, sessionRecovery, batchServices.preview)
+	if catalogErr != nil {
+		return nil, catalogErr
+	}
+	// services 是完成构造后只读注入 Server 的应用服务集合；账号域字段由 applyAccountApplications 填充。
+	services := &Services{
+		library:                     libraryService,
+		lifecycleContext:            dependencies.LifecycleContext,
+		qrLogin:                     dependencies.QRLogin,
+		orders:                      orderServices,
+		orderRefreshJobs:            orderRefreshJobs,
+		orderReconciliationRecovery: dependencies.OrderReconciliationRecovery,
+		itemSinglePublish:           catalogServices.singlePublish,
+		itemBatchCoordinator:        batchServices.coordinator,
+		itemBatchPreview:            batchServices.preview,
+		itemBatchManagement:         batchServices.management,
+		itemCategoryRecommendation:  catalogServices.categoryRecommendation,
+		itemBatchPreviewPersistence: catalogServices.previewPersistence,
+		itemBatchLocalPublish:       batchServices.localPublish,
+		itemSync: itemapp.NewSyncService(dependencies.ItemDependencies.NewItemSyncRepository(dependencies.MTopClient, dependencies.Logger, dependencies.UpdateRunningCookie, func(ctx context.Context, cookieID string, err error) {
+			if sessionRecovery != nil {
+				sessionRecovery(ctx, cookieID, err)
+			}
+		})),
+		itemCatalog:            catalogServices.catalog,
+		itemCatalogMutation:    catalogServices.mutation,
+		itemAISettings:         catalogServices.aiSettings,
+		authentication:         nil,
+		passwordLogin:          accountapp.NewPasswordLoginService(),
+		accountTasks:           dependencies.TransportApplications.AccountTasks,
+		chat:                   buildChatApplication(dependencies),
+		uncertainNotifications: dependencies.TransportApplications.UncertainNotifications,
+		notificationChannels:   dependencies.TransportApplications.NotificationChannels,
+		analytics:              dependencies.TransportApplications.Analytics,
+		automationRules:        dependencies.TransportApplications.AutomationRules,
+		deliveryTemplates:      dependencies.TransportApplications.DeliveryTemplates,
+		cards:                  dependencies.TransportApplications.Cards,
+		apiCardTester:          dependencies.TransportApplications.APICardTester,
+		publishAutomationRules: dependencies.TransportApplications.PublishAutomationRules,
+		automationIssues:       dependencies.TransportApplications.AutomationIssues,
+		automationAudit:        dependencies.TransportApplications.AutomationAudit,
+		defaultReplies:         dependencies.TransportApplications.DefaultReplies,
+		itemGreetings:          dependencies.TransportApplications.ItemGreetings,
+		keywords:               dependencies.TransportApplications.Keywords,
+		imageLibrary:           dependencies.TransportApplications.ImageLibrary,
+		settings:               dependencies.TransportApplications.Settings,
+		admin:                  dependencies.TransportApplications.Admin,
+		runtimeLogs:            dependencies.TransportApplications.RuntimeLogs,
+	}
+	// accountErr 保存账号域应用服务装配失败原因；失败时不返回半初始化的 Services。
+	if accountErr := applyAccountApplications(services, dependencies); accountErr != nil {
+		return nil, accountErr
+	}
+	// authentication、authenticationErr 分别是认证应用服务及其构造错误。
+	authentication, authenticationErr := accountapp.NewAuthenticationService(dependencies.AccountDependencies.NewAuthenticationRepository())
+	if authenticationErr != nil {
+		return nil, authenticationErr
+	}
+	services.authentication = authentication
+	return services, nil
+}
+
+// applyAccountApplications 装配账号域的登录、凭证、资料、设置、摘要、运行时与唤醒服务并写入 services。
+// 该函数只承担账号域职责；订单、商品与 transport 适配仍在各自构造路径中完成。
+func applyAccountApplications(services *Services, dependencies Dependencies) error {
 	// accountRepository 提供账号登录、资料摘要和删除共用的数据库适配器。
 	accountRepository := dependencies.AccountDependencies.NewAccountLoginRepository()
 	// platformCredentials 将账号凭证读取限制在消费者定义的只读应用端口。
 	platformCredentials, platformCredentialsErr := accountapp.NewPlatformCredentialService(accountRepository)
 	if platformCredentialsErr != nil {
-		return nil, fmt.Errorf("构造平台凭证服务失败: %w", platformCredentialsErr)
+		return fmt.Errorf("构造平台凭证服务失败: %w", platformCredentialsErr)
 	}
 	// cookieWriterFactory 将明文 Cookie 封装在 adapter 的请求范围实例中，Server 不持有凭证仓储。
 	cookieWriterFactory := func(cookies string) accountapp.CookieWriter {
@@ -411,7 +495,7 @@ func New(dependencies Dependencies) (*Services, error) {
 	// accountProfile 由应用层服务编排平台资料刷新与非敏感摘要持久化。
 	accountProfile, profileErr := accountapp.NewProfileService(accountRepository, adapter.NewAccountProfilePort(accountRepository, dependencies.MTopClient, dependencies.UpdateRunningCookie, sessionRecovery, dependencies.Logger))
 	if profileErr != nil {
-		return nil, fmt.Errorf("构造账号资料服务失败: %w", profileErr)
+		return fmt.Errorf("构造账号资料服务失败: %w", profileErr)
 	}
 	// accountLongLogin 由适配器承载平台调用、Cookie 快照合并和凭证写回。
 	accountLongLogin, longLoginErr := accountapp.NewLongLoginService(
@@ -419,32 +503,26 @@ func New(dependencies Dependencies) (*Services, error) {
 		adapter.NewLongLoginAdapter(accountRepository, dependencies.LongLoginClient, dependencies.UpdateRunningCookie, dependencies.Logger),
 	)
 	if longLoginErr != nil {
-		return nil, fmt.Errorf("构造账号长登录服务失败: %w", longLoginErr)
+		return fmt.Errorf("构造账号长登录服务失败: %w", longLoginErr)
 	}
 	// settingsRuntime 将运行时启停绑定到协调器 Context，避免把请求 Context 错误当成账号实例生命周期。
 	settingsRuntime := accountapp.SettingsRuntime(settingsRuntimeTransport{manager: dependencies.Manager, lifecycleContext: dependencies.LifecycleContext})
 	// accountSettings、accountSettingsErr 保存账号设置应用服务及其装配错误。
 	accountSettings, accountSettingsErr := accountapp.NewSettingsService(dependencies.AccountDependencies.NewAccountSettingsRepository(), settingsRuntime)
 	if accountSettingsErr != nil {
-		return nil, fmt.Errorf("构造账号设置服务失败: %w", accountSettingsErr)
+		return fmt.Errorf("构造账号设置服务失败: %w", accountSettingsErr)
 	}
 	// accountSummaryRepository 保存普通用户与管理员共用的摘要查询适配器。
 	accountSummaryRepository := dependencies.AccountDependencies.NewAccountSummaryRepository()
 	// accountSummaries、accountSummariesErr 保存账号摘要应用服务及其装配错误。
 	accountSummaries, accountSummariesErr := accountapp.NewSummaryService(accountSummaryRepository, accountSummaryRepository)
 	if accountSummariesErr != nil {
-		return nil, fmt.Errorf("构造账号摘要服务失败: %w", accountSummariesErr)
-	}
-	// credentialWake 负责将凭证恢复后的任务唤醒写入收口到适配器。
-	// automationDependencies 提供自动化、默认回复和关键词用例的显式适配器工厂。
-	automationDependencies := dependencies.AutomationDependencies
-	if automationDependencies == nil {
-		return nil, fmt.Errorf("自动化专用依赖未装配")
+		return fmt.Errorf("构造账号摘要服务失败: %w", accountSummariesErr)
 	}
 	// credentialWake、credentialWakeErr 保存凭证恢复后的自动化唤醒应用服务及装配错误。
-	credentialWake, credentialWakeErr := automationapp.NewCredentialWakeService(automationDependencies.NewAutomationCredentialWakeRepository())
+	credentialWake, credentialWakeErr := automationapp.NewCredentialWakeService(dependencies.AutomationDependencies.NewAutomationCredentialWakeRepository())
 	if credentialWakeErr != nil {
-		return nil, fmt.Errorf("构造凭证恢复唤醒服务失败: %w", credentialWakeErr)
+		return fmt.Errorf("构造凭证恢复唤醒服务失败: %w", credentialWakeErr)
 	}
 	// accountRuntime 将 Manager 与凭证恢复后的自动化唤醒收口到账号应用端口。
 	accountRuntime := accountapp.NewRuntimeService(adapter.NewAccountRuntimePort(dependencies.Manager), credentialWake)
@@ -466,94 +544,32 @@ func New(dependencies Dependencies) (*Services, error) {
 	// accountDelete 是账号删除用例的构造结果，运行时端口可为空以兼容无 Manager 的测试 Server。
 	accountDelete, deleteErr := accountapp.NewDeleteService(accountRepository, deleteRuntime)
 	if deleteErr != nil {
-		return nil, fmt.Errorf("构造账号删除服务失败: %w", deleteErr)
-	}
-	// batchServices、batchServicesErr 分别是批量发布服务集合及其组合期错误。
-	batchServices, batchServicesErr := buildItemBatchServices(dependencies, sessionRecovery, automationDependencies)
-	if batchServicesErr != nil {
-		return nil, batchServicesErr
+		return fmt.Errorf("构造账号删除服务失败: %w", deleteErr)
 	}
 	// accountLoginCreate 是手动 Cookie 登录应用服务的构造结果。
 	accountLoginCreate, accountLoginCreateErr := accountapp.NewLoginService(loginLifecycle)
 	if accountLoginCreateErr != nil {
-		return nil, fmt.Errorf("构造账号登录创建服务失败: %w", accountLoginCreateErr)
+		return fmt.Errorf("构造账号登录创建服务失败: %w", accountLoginCreateErr)
 	}
-	// accountQRLogin 是扫码成功凭证持久化应用服务的构造结果；零值测试 Server 暂不装配数据库端口。
-	var accountQRLogin *accountapp.QRLoginService
-	if dependencies.AccountDependencies != nil {
-		// accountQRLoginErr 保存扫码应用服务装配失败原因。
-		var accountQRLoginErr error
-		accountQRLogin, accountQRLoginErr = accountapp.NewQRLoginService(dependencies.AccountDependencies.NewQRLoginRepository(), loginLifecycle)
-		if accountQRLoginErr != nil {
-			return nil, fmt.Errorf("构造扫码登录服务失败: %w", accountQRLoginErr)
-		}
+	// accountQRLogin、accountQRLoginErr 保存扫码成功凭证持久化应用服务及其装配错误。
+	accountQRLogin, accountQRLoginErr := accountapp.NewQRLoginService(dependencies.AccountDependencies.NewQRLoginRepository(), loginLifecycle)
+	if accountQRLoginErr != nil {
+		return fmt.Errorf("构造扫码登录服务失败: %w", accountQRLoginErr)
 	}
 	// qrSessionRegistry 将扫码会话所有权、过期回收和幂等结果放在应用边界内。
 	qrSessionRegistry := accountapp.NewQRLoginSessionRegistry()
-	// catalogServices、catalogServicesErr 分别是商品目录服务集合及其组合期错误。
-	catalogServices, catalogServicesErr := buildItemCatalogServices(dependencies, sessionRecovery)
-	if catalogServicesErr != nil {
-		return nil, catalogServicesErr
-	}
-	// services 是完成构造后只读注入 Server 的应用服务集合。
-	services := &Services{
-		lifecycleContext:            dependencies.LifecycleContext,
-		qrLogin:                     dependencies.QRLogin,
-		platformCredentials:         platformCredentials,
-		orders:                      orderServices,
-		orderRefreshJobs:            orderRefreshJobs,
-		orderReconciliationRecovery: dependencies.OrderReconciliationRecovery,
-		itemSinglePublish:           catalogServices.singlePublish,
-		itemBatchCoordinator:        batchServices.coordinator,
-		itemBatchPreview:            batchServices.preview,
-		itemBatchManagement:         batchServices.management,
-		itemCategoryRecommendation:  catalogServices.categoryRecommendation,
-		itemBatchPreviewPersistence: catalogServices.previewPersistence,
-		itemBatchLocalPublish:       batchServices.localPublish,
-		itemSync: itemapp.NewSyncService(dependencies.ItemDependencies.NewItemSyncRepository(dependencies.MTopClient, dependencies.Logger, dependencies.UpdateRunningCookie, func(ctx context.Context, cookieID string, err error) {
-			if sessionRecovery != nil {
-				sessionRecovery(ctx, cookieID, err)
-			}
-		})),
-		itemCatalog:            catalogServices.catalog,
-		itemCatalogMutation:    catalogServices.mutation,
-		itemAISettings:         catalogServices.aiSettings,
-		accountLogin:           &accountLoginService{cookieWriterFactory: cookieWriterFactory, cookieUpdaterFactory: cookieUpdaterFactory, sessionPort: accountRepository, createApplication: accountLoginCreate, qrApplication: accountQRLogin, qrSessions: qrSessionRegistry},
-		authentication:         nil,
-		loginAudit:             loginAudit,
-		passwordLogin:          accountapp.NewPasswordLoginService(),
-		accountDelete:          accountDelete,
-		accountProfile:         accountProfile,
-		accountLongLogin:       accountLongLogin,
-		accountSettings:        accountSettings,
-		accountRuntime:         accountRuntime,
-		accountSummaries:       accountSummaries,
-		accountTasks:           dependencies.TransportApplications.AccountTasks,
-		credentialWake:         credentialWake,
-		chat:                   buildChatApplication(dependencies),
-		uncertainNotifications: dependencies.TransportApplications.UncertainNotifications,
-		notificationChannels:   dependencies.TransportApplications.NotificationChannels,
-		analytics:              dependencies.TransportApplications.Analytics,
-		automationRules:        dependencies.TransportApplications.AutomationRules,
-		deliveryTemplates:      dependencies.TransportApplications.DeliveryTemplates,
-		cards:                  dependencies.TransportApplications.Cards,
-		apiCardTester:          dependencies.TransportApplications.APICardTester,
-		publishAutomationRules: dependencies.TransportApplications.PublishAutomationRules,
-		automationIssues:       dependencies.TransportApplications.AutomationIssues,
-		defaultReplies:         dependencies.TransportApplications.DefaultReplies,
-		keywords:               dependencies.TransportApplications.Keywords,
-		imageLibrary:           dependencies.TransportApplications.ImageLibrary,
-		settings:               dependencies.TransportApplications.Settings,
-		admin:                  dependencies.TransportApplications.Admin,
-		runtimeLogs:            dependencies.TransportApplications.RuntimeLogs,
-	}
-	// authentication、authenticationErr 分别是认证应用服务及其构造错误。
-	authentication, authenticationErr := accountapp.NewAuthenticationService(dependencies.AccountDependencies.NewAuthenticationRepository())
-	if authenticationErr != nil {
-		return nil, authenticationErr
-	}
-	services.authentication = authentication
-	return services, nil
+	services.platformCredentials = platformCredentials
+	services.accountLogin = &accountLoginService{cookieWriterFactory: cookieWriterFactory, cookieUpdaterFactory: cookieUpdaterFactory,
+		sessionPort: accountRepository, createApplication: accountLoginCreate, qrApplication: accountQRLogin, qrSessions: qrSessionRegistry}
+	services.loginAudit = loginAudit
+	services.accountDelete = accountDelete
+	services.accountProfile = accountProfile
+	services.accountLongLogin = accountLongLogin
+	services.accountSettings = accountSettings
+	services.accountRuntime = accountRuntime
+	services.accountSummaries = accountSummaries
+	services.credentialWake = credentialWake
+	return nil
 }
 
 // buildChatApplication 复用运行时组合根预先创建的聊天应用；旧测试构造路径仍按原依赖现场创建。

@@ -3,10 +3,12 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import { formatLocalDateTime } from '../../../../dateTime';
 import type { OrderStatus } from '../api';
+import { DeliveredCardsSection } from '../components/DeliveredCardsSection';
 import { OrderFilterBar } from '../components/OrderFilterBar';
 import { useOrderQuery } from '../hooks';
 import { useOrderActions } from '../orderActions';
 import { formatOrderSpec } from '../orderSpec';
+import { PageHeader } from '../../../../shared/ui/PageHeader';
 
 // StatusBadge 渲染订单状态徽标。
 const StatusBadge: React.FC<{ /** status 表示状态。 */ status: OrderStatus }> = ({ status }) => {
@@ -93,12 +95,8 @@ const OrderList: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
-        <div>
-          <h2 className="text-4xl font-extrabold text-gray-900 tracking-tight">订单中心</h2>
-          <p className="text-gray-500 mt-2 font-medium">查看所有闲鱼交易记录与状态。</p>
-        </div>
+    <div className="min-w-0 space-y-8 animate-fade-in">
+      <PageHeader title="订单中心" description="查看所有闲鱼交易记录与状态。">
         <div className="flex items-center gap-3">
             <button onClick={loadOrders} className="p-3 rounded-2xl bg-white border border-gray-100 text-gray-600 hover:bg-gray-50 hover:text-black transition-colors shadow-sm">
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
@@ -108,7 +106,7 @@ const OrderList: React.FC = () => {
                 一键同步订单
             </button>
         </div>
-      </div>
+      </PageHeader>
 
       {/* 同步与强制获取提示条：让用户看到限流等待原因，而不是按钮长时间无说明地转圈。 */}
       {syncNotice && (
@@ -397,6 +395,9 @@ const OrderList: React.FC = () => {
                   )}
                 </div>
               </div>
+
+              {/* 已发卡密：按订单号 key 挂载，切换订单会取消旧请求并清空明文 */}
+              <DeliveredCardsSection key={selectedOrder.order_id} orderId={selectedOrder.order_id} />
             </div>
 
             <div className="modal-footer">

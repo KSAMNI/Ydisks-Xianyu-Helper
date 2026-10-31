@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"xianyu-go/internal/db"
+	"xianyu-go/internal/logging"
 )
 
 // paidRecoveryReady 重新核对付款运行的来源、最新订单状态和自动发货总开关。
@@ -103,12 +105,24 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 	if strings.TrimSpace(os.Getenv(pendingShipCatchupEnv)) == "0" || s == nil || s.center == nil || s.center.store == nil || s.center.store.Automation == nil || leftTasks <= 0 {
 		return
 	}
+	// 本轮扫描的 job/tick_id 挂到 ctx，单个订单的补触发、发卡与 MTOP 日志都能按 tick_id 归到同一轮。
+	ctx = logging.With(ctx, slog.String("job", "pending_ship_catchup"), slog.String("tick_id", logging.NewTickID()))
+	// scanStarted 是本轮扫描起点，用于输出汇总耗时。
+	scanStarted := time.Now()
 	// triggeredCount 统计本轮实际领取的订单数。
 	triggeredCount := 0
+	// 只有本轮真正补触发了订单才输出一行汇总；空转扫描不产生 Info，避免每分钟刷屏。
+	defer func() {
+		if triggeredCount > 0 {
+			s.center.logger.InfoContext(ctx, "待发货兜底扫描完成", "triggered", triggeredCount, "duration", time.Since(scanStarted).Round(time.Millisecond))
+		}
+	}()
 	// afterOrderID 保存分页扫描的稳定订单游标。
 	afterOrderID := ""
 	// sweepStartedAt 是本轮完整扫描的起点；只有扫完全部候选页才会据此清除本轮没再出现的订单观测记录。
 	sweepStartedAt := time.Now().UTC()
+	// blockedAccounts 记录本轮已遇到风控、会话失效或 Token 耗尽的账号，其余订单留待下一轮，不再请求平台。
+	blockedAccounts := map[string]struct{}{}
 	for {
 		if ctx.Err() != nil {
 			s.center.logger.Warn("待发货兜底扫描达到本轮时间预算", "err", ctx.Err())
@@ -135,10 +149,14 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 				return
 			}
 			afterOrderID = order.OrderID
+			// blocked 表示该订单所属账号本轮已被平台阻断，其订单不再发起请求。
+			if _, blocked := blockedAccounts[order.CookieID]; blocked {
+				continue
+			}
 			// catchupReady、waitReason 保存当前订单是否已越过实时事件优先窗口及未放行原因。
 			catchupReady, waitReason := pendingShipCatchupReady(order, s.observePendingShip(order.OrderID, time.Now().UTC()), time.Now().UTC(), s.pendingShipSettleWindowValue())
 			if !catchupReady {
-				s.center.logger.Info("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
+				s.center.logger.Debug("待发货兜底任务等待实时付款事件或人工核对", "account", order.CookieID, "order_id", order.OrderID, "reason", waitReason)
 				continue
 			}
 			// allowed、allowErr 保存账号自动化门禁结果。
@@ -160,7 +178,7 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 				continue
 			}
 			if !s.center.accountSenderReady(order.CookieID) {
-				s.center.logger.Info("账号 WebSocket 尚未就绪，待发货兜底任务等待下次扫描", "account", order.CookieID, "order_id", order.OrderID)
+				s.center.logger.Debug("账号 WebSocket 尚未就绪，待发货兜底任务等待下次扫描", "account", order.CookieID, "order_id", order.OrderID)
 				continue
 			}
 			if !s.claimPendingShipAttempt(order.OrderID) {
@@ -177,6 +195,9 @@ func (s *Scheduler) scanPendingShipDeliveriesWithContextAndLimit(ctx context.Con
 			// err 保存兜底任务执行错误；失败只影响当前订单。
 			if err := s.center.HandleTask(taskCtx, task); err != nil {
 				s.center.logger.Warn("待发货兜底任务执行失败", "account", order.CookieID, "order_id", order.OrderID, "err", err)
+				if isPlatformBlockErr(err) {
+					blockedAccounts[order.CookieID] = struct{}{}
+				}
 			}
 			cancel()
 		}
@@ -338,4 +359,33 @@ func (s *Scheduler) releasePendingShipAttempt(orderID string) {
 	s.pendingShipMu.Lock()
 	defer s.pendingShipMu.Unlock()
 	delete(s.pendingShipCooldown, orderID)
+}
+
+// quarantineMissingProofResume 把凭证缺失的退款撤回续跑候选转入人工核对并通知。
+// 通知 outbox 记录与状态更新在同一数据库事务内写入：只有运行确实被隔离才会产生通知，隔离失败或并发竞争时不会发出
+// 与状态不一致的通知；渠道查询失败则放弃本轮、运行保持原状，下一轮重试。通知器不支持事务内入队时回退为隔离后尽力通知。
+func (s *Scheduler) quarantineMissingProofResume(ctx context.Context, candidate db.PendingShipResume) {
+	// reason 说明停止自动确认发货的原因，不含任何凭证内容。
+	reason := "退款撤回后续跑缺少已发送的发货凭证，已停止自动确认发货，请人工核对"
+	// run 由扫描候选直接构造通知上下文，不依赖回读数据库。
+	run := db.AutomationRun{
+		ID: candidate.RunID, RuleID: candidate.RuleID, CookieID: candidate.Order.CookieID, ItemID: candidate.Order.ItemID,
+		OrderID: candidate.Order.OrderID, BuyerID: candidate.Order.BuyerID, ChatID: candidate.Order.ChatID,
+		TriggerType: TriggerOrderPaid, Status: "needs_review", AttemptCount: candidate.Attempt, ActionCursor: candidate.ActionCursor,
+	}
+	// outbox、transactional、prepareErr 保存待事务写入的通知记录、是否支持事务内入队及渠道查询错误。
+	outbox, transactional, prepareErr := s.center.notifications.prepareRunNeedsReviewOutbox(ctx, run, reason)
+	if prepareErr != nil {
+		s.center.logger.Error("准备缺失凭证续跑的人工处理通知失败，保留运行等待下一轮重试", "run_id", candidate.RunID, "err", prepareErr)
+		return
+	}
+	// quarantined、err 保存条件隔离（含通知入队）结果；陈旧扫描零行更新属于正常竞争。
+	quarantined, err := s.center.store.Automation.QuarantineCanceledRunMissingProof(ctx, candidate.RunID, candidate.Attempt, reason, outbox)
+	if err != nil {
+		s.center.logger.Error("保存缺失凭证续跑运行人工核对状态失败，下一轮重试", "run_id", candidate.RunID, "err", err)
+		return
+	}
+	if quarantined && !transactional {
+		s.center.notifyRunNeedsReview(ctx, run, reason)
+	}
 }

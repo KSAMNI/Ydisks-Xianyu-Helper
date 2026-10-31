@@ -1,7 +1,10 @@
-import { AlertCircle,Bot,CalendarClock,Check,Clock,Edit2,Loader2,MessageCircle,Power,QrCode,RefreshCw,Sparkles,Trash2,User } from 'lucide-react';
+import { AlertCircle,Bot,CalendarClock,Check,ClipboardPaste,Clock,ExternalLink,Edit2,Loader2,MessageCircle,Power,QrCode,RefreshCw,Sparkles,Trash2,User } from 'lucide-react';
 import React from 'react';
 import type { AccountDetail } from '../api';
 import { accountRuntimePresentation } from '../runtime';
+
+// RISK_GUIDE_URL 是风控处理教程（issue 92）的公开链接，说明如何获取过风控的 Cookie。
+const RISK_GUIDE_URL = 'https://github.com/Christ9038/Ydisks-Xianyu-Helper/issues/92';
 
 // AccountCardProps 描述账号卡片展示所需的数据和动作。
 export interface AccountCardProps {
@@ -96,13 +99,22 @@ export const AccountCard = React.memo(/* AccountCard 负责渲染单个账号卡
               <p className="font-mono text-xs text-gray-400">ID: {account.id}</p>
             </div>
             {account.runtime_message && account.runtime_state !== 'online' && account.runtime_state !== 'disabled' && (
-              <div className={`mb-3 flex flex-wrap items-center gap-2 text-sm font-medium ${requiresLogin ? 'text-red-700' : 'text-amber-700'}`}>
-                <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                <span>{account.runtime_message}</span>
+              <div className={`w-full rounded-xl px-4 py-3 text-sm font-medium ${requiresLogin ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-700'}`}>
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-4 w-4 flex-shrink-0" />
+                  <span className="min-w-0 break-words leading-relaxed">{account.runtime_message}</span>
+                </div>
                 {requiresLogin && (
-                  <button type="button" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => onReauthorize(account)} className="inline-flex items-center gap-1.5 rounded-lg bg-red-50 px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100">
-                    <QrCode className="w-3.5 h-3.5" /> 重新授权
-                  </button>
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <button type="button" onClick={/* 风控账号打开编辑弹窗粘贴 Cookie，登录失效账号仍走二维码授权。 */ () => (account.runtime_state === 'verification_required' ? onEdit(account) : onReauthorize(account))} className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-bold text-red-700 hover:bg-red-100">
+                      {account.runtime_state === 'verification_required' ? <><ClipboardPaste className="w-3.5 h-3.5" /> 粘贴无风控 Cookie</> : <><QrCode className="w-3.5 h-3.5" /> 重新授权</>}
+                    </button>
+                    {account.runtime_state === 'verification_required' && (
+                      <a href={RISK_GUIDE_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-bold text-blue-700 hover:bg-blue-100">
+                        <ExternalLink className="w-3.5 h-3.5" /> 查看操作教程
+                      </a>
+                    )}
+                  </div>
                 )}
               </div>
             )}

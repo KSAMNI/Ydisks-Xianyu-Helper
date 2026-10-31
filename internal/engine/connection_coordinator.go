@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"xianyu-go/internal/logging"
 	"xianyu-go/internal/xianyu/mtop"
 	"xianyu-go/internal/xianyu/ws"
 )
@@ -41,6 +43,8 @@ func (c *connectionCoordinator) run(parent context.Context) error {
 	}
 	// ctx、cancel 保存当前 Run 派生的可取消运行上下文及其取消函数。
 	ctx, cancel := context.WithCancel(parent)
+	// 账号标识挂到运行 ctx：Token 获取、续期等下游 MTOP/WS 日志无需逐处传参即可按账号检索。
+	ctx = logging.With(ctx, slog.String("account", a.CookieID))
 	defer func() {
 		cancel()
 		// shutdownCtx、shutdownCancel 提供独立于 parent 取消状态的有限 Join 预算；
@@ -304,7 +308,7 @@ func (c *connectionCoordinator) handleTokenAcquisitionFailure(ctx context.Contex
 	a.setRuntimeError(ctx, tokenErr)
 	if mtop.IsRiskVerificationErr(tokenErr) {
 		a.logger.Warn("闲鱼要求安全验证，停止本次消息登录", "err", tokenErr)
-		a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证", "账号触发闲鱼风控验证（滑块/人脸等），需要重新登录或完成人工验证。")
+		a.alertEvent(ctx, EventSecurityVerification, AlertLevelWarn, "闲鱼要求安全验证", "账号触发闲鱼风控验证（滑块/人脸等），重新扫码无效；请在网页版闲鱼通过风控后，复制 token 请求里的 Cookie 粘贴到账号设置。")
 		return false, tokenErr
 	}
 	if mtop.IsSessionExpiredErr(tokenErr) {
@@ -356,7 +360,7 @@ func (c *connectionCoordinator) handleTokenAcquisitionFailure(ctx context.Contex
 		return false, tokenErr
 	}
 	a.setRuntimeState(RuntimeReconnecting, "获取消息凭证失败，正在重试")
-	a.notifyOffline(ctx, "获取消息凭证失败，正在自动重试："+errString(tokenErr))
+	a.notifyDialRetrying(ctx, "获取消息凭证失败，正在自动重试："+errString(tokenErr))
 	// sleepErr 保存退避等待被取消或超时的原因；该错误必须终止当前账号运行循环。
 	if sleepErr := sleepCtx(ctx, a.tokenRetryDelay()); sleepErr != nil {
 		return false, sleepErr

@@ -52,7 +52,8 @@ func chatOnlyPaidTask() Task {
 }
 
 // TestPaidEventWithoutOrderIDNeverGuessesOrder 验证缺订单号的付款事件不按会话猜测订单：
-// 即使带买家和商品，同会话存在待发货或已发货订单时也不发卡、不创建运行，而是延期等待订单同步。
+// 即使带买家和商品，同会话存在待发货或已发货订单时也不发卡、不创建运行、不延期（重放无法补全订单号，
+// 订单同步后的兜底由待发货扫描负责）。
 func TestPaidEventWithoutOrderIDNeverGuessesOrder(t *testing.T) {
 	// tasks 覆盖只有会话标识，以及带买家和商品但仍无订单号的两种付款事件。
 	tasks := map[string]Task{"仅会话": chatOnlyPaidTask(), "会话买家商品": simplifiedPaidTask()}
@@ -69,20 +70,14 @@ func TestPaidEventWithoutOrderIDNeverGuessesOrder(t *testing.T) {
 				sender := &testSender{}
 				// center 使用真实事实记录和运行协调器。
 				center := New(store, testSenderProvider{sender: sender}, nil)
-				// handleErr 保存事件处理结果，期望延期而非报错。
+				// handleErr 保存事件处理结果；缺订单号的付款事件不可重试，必须直接丢弃且不返回错误。
 				if handleErr := center.HandleTask(context.Background(), task); handleErr != nil {
-					t.Fatalf("缺订单号事件延期不应返回错误: %v", handleErr)
+					t.Fatalf("缺订单号事件丢弃不应返回错误: %v", handleErr)
 				}
-				// pending、runs 是处理后的延期任务数与运行数。
-				// 只有“已发货且事件仅含会话标识”这一形态能按会话定位到已处理订单，按“订单已不是待发货”安全收口；
-				// 其余形态仍延期等待订单同步，均不创建运行、不发消息。
-				wantPending := 1
-				if status == "shipped" && name == "仅会话" {
-					wantPending = 0
-				}
+				// pending、runs 是处理后的延期任务数与运行数；缺订单号的付款事件一律直接丢弃。
 				pending, runs := countPendingAndRuns(t, store)
-				if pending != wantPending || runs != 0 || len(sender.texts) != 0 {
-					t.Fatalf("缺订单号不应关联订单: pending=%d runs=%d messages=%v", pending, runs, sender.texts)
+				if pending != 0 || runs != 0 || len(sender.texts) != 0 {
+					t.Fatalf("缺订单号不应关联订单或延期: pending=%d runs=%d messages=%v", pending, runs, sender.texts)
 				}
 			})
 		}
@@ -137,8 +132,8 @@ func TestSimplifiedPaidEventStillDeliversPendingShipOrder(t *testing.T) {
 	}
 }
 
-// TestSimplifiedPaidEventWithoutRecentOrderStillDefers 验证没有任何近期订单时，简化事件仍写入延期队列等待订单同步（原有行为回归）。
-func TestSimplifiedPaidEventWithoutRecentOrderStillDefers(t *testing.T) {
+// TestSimplifiedPaidEventWithoutRecentOrderIsDropped 验证没有任何近期订单时，缺订单号的简化事件被丢弃而不进入延期队列（重放无法补全订单号，订单同步后的兜底由待发货扫描负责）。
+func TestSimplifiedPaidEventWithoutRecentOrderIsDropped(t *testing.T) {
 	// store、cleanup 提供隔离数据库及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
@@ -146,17 +141,17 @@ func TestSimplifiedPaidEventWithoutRecentOrderStillDefers(t *testing.T) {
 	center := New(store, testSenderProvider{sender: &testSender{}}, nil)
 	// handleErr 保存简化事件处理结果，期望为 nil。
 	if handleErr := center.HandleTask(context.Background(), simplifiedPaidTask()); handleErr != nil {
-		t.Fatalf("无订单的简化事件延期不应返回错误: %v", handleErr)
+		t.Fatalf("无订单的简化事件丢弃不应返回错误: %v", handleErr)
 	}
 	// pending、runs 是延期任务数与运行数。
 	pending, runs := countPendingAndRuns(t, store)
-	if pending != 1 || runs != 0 {
-		t.Fatalf("无订单时应延期等待同步: pending=%d runs=%d", pending, runs)
+	if pending != 0 || runs != 0 {
+		t.Fatalf("无订单时缺订单号事件应被丢弃: pending=%d runs=%d", pending, runs)
 	}
 }
 
-// TestSimplifiedPaidEventOutsideWindowStillDefers 验证订单更新时间超出回溯窗口时不会被误关联，保持延期行为。
-func TestSimplifiedPaidEventOutsideWindowStillDefers(t *testing.T) {
+// TestSimplifiedPaidEventOutsideWindowIsDropped 验证订单更新时间超出回溯窗口时不会被误关联，缺订单号事件同样被丢弃。
+func TestSimplifiedPaidEventOutsideWindowIsDropped(t *testing.T) {
 	// store、cleanup 提供隔离数据库及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
 	defer cleanup()
@@ -171,11 +166,11 @@ func TestSimplifiedPaidEventOutsideWindowStillDefers(t *testing.T) {
 	center := New(store, testSenderProvider{sender: &testSender{}}, nil)
 	// handleErr 保存简化事件处理结果，期望为 nil。
 	if handleErr := center.HandleTask(ctx, simplifiedPaidTask()); handleErr != nil {
-		t.Fatalf("窗口外简化事件延期不应返回错误: %v", handleErr)
+		t.Fatalf("窗口外简化事件丢弃不应返回错误: %v", handleErr)
 	}
 	// pending、runs 是延期任务数与运行数。
 	pending, runs := countPendingAndRuns(t, store)
-	if pending != 1 || runs != 0 {
+	if pending != 0 || runs != 0 {
 		t.Fatalf("窗口外订单不应被关联: pending=%d runs=%d", pending, runs)
 	}
 }
@@ -218,5 +213,23 @@ func TestSimplifiedOrderCreatedResolvesToExistingOrderKey(t *testing.T) {
 	pending, _ := countPendingAndRuns(t, store)
 	if pending != 0 {
 		t.Fatalf("简化拍下事件不应进入延期队列: pending=%d", pending)
+	}
+}
+
+// TestDeferredReplayWithoutOrderIDDoesNotRetry 验证历史遗留的缺订单号延期任务重放时直接收口，不再要求重试，也就不会耗尽次数后误发人工处理通知。
+func TestDeferredReplayWithoutOrderIDDoesNotRetry(t *testing.T) {
+	// store、cleanup 提供隔离数据库及关闭责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// center 使用真实事实记录和运行协调器。
+	center := New(store, testSenderProvider{sender: &testSender{}}, nil)
+	// task 是历史延期队列中缺订单号的卖家付款事件，带延期重放标记。
+	task := chatOnlyPaidTask()
+	task.OrderRole = OrderRoleSeller
+	task.Raw = map[string]any{"automation_deferred_replay": true}
+	// deferredAgain、replayErr 分别表示是否再次延期以及重放错误，期望均为否。
+	deferredAgain, replayErr := center.handleTask(context.Background(), task)
+	if deferredAgain || replayErr != nil {
+		t.Fatalf("缺订单号的延期重放应直接收口: deferredAgain=%v err=%v", deferredAgain, replayErr)
 	}
 }

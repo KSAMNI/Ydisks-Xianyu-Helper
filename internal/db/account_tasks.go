@@ -137,16 +137,49 @@ func (s *AccountTaskStore) Enabled(ctx context.Context) ([]AccountTaskSettings, 
 // 它只读取本地 orders 表，绝不为了发现待评价订单向平台发起列表请求。
 // 已写入 seller_rated_at 的订单表示卖家侧评价事实已完成（含平台回答已评价），必须排除；
 // 否则按完成时间排序的候选窗口会被历史已评价订单长期占满，新完成订单无法进入评价。
+//
+// 候选同时必须排除 claimRun 永远无法再领取的订单，否则评价成功后 completed_at 仍保留，已办完的订单会按时间升序
+// 永久占满 limit 个名额，更新的订单进不了窗口（issue #96）。仍可领取的订单只有：尚无运行记录，或运行为 failed、
+// 未达重试上限、未标记永久失败且已过重试冷却时间；其余（success、needs_review、running、重试用尽、永久失败、冷却中）都不返回。
 func (s *AccountTaskStore) DueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int) ([]string, error) {
+	return s.dueAutoRateOrderIDs(ctx, cookieID, limit, true)
+}
+
+// DueAutoRateOrderIDsForManual 返回人工“立即评价”入口的候选订单：与自动扫描同规则，但放行仍在失败冷却中的运行，
+// 并保留累计次数已达上限的失败运行，使抢占层能明确回答 db.ErrAccountTaskRetryLimit 而不是静默跳过。
+// 已成功、待人工核对、仍在运行以及带永久失败前缀的运行记录依然被排除，因此人工入口既不会绕过累计上限，
+// 也不会重放平台已明确拒绝的终态失败。
+func (s *AccountTaskStore) DueAutoRateOrderIDsForManual(ctx context.Context, cookieID string, limit int) ([]string, error) {
+	return s.dueAutoRateOrderIDs(ctx, cookieID, limit, false)
+}
+
+// dueAutoRateOrderIDs 是自动扫描与人工入口共用的候选查询；respectCooldown 为 false 时只去掉冷却时间与次数上限条件，
+// 终态与永久失败的排除在两种口径下都必须保留。
+func (s *AccountTaskStore) dueAutoRateOrderIDs(ctx context.Context, cookieID string, limit int, respectCooldown bool) ([]string, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
+	// args 按 SQL 占位符顺序累积查询参数，第一项固定为账号标识。
+	args := []any{cookieID}
+	// runClause 保存“该订单的运行记录已不允许再次领取”的排除条件；两种口径共用同一 EXISTS 结构，只替换内部条件。
+	runClause := ""
+	if respectCooldown {
+		runClause = `r.status<>'failed' OR r.attempt_count>=? OR r.error_message LIKE ? OR r.next_retry_at>?`
+		args = append(args, accountTaskMaxAttempts, NoRetryErrorPrefix+"%", time.Now().UTC().Unix())
+	} else {
+		runClause = `r.status IN ('success','needs_review','running') OR r.error_message LIKE ?`
+		args = append(args, NoRetryErrorPrefix+"%")
+	}
+	args = append(args, limit)
 	// rows、err 分别保存按确认收货时间排序的本地候选订单和查询错误。
-	rows, err := s.DB.QueryContext(ctx, `SELECT order_id FROM orders
-		WHERE cookie_id=? AND deleted_at IS NULL AND order_status='completed' AND completed_at<>''
-		AND COALESCE(seller_rated_at,'')=''
-		AND NOT EXISTS (SELECT 1 FROM order_automation_stops stops WHERE stops.cookie_id=orders.cookie_id AND stops.order_id=orders.order_id)
-		ORDER BY completed_at,order_id LIMIT ?`, cookieID, limit)
+	rows, err := s.DB.QueryContext(ctx, `SELECT o.order_id FROM orders o
+		WHERE o.cookie_id=? AND o.deleted_at IS NULL AND o.order_status='completed' AND o.completed_at<>''
+		AND COALESCE(o.seller_rated_at,'')=''
+		AND NOT EXISTS (SELECT 1 FROM order_automation_stops stops WHERE stops.cookie_id=o.cookie_id AND stops.order_id=o.order_id)
+		AND NOT EXISTS (SELECT 1 FROM account_task_runs r
+			WHERE r.cookie_id=o.cookie_id AND r.task_type='auto_rate' AND r.target_id=o.order_id
+			AND (`+runClause+`))
+		ORDER BY o.completed_at,o.order_id LIMIT ?`, args...)
 	if err != nil {
 		return nil, err
 	}

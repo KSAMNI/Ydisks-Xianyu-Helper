@@ -302,9 +302,9 @@ func (c *accountTaskCoordinator) openAccountTaskCredentialSession(ctx context.Co
 	var session *mtop.CookieSession
 	// snapshot、complete 保存 metadata 中的完整 Cookie 快照及其有效性。
 	if snapshot, complete := cookierefresh.SnapshotFromMetadataOK(data.MetadataJSON); complete {
-		requestContext, session = mtop.WithCookieSnapshot(ctx, snapshot)
+		requestContext, session = mtop.WithCookieSnapshot(mtop.WithBackgroundPacing(ctx), snapshot)
 	} else {
-		requestContext, session = mtop.WithFlatCookieSession(ctx, cookieValue)
+		requestContext, session = mtop.WithFlatCookieSession(mtop.WithBackgroundPacing(ctx), cookieValue)
 	}
 	return accountTaskCredentialSession{requestContext: requestContext, cookieSession: session, cookieValue: cookieValue, persistedValue: data.Value, persistedMetadata: data.MetadataJSON}, nil
 }
@@ -379,6 +379,18 @@ func (c *accountTaskCoordinator) quarantineAutoRateRun(ctx context.Context, acco
 	return quarantineErr
 }
 
+// dueAutoRateCandidates 读取本轮可尝试的本地评价候选；manual 为真时放行失败运行的冷却时间，其余规则不变。
+// 仓库未实现人工候选读取端口时回退到自动扫描口径，保证旧测试替身与兼容实现仍可用。
+func (c *accountTaskCoordinator) dueAutoRateCandidates(ctx context.Context, cookieID string, manual bool) ([]string, error) {
+	if manual {
+		// reader、ok 分别是人工候选读取端口的实现断言结果；未实现该端口时回退到自动扫描口径。
+		if reader, ok := c.repository.(accountTaskManualCandidateReader); ok {
+			return reader.DueAutoRateOrderIDsForManual(ctx, cookieID, 200)
+		}
+	}
+	return c.repository.DueAutoRateOrderIDs(ctx, cookieID, 200)
+}
+
 // runAutoRate 只消费 WebSocket 已确认收货、且尚无卖家侧评价事实的本地完成订单；它不会以远端 MTOP 列表扫描发现候选订单。
 // 评价成功（含平台回答已评价）后写入 orders.seller_rated_at，使该订单不再进入后续候选窗口。
 // manual 表示本次执行是否来自人工入口：人工入口允许越过失败运行的冷却时间立即重试，
@@ -389,8 +401,8 @@ func (c *accountTaskCoordinator) runAutoRate(ctx context.Context, settings db.Ac
 	if c.repository == nil {
 		return summary, fmt.Errorf("账号任务存储未初始化")
 	}
-	// orderIDs、err 保存本地买家已确认收货候选订单及读取错误；该读取不触达闲鱼平台。
-	orderIDs, err := c.repository.DueAutoRateOrderIDs(ctx, settings.CookieID, 200)
+	// orderIDs、err 保存本地买家已确认收货候选订单及读取错误；该读取不触达闲鱼平台，人工入口放行冷却时间。
+	orderIDs, err := c.dueAutoRateCandidates(ctx, settings.CookieID, manual)
 	if err != nil {
 		return summary, fmt.Errorf("读取本地已评价订单: %w", err)
 	}
@@ -603,8 +615,8 @@ func (c *accountTaskCoordinator) runAutoPolish(ctx context.Context, settings db.
 			if result != nil && result.Message != "" {
 				lastError = result.Message
 			}
-			// Token 内部刷新耗尽后停止当前批次，后续恢复仍由 MTOP 客户端负责。
-			if mtop.IsSessionExpiredErr(polishErr) || mtop.IsMTopTokenExpiredErr(polishErr) {
+			// Token 内部刷新耗尽或平台要求风控验证后立即停止当前批次，不再向平台发送后续请求。
+			if mtop.IsSessionExpiredErr(polishErr) || mtop.IsMTopTokenExpiredErr(polishErr) || mtop.IsRiskVerificationErr(polishErr) {
 				return summary, errors.Join(polishErr, persistErr, c.finishAccountTaskRun(ctx, runKey, "failed", summary.Success, summary.Failed, lastError, 0))
 			}
 			if persistErr != nil {

@@ -115,6 +115,18 @@ func (r storeAccountTaskRepository) DueAutoRateOrderIDs(ctx context.Context, coo
 	return r.store.AccountTasks.DueAutoRateOrderIDs(ctx, cookieID, limit)
 }
 
+// accountTaskManualCandidateReader 是可选能力：实现它的仓储可按“放行失败冷却”的规则读取人工候选订单。
+// 未实现时人工入口回退到自动扫描的候选查询，行为保持兼容。
+type accountTaskManualCandidateReader interface {
+	// DueAutoRateOrderIDsForManual 返回人工立即评价可尝试的本地订单，仍排除重试上限与永久失败。
+	DueAutoRateOrderIDsForManual(ctx context.Context, cookieID string, limit int) ([]string, error)
+}
+
+// DueAutoRateOrderIDsForManual 委托读取人工入口候选订单，使“立即评价”能越过失败运行的冷却时间。
+func (r storeAccountTaskRepository) DueAutoRateOrderIDsForManual(ctx context.Context, cookieID string, limit int) ([]string, error) {
+	return r.store.AccountTasks.DueAutoRateOrderIDsForManual(ctx, cookieID, limit)
+}
+
 // MarkOrderSellerRated 委托写入订单的卖家侧评价事实。
 func (r storeAccountTaskRepository) MarkOrderSellerRated(ctx context.Context, cookieID, orderID string) error {
 	return r.store.AccountTasks.MarkOrderSellerRated(ctx, cookieID, orderID)

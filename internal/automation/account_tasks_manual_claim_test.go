@@ -98,6 +98,8 @@ func TestManualRateStillHonorsAttemptLimit(t *testing.T) {
 }
 
 // TestManualRateStillSkipsPermanentFailures 验证人工入口不会重试带永久失败前缀的运行记录。
+// 上游 v1.0.15 起永久失败在候选查询层就被排除（同路径的 TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests
+// 锁定 Found=0），因此这里断言订单既不是候选也不计入跳过，且绝不触达平台。
 func TestManualRateStillSkipsPermanentFailures(t *testing.T) {
 	// store、cleanup 保存本测试使用的 SQLite 自动化存储及关闭责任。
 	store, cleanup := newAutomationTestStore(t)
@@ -122,10 +124,10 @@ func TestManualRateStillSkipsPermanentFailures(t *testing.T) {
 	if firstErr != nil || firstSummary.Failed != 1 || client.rateCalls != 1 {
 		t.Fatalf("首次永久失败结果错误: summary=%+v calls=%d err=%v", firstSummary, client.rateCalls, firstErr)
 	}
-	// secondSummary、secondErr 保存人工再次触发时的结果，永久失败必须被跳过且不触达平台。
+	// secondSummary、secondErr 保存人工再次触发时的结果：永久失败订单必须完全不在候选内，也不触达平台。
 	secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
-	if secondErr != nil || secondSummary.Skipped != 1 || client.rateCalls != 1 {
-		t.Fatalf("永久失败订单不应被人工入口重试: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
+	if secondErr != nil || secondSummary.Found != 0 || secondSummary.Skipped != 0 || client.rateCalls != 1 {
+		t.Fatalf("永久失败订单不应进入人工入口候选: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
 	}
 }
 

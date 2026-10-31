@@ -196,7 +196,8 @@ func TestAccountTaskRatePermanentPlatformFailureStopsFutureRequests(t *testing.T
 	}
 	// secondSummary、secondErr 保存后续扫描跳过永久失败订单的结果。
 	secondSummary, secondErr := center.RunAccountTask(ctx, "cid", TaskAutoRate)
-	if secondErr != nil || secondSummary.Skipped != 1 || client.rateCalls != 1 {
+	// 永久失败订单不再是候选，后续扫描不再请求评价。
+	if secondErr != nil || secondSummary.Found != 0 || secondSummary.Skipped != 0 || client.rateCalls != 1 {
 		t.Fatalf("超期订单后续不应再次请求评价: summary=%+v calls=%d err=%v", secondSummary, client.rateCalls, secondErr)
 	}
 }
@@ -423,7 +424,8 @@ func TestAccountTaskRateCancellationQuarantinesAndBlocksRetry(t *testing.T) {
 	}
 	// retrySummary、retryErr 保存新请求尝试重跑时的结果，确认人工核对状态不会被自动重放。
 	retrySummary, retryErr := center.RunAccountTask(context.Background(), "cid", TaskAutoRate)
-	if retryErr != nil || retrySummary.Skipped != 1 || client.rateCalls != 1 {
+	// 人工核对订单不再是候选，不会被自动重放。
+	if retryErr != nil || retrySummary.Found != 0 || retrySummary.Skipped != 0 || client.rateCalls != 1 {
 		t.Fatalf("人工核对任务不应自动重试: summary=%+v calls=%d err=%v", retrySummary, client.rateCalls, retryErr)
 	}
 }
@@ -686,6 +688,32 @@ func TestManualPolishReportsItemFailures(t *testing.T) {
 	summary, err := center.RunAccountTask(ctx, "cid", TaskAutoPolish)
 	if err == nil || summary.Failed != 1 || summary.Success != 0 {
 		t.Fatalf("summary=%+v err=%v", summary, err)
+	}
+}
+
+// TestPolishStopsRemainingItemsOnRiskVerification 验证擦亮遇到风控后立即停止，不再请求剩余商品。
+func TestPolishStopsRemainingItemsOnRiskVerification(t *testing.T) {
+	// store、cleanup 保存测试使用的 SQLite 存储及其释放函数。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// riskErr 模拟平台在擦亮第一件商品时要求安全验证。
+	riskErr := &mtop.RiskVerificationError{API: "擦亮接口", Ret: []string{"FAIL_SYS_USER_VALIDATE::RGV587_ERROR"}}
+	// client 返回风控错误并统计擦亮调用次数。
+	client := &fakeAccountTaskClient{items: []mtop.ItemListItem{{ID: "item-1"}, {ID: "item-2"}, {ID: "item-3"}}, polishErr: riskErr}
+	// center 注入擦亮客户端。
+	center := NewWithDependencies(store, testSenderProvider{sender: &testSender{}}, nil, CenterDependencies{AccountTaskClient: client})
+	// ctx 是任务共用的上下文。
+	ctx := context.Background()
+	// settingsErr 保存擦亮任务配置写入错误。
+	settingsErr := store.AccountTasks.Upsert(ctx, db.AccountTaskSettings{CookieID: "cid", AutoPolishEnabled: true,
+		RateContent: "交易愉快", PolishTime: "00:00"})
+	if settingsErr != nil {
+		t.Fatal(settingsErr)
+	}
+	// summary、err 保存风控后的任务统计与原始错误。
+	summary, err := center.RunAccountTask(ctx, "cid", TaskAutoPolish)
+	if !mtop.IsRiskVerificationErr(err) || summary.Failed != 1 || client.polishCalls != 1 {
+		t.Fatalf("风控后必须停止剩余商品: summary=%+v calls=%d err=%v", summary, client.polishCalls, err)
 	}
 }
 

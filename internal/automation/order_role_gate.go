@@ -19,6 +19,9 @@ const roleVerificationTaskKeyField = "automation_role_verification_key"
 // roleVerificationRetryInterval 控制首条未知角色事件等待订单/商品同步的最短间隔。
 const roleVerificationRetryInterval = time.Minute
 
+// reasonOrderCreatedNotLocalItem 表示无角色拍下事件的商品不在本账号本地商品库；该原因不可重试，调用方静默跳过。
+const reasonOrderCreatedNotLocalItem = "order_created_not_local_item"
+
 // errSellerRoleEvidencePending 表示待核验任务暂时没有足够的本地卖家事实；调度器会按既有延期队列退避并最终通知人工。
 var errSellerRoleEvidencePending = errors.New("未知角色事件暂缺本地卖家事实")
 
@@ -44,7 +47,7 @@ func isWebSocketSellerOrderTask(task Task) bool {
 func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (Task, bool, string, error) {
 	if task.TriggerType == TriggerOrderPaid && strings.TrimSpace(task.OrderID) == "" {
 		// 付款发货必须由订单号证明交易身份：缺订单号时准备阶段会跳过订单事实与数量核验，
-		// 因此无论事件来源、即使明确标为卖家也不得放行；该原因可重试，等待订单同步后再处理。
+		// 因此无论事件来源、即使明确标为卖家也不得放行；该原因不可重试，事件被丢弃，订单同步后的兜底由待发货扫描负责。
 		if task.OrderRole == OrderRoleBuyer {
 			return task, false, "explicit_buyer_role", nil
 		}
@@ -63,7 +66,8 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 	}
 	if task.TriggerType == TriggerOrderCreated {
 		if strings.TrimSpace(task.ItemID) == "" {
-			return task, false, "missing_item_id", nil
+			// 拍下事件没有商品号时无法证明是本账号商品，自动化没有意义，直接跳过。
+			return task, false, reasonOrderCreatedNotLocalItem, nil
 		}
 		if c == nil || c.store == nil || c.store.Items == nil {
 			return task, false, "item_store_unavailable", nil
@@ -74,7 +78,9 @@ func (c *Center) authorizeWebSocketSellerTask(ctx context.Context, task Task) (T
 			return task, false, "", fmt.Errorf("核对未知角色拍下商品归属: %w", itemErr)
 		}
 		if !owned {
-			return task, false, "missing_local_item", nil
+			// 商品不在本账号商品库时，拍下自动化本身没有意义（同一用户作为买家拍下他人商品也属此类），静默跳过：
+			// 不延期、不通知、不请求平台。付款后的发货由付款事件和待发货扫描负责，不依赖拍下事件。
+			return task, false, reasonOrderCreatedNotLocalItem, nil
 		}
 		task.OrderRole = OrderRoleSeller
 		return task, true, "", nil
@@ -223,10 +229,39 @@ func (c *Center) missingOrderIDReason(ctx context.Context, task Task) string {
 	return "missing_order_id"
 }
 
+// reasonOrderAmountNotPositive 表示订单成交金额为 0、负数或无法识别；服务类预约单没有真实物流订单，不得自动发货。
+const reasonOrderAmountNotPositive = "order_amount_not_positive"
+
+// reasonOrderAmountMissing 表示订单详情补全后仍没有成交金额；金额无法证明为正数时同样不得自动发货。
+const reasonOrderAmountMissing = "order_amount_missing"
+
+// paidAmountBlockedReason 判断付款发货订单的成交金额是否允许自动发货，返回空字符串表示金额为严格正数。
+// raw 是订单事实中的金额文本（可带 ¥ 前缀与千位分隔符），按十进制字符串解析以避免浮点误差；
+// 空金额返回 reasonOrderAmountMissing，由调用方决定是否已完成详情补全；零金额与非法金额返回 reasonOrderAmountNotPositive。
+func paidAmountBlockedReason(raw string) string {
+	// normalized、valid 保存规范化后的十进制金额文本及其格式是否合法。
+	normalized, valid := db.NormalizeOrderAmount(raw)
+	if !valid {
+		return reasonOrderAmountNotPositive
+	}
+	if normalized == "" {
+		return reasonOrderAmountMissing
+	}
+	// digit 逐字符检查金额是否含有 1-9 的有效数字；全为 0 与小数点即为零金额。
+	for _, digit := range normalized {
+		if digit >= '1' && digit <= '9' {
+			return ""
+		}
+	}
+	return reasonOrderAmountNotPositive
+}
+
 // roleVerificationRetryable 判断拒绝原因是否可能因订单或商品同步完成而恢复；身份冲突和已结束订单不应反复重放。
+// missing_order_id 不可重试：延期快照不会因重放而获得订单号（不允许按会话猜订单），反复重放只会耗尽次数并对已由待发货扫描
+// 处理的订单发出误报；缺订单号的付款事件直接丢弃，订单同步后的丢消息兜底由待发货扫描负责。
 func roleVerificationRetryable(reason string) bool {
 	switch reason {
-	case "missing_local_order", "missing_order_id", "missing_chat_id", "no_pending_order_candidate", "multiple_pending_order_candidates", "missing_item_id", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
+	case "missing_local_order", "incomplete_local_order_identity", "missing_local_item", "order_store_unavailable", "item_store_unavailable":
 		return true
 	default:
 		return false

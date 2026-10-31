@@ -6,6 +6,7 @@ OperationResponse,
 Order,
 OrderBatchResponse,
 OrderDTOResponse,
+OrderDeliveredCard,
 OrderRefreshJobCancelResponse,
 OrderRefreshResponse,
 OrderSingleRefreshResponse,
@@ -14,6 +15,7 @@ PaginatedResponse
 import { contractClient,  runContractRequest } from '../../../shared/api-contract/client';
 import { ApiError, type RequestControlOptions } from '../../../shared/http/client';
 import { collectionFrom, objectFrom } from '../../../shared/http/contract';
+import { OrderRefreshStillRunningError } from './refreshErrors';
 export type * from './models';
 
 /** 订单刷新前端最多轮询约 90 秒，超过该预算必须请求取消后端 worker。 */
@@ -245,32 +247,27 @@ export const syncOrders = async (cookieId?: string, status?: string, options?: O
 	} finally {
 		options?.signal?.removeEventListener('abort', cancelOnAbort);
 	}
-	// finalJob 保存取消命令与终态竞争后的最终任务状态；成功或失败终态优先于“等待超时”展示。
-	const finalJob = await cancelAndReadOrderRefreshJob(start.job_id);
+	// finalJob 是前端等待预算耗尽时的最后一次终态读取；此处不取消后台任务，任务可能恰好在最后一个间隔内完成。
+	const finalJob = await readOrderRefreshJob(start.job_id, { timeoutMs: orderRefreshCancelTimeoutMs });
 	if (finalJob.status === 'succeeded' && finalJob.result) {
 		return normalizeOrderRefreshResponse(finalJob.result);
 	}
-	if (finalJob.status === 'failed') {
+	if (finalJob.status === 'failed' || finalJob.status === 'cancelled') {
 		throw new Error(finalJob.error_message || '订单刷新任务失败');
 	}
-	throw new Error('订单刷新任务等待超时，已请求取消');
+	// 订单已按页增量入库，任务仍由服务端继续（最长三十分钟）；前端只放弃等待，绝不替用户取消它。
+	throw new OrderRefreshStillRunningError(start.job_id);
 };
 
-/** 取消订单刷新任务后读取一次独立终态，解决取消响应和 worker 完成响应同时到达的竞态。 */
-const cancelAndReadOrderRefreshJob = async (jobId: string) => {
-	try {
-		await cancelOrderRefreshJob(jobId, { timeoutMs: orderRefreshCancelTimeoutMs });
-	} catch {
-		// 取消返回冲突或网络错误时仍读取终态：任务可能已经在取消命令到达前结束。
-	}
-	return runContractRequest(/* signal 是本次订单刷新终态查询请求的超时与取消控制信号。 */ signal => contractClient.GET('/api/v1/orders/refresh/{job_id}', {
+/** 读取一次订单刷新任务的持久化状态，供预算耗尽时复查终态。 */
+const readOrderRefreshJob = async (jobId: string, options?: RequestControlOptions) =>
+	runContractRequest(/* signal 是本次订单刷新状态读取请求的超时与取消控制信号。 */ signal => contractClient.GET('/api/v1/orders/refresh/{job_id}', {
     params: { path: { job_id: jobId } },
     signal,
-  }), { timeoutMs: orderRefreshCancelTimeoutMs });
-};
+  }), options);
 
 /** 将 response 任务结果转换为稳定 UI 模型；新统计在旧持久化任务中缺失时按零展示。 */
-const normalizeOrderRefreshResponse = (response: NonNullable<Awaited<ReturnType<typeof cancelAndReadOrderRefreshJob>>['result']>): OrderRefreshResponse => ({
+const normalizeOrderRefreshResponse = (response: NonNullable<Awaited<ReturnType<typeof readOrderRefreshJob>>['result']>): OrderRefreshResponse => ({
   ...response,
   summary: {
     ...response.summary,
@@ -344,3 +341,19 @@ const normalizeOrderBatchResponse = (response: OrderBatchTransportResponse): Ord
     status: item.status === 'failed' || item.status === 'succeeded' || item.status === 'reconciliation_required' ? item.status : undefined,
   })),
 });
+
+// getOrderDeliveredCards 读取订单自动发货时发出的卡密；升级前的订单没有记录，返回空数组。
+export const getOrderDeliveredCards = async (orderId: string, options?: RequestControlOptions): Promise<OrderDeliveredCard[]> => {
+  // result 是订单已发卡密响应，卡密明文只存在于本次请求结果中。
+  const result = await runContractRequest(/* signal 绑定当前订单详情弹窗的请求生命周期。 */ signal => contractClient.GET('/api/v1/orders/{order_id}/delivered-cards', {
+    params: { path: { order_id: orderId } },
+    signal,
+  }), options);
+  return result.data.map(/* item 是一条传输层售出记录。 */ item => ({
+    id: item.id,
+    content: item.content,
+    status: item.status === 'sold' ? 'sold' : 'reserved',
+    cardName: item.card_name,
+    deliveredAtMs: (item.sold_at || item.created_at) * 1000,
+  }));
+};

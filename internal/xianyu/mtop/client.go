@@ -90,6 +90,8 @@ type ClientImpl struct {
 	ChatUserQueryURL    string
 	// ChatItemSearchURL 允许测试将聊天商品查询指向本地 HTTP 服务；生产空值使用官方端点。
 	ChatItemSearchURL string
+	// Pacer 是账号级请求节拍器；为空时使用进程共享的默认节拍器，测试可注入确定性实现。
+	Pacer *Pacer
 }
 
 // httpClient 返回带统一请求/响应日志的 HTTP 客户端副本。统一放在传输层，
@@ -103,8 +105,12 @@ func (c *ClientImpl) httpClient() *http.Client {
 func (c *ClientImpl) httpClientWithTimeout(defaultTimeout time.Duration) *http.Client {
 	// hc 用于本次流程后续判断的hc
 	hc := c.HTTPClient
+	// roundTripTimeout 是交给节流传输层的单次往返超时；内置客户端不再设置整体 Timeout，
+	// 否则账号级节流排队时间会被计入超时，排队中的请求会在尚未发出时失败。
+	roundTripTimeout := time.Duration(0)
 	if hc == nil {
-		hc = &http.Client{Timeout: defaultTimeout}
+		hc = &http.Client{}
+		roundTripTimeout = defaultTimeout
 	}
 	// clone 用于本次流程后续判断的clone
 	clone := *hc
@@ -113,56 +119,8 @@ func (c *ClientImpl) httpClientWithTimeout(defaultTimeout time.Duration) *http.C
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	clone.Transport = loggingTransport{base: transport, logger: c.Logger}
+	clone.Transport = c.pacedTransport(loggingTransport{base: transport, logger: c.Logger}, roundTripTimeout)
 	return &clone
-}
-
-// logInfo 记录不包含 Cookie、签名和响应正文的 MTOP 诊断信息；未注入日志器时沿用进程默认日志器。
-func (c *ClientImpl) logInfo(message string, args ...any) {
-	// logger 保存当前客户端实际使用的安全日志器。
-	logger := c.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	logger.Info(message, append([]any{"log_source", "mtop"}, args...)...)
-}
-
-// loggingTransport 用于本次流程后续判断的loggingTransport
-type loggingTransport struct {
-	base   http.RoundTripper
-	logger *slog.Logger
-}
-
-// RoundTrip 封装RoundTrip业务协调。
-func (t loggingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// logger 用于本次流程后续判断的logger
-	logger := t.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	// started 用于本次流程后续判断的started
-	started := time.Now()
-	logger.Debug("MTOP 请求开始", "log_source", "mtop", "method", req.Method, "path", req.URL.Path)
-	// resp、err 用于本次流程后续判断的resp、err
-	resp, err := t.base.RoundTrip(req)
-	// attrs 用于本次流程后续判断的attrs
-	attrs := []any{"log_source", "mtop", "method", req.Method, "path", req.URL.Path, "duration", time.Since(started).Round(time.Millisecond)}
-	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			logger.Debug("MTOP 请求取消", append(attrs, "err", err)...)
-		} else {
-			logger.Warn("MTOP 请求失败", append(attrs, "err", err)...)
-		}
-		return nil, err
-	}
-	// responseAttrs 用于本次流程后续判断的响应Attrs
-	responseAttrs := append(attrs, "status", resp.StatusCode, "content_length", resp.ContentLength)
-	if resp.StatusCode >= http.StatusBadRequest {
-		logger.Warn("MTOP HTTP 响应异常", responseAttrs...)
-	} else {
-		logger.Debug("MTOP 响应收到", responseAttrs...)
-	}
-	return resp, nil
 }
 
 // NewClient 构造纯 Go HTTP 的 MTOP 客户端。Chromium 只用于读取本机指纹

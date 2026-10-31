@@ -26,13 +26,14 @@ updateAccountStatus,
 updateAccountTaskSettings,
 } from './accounts/api';
 import { createDeliveryTemplate,listDeliveryTemplates,updateDeliveryTemplate } from './delivery-templates/api';
-import { appendCardData,batchCreateCards,createCard,deleteCard,getCardDetails,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
+import { appendCardData,batchCreateCards,createCard,deleteCard,exportCard,getCardDetails,getCardSaleRecords,getCards,getCardAPIEditor,testCardAPI,updateCard } from './cards/api';
 import { getChatMessagePage,getChatMessages,getChatSessionPage,getChatSessions,markChatRead,sendChatImage,sendChatMessage } from './chat/api';
 import { getDashboardStats,getOrderAnalytics,getValidOrders } from './dashboard/api';
 import { cancelItemPublishBatch,createItem,deleteItem,deleteItemPublishBatch,getItemDetail,getItemPublishBatch,getItemPublishBatches,getItems,previewItemPublishBatch,publishItem,recommendPublishCategory,retryFailedItemPublishBatch,startItemPublishBatch,syncItemsFromAccount,updateItem } from './items/api';
 import { createNotificationChannel,deleteAccountNotifications,deleteMessageNotification,deleteNotificationChannel,getAccountBindings,getMessageNotifications,getNotificationChannel,getNotificationChannels,setAccountBindings,setMessageNotification,testNotificationChannel,updateNotificationChannel,updateSystemSettings as updateNotificationSystemSettings } from './notifications/api';
-import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDetail,getOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
-import { clearDefaultReplyRecords,deleteDefaultReply,deleteReplyRule,deleteShippingRule,getAutomationIssues,getDefaultReplies,getDefaultReply,getReplyRules,getShippingRules,getShippingRulesPage,resolveAutomationRun,resolveDeferredAutomationTask,updateDefaultReply,updateReplyRule,updateShippingRule } from './rules/api';
+import { OrderRefreshStillRunningError } from './orders/refreshErrors';
+import { cancelOrderRefreshJob,deleteOrder,getAdminStats,getOrderDeliveredCards,getOrderDetail,getOrders,manualShipOrder,syncOrders,syncSingleOrder,updateOrder } from './orders/api';
+import { clearDefaultReplyRecords,clearItemGreetingRecords,deleteDefaultReply,deleteItemGreeting,getItemGreetings,saveItemGreeting,deleteReplyRule,deleteShippingRule,getAutomationIssues,getDefaultReplies,getDefaultReply,getReplyRules,getShippingRules,getShippingRulesPage,resolveAutomationRun,resolveDeferredAutomationTask,updateDefaultReply,updateReplyRule,updateShippingRule } from './rules/api';
 import { initializeAdmin,login,logout,verifySession } from './session/api';
 import { changePassword,fetchAIModels,getSystemSettings,updateLoginCredentials,updateSystemSettings } from './settings/api';
 import { getHealth } from './system/api';
@@ -308,34 +309,45 @@ test('syncOrders aborts while waiting for persisted job status', async () => {
 	await vi.waitFor(/* 等待取消命令发出。 */ () => expect(fetchMock).toHaveBeenCalledWith('/api/v1/orders/refresh/job-running', expect.objectContaining({ method: 'DELETE', credentials: 'include' })));
 } /* 测试回调验证：syncOrders aborts while waiting for persisted job status。 */);
 
-test('syncOrders reaches the front-end budget, cancels, and returns a concurrent success terminal result', async () => {
-	// fetchMock 模拟轮询仍运行、取消命令返回冲突且复查已拿到成功终态的时间竞争。
+test('syncOrders reaching the front-end budget does not cancel and returns a concurrent success terminal result', async () => {
+	// fetchMock 模拟预算内轮询仍运行、最后一次终态复查已成功的时间竞争。
 	const fetchMock = vi.fn()
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-timeout', status: 'running' }))
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-timeout', status: 'running' }))
-		.mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: 'conflict', message: '任务已结束' } }), { status: 409, headers: { 'content-type': 'application/json' } }))
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-timeout', status: 'succeeded', result: { partial_failure: false, message: '终态成功', summary: { discovered: 0, list_updated: 0, soft_deleted: 0, detail_total: 0, total: 0, updated: 0, no_change: 0, failed: 0 }, results: [] } }));
 	stubContractFetch(fetchMock);
 
 	// result 保存达到本地等待预算后由终态复查返回的成功订单刷新结果。
 	const result = await syncOrders(undefined, undefined, { pollLimit: 1, pollIntervalMs: 0 });
 	expect(result.message).toBe('终态成功');
-	expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/v1/orders/refresh/job-timeout', expect.objectContaining({ method: 'DELETE', credentials: 'include' }));
-	expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/v1/orders/refresh/job-timeout', expect.objectContaining({ method: 'GET', credentials: 'include' }));
-} /* 测试回调验证：syncOrders reaches the front-end budget, cancels, and returns a concurrent success terminal result。 */);
+	expect(fetchMock).toHaveBeenCalledTimes(3);
+	expect(fetchMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'DELETE' }));
+} /* 测试回调验证：预算耗尽不取消后台任务，并采纳复查到的成功终态。 */);
 
-test('syncOrders reports a timeout only after cancellation and final terminal read remain non-terminal', async () => {
-	// fetchMock 模拟后台任务未在取消请求后及时进入成功或失败终态的场景。
+test('syncOrders keeps the background job running and reports a still-running error when the budget ends', async () => {
+	// fetchMock 模拟任务在预算耗尽和最后一次复查时都仍在运行。
 	const fetchMock = vi.fn()
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-still-running', status: 'running' }))
 		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-still-running', status: 'running' }))
-		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-still-running', status: 'cancelled' }))
-		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-still-running', status: 'cancelled' }));
+		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-still-running', status: 'running' }));
 	stubContractFetch(fetchMock);
 
-	await expect(syncOrders(undefined, undefined, { pollLimit: 1, pollIntervalMs: 0 })).rejects.toThrow('订单刷新任务等待超时，已请求取消');
-	expect(fetchMock).toHaveBeenCalledWith('/api/v1/orders/refresh/job-still-running', expect.objectContaining({ method: 'DELETE', credentials: 'include' }));
-} /* 测试回调验证：syncOrders reports a timeout only after cancellation and final terminal read remain non-terminal。 */);
+	// error 保存预算耗尽后抛出的“仍在后台运行”错误。
+	const error = await syncOrders(undefined, undefined, { pollLimit: 1, pollIntervalMs: 0 }).catch(/* 捕获预期错误供断言。 */ (caught: unknown) => caught);
+	expect(error).toBeInstanceOf(OrderRefreshStillRunningError);
+	expect((error as OrderRefreshStillRunningError).jobId).toBe('job-still-running');
+	expect(fetchMock).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ method: 'DELETE' }));
+} /* 测试回调验证：任务仍在运行时不取消并抛出可区分错误。 */);
+
+test('syncOrders surfaces a terminal failure found by the final budget read', async () => {
+	// fetchMock 模拟最后一次复查时任务刚好失败。
+	const fetchMock = vi.fn()
+		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-late-fail', status: 'running' }))
+		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-late-fail', status: 'running' }))
+		.mockResolvedValueOnce(jsonResponse({ success: true, job_id: 'job-late-fail', status: 'failed', error_message: '平台会话已过期' }));
+	stubContractFetch(fetchMock);
+	await expect(syncOrders(undefined, undefined, { pollLimit: 1, pollIntervalMs: 0 })).rejects.toThrow('平台会话已过期');
+} /* 测试回调验证：复查到失败终态时展示服务端失败原因。 */);
 
 test('cancelOrderRefreshJob sends a user-scoped delete command', async () => {
 	const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ success: true, job_id: 'job-cancel', status: 'cancelled' })); /* fetchMock 表示fetchMock。 */
@@ -1093,6 +1105,36 @@ test('默认回复 API 补齐空字段默认值', /* 当前回调验证默认回
   await expect(getDefaultReply('account-1')).resolves.toEqual({ cookie_id: 'account-1', enabled: false, reply_content: '', reply_once: false, reply_image_url: '', reply_image_path: '' });
   await updateDefaultReply('account-1', {});
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ enabled: false, reply_content: '', reply_once: false, reply_image_url: '', reply_image_path: '' });
+});
+
+test('商品首次回复 API 归一规则并使用版本化路径', /* 当前回调验证列表归一、创建、更新、删除和清理记录的请求形状。 */ async () => {
+  // fetchMock 依次响应列表、创建、更新、删除和清理请求。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse([{ id: 3, cookie_id: 'a1', enabled: true, item_ids: ['i1', 5, 'i2'] }, null]))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: false, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ success: true }))
+    .mockResolvedValueOnce(jsonResponse({ success: true }));
+  stubContractFetch(fetchMock);
+  await expect(getItemGreetings('a1')).resolves.toEqual([
+    { id: 3, cookie_id: 'a1', name: '', enabled: true, reply_content: '', reply_image_url: '', item_ids: ['i1', 'i2'] },
+    { id: 0, cookie_id: '', name: '', enabled: false, reply_content: '', reply_image_url: '', item_ids: [] },
+  ]);
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/reply-rules/greetings?cookie_id=a1');
+  // draft 是创建与更新共用的规则草稿。
+  const draft = { id: 0, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] };
+  await expect(saveItemGreeting(draft)).resolves.toMatchObject({ id: 4 });
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/reply-rules/greetings');
+  expect(fetchMock.mock.calls[1][1].method).toBe('POST');
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] });
+  await expect(saveItemGreeting({ ...draft, id: 4, enabled: false })).resolves.toMatchObject({ enabled: false });
+  expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/reply-rules/greetings/4');
+  expect(fetchMock.mock.calls[2][1].method).toBe('PUT');
+  await deleteItemGreeting(4);
+  expect(fetchMock.mock.calls[3][0]).toBe('/api/v1/reply-rules/greetings/4');
+  expect(fetchMock.mock.calls[3][1].method).toBe('DELETE');
+  await clearItemGreetingRecords('a1');
+  expect(fetchMock.mock.calls[4][0]).toBe('/api/v1/reply-rules/greetings/clear-records/a1');
 });
 
 test('updateReplyRule preserves keyword image metadata when saving text edits', async () => {
@@ -1968,4 +2010,71 @@ test('API 卡密编辑走专用接口，测试携带卡密标识及保留模板�
   await testCardAPI({ url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: '{"order_id":"{order_id}"}', body: '{}', retry_enabled: true }, 3, { signal: controller.signal });
   expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/v1/cards/test-api', expect.objectContaining({ method: 'POST' }));
   expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ card_id: 3, api_config: { url: editor.url, method: 'POST', timeout_seconds: 10, headers_action: 'retain', params_action: 'replace', params: { order_id: '{order_id}' }, body: {}, retry_enabled: true, content_type: 'application/json' } });
+});
+
+// 用例：校验售出记录与导出 adapter 的版本化路径、时间归一化与下载文件名解析。
+test('卡密售出记录与导出 adapter 使用版本化路径、归一化时间并解析下载文件名', async () => {
+  // fetchMock 依次返回售出记录分页、未售导出文件和已售导出文件。
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({
+      success: true, total: 2, page: 2, page_size: 5, total_pages: 0,
+      data: [
+        { id: 2, card_id: 7, card_name: '组A', card_type: 'data', content: 'K1', status: 'sold', cookie_id: 'acc1', order_id: 'o1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 200 },
+        { id: 1, card_id: 7, card_name: '组A', card_type: 'data', content: 'K2', status: 'reserved', cookie_id: 'acc1', order_id: 'o2', item_id: 'i2', buyer_id: 'b2', created_at: 100, sold_at: 0 },
+      ],
+    }))
+    .mockResolvedValueOnce(new Response('K3\n', { status: 200, headers: { 'Content-Type': 'text/plain', 'Content-Disposition': "attachment; filename*=utf-8''%E7%BB%84A-%E6%9C%AA%E5%94%AE.txt" } }))
+    .mockResolvedValueOnce(new Response('csv', { status: 200, headers: { 'Content-Type': 'text/csv' } }));
+  stubContractFetch(fetchMock);
+
+  // page 是归一后的 UI 分页模型，总页数至少为 1，待核对记录回退使用扣库存时间。
+  const page = await getCardSaleRecords(7, { status: 'sold', search: ' o1 ', page: 2, pageSize: 5 });
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/cards/7/sale-records?status=sold&search=o1&page=2&page_size=5');
+  expect(page.total).toBe(2);
+  expect(page.totalPages).toBe(1);
+  expect(page.records[0]).toMatchObject({ id: 2, content: 'K1', status: 'sold', orderId: 'o1', soldAtMs: 200_000 });
+  expect(page.records[1]).toMatchObject({ status: 'reserved', soldAtMs: 100_000 });
+
+  // unsold 是带中文文件名响应头的未售导出；sold 没有响应头，使用兜底文件名。
+  const unsold = await exportCard(7, 'unsold');
+  expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/cards/7/export?scope=unsold');
+  expect(unsold.filename).toBe('组A-未售.txt');
+  expect(await unsold.blob.text()).toBe('K3\n');
+  // sold 保存已售范围导出的文件结果，用于断言文件名与内容类型。
+  const sold = await exportCard(7, 'sold');
+  expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/cards/7/export?scope=sold');
+  expect(sold.filename).toBe('sold-cards.csv');
+
+  // 空筛选条件不应出现在查询串中。
+  fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, total: 0, page: 1, page_size: 20, total_pages: 0, data: [] }));
+  await getCardSaleRecords(7, { status: '', search: '  ', page: 1, pageSize: 20 });
+  expect(fetchMock.mock.calls[3][0]).toBe('/api/v1/cards/7/sale-records?page=1&page_size=20');
+});
+
+// 用例：导出失败必须抛出统一 ApiError，不能返回空文件。
+test('卡密导出失败时抛出统一 ApiError 而不是返回空文件', async () => {
+  // errorBody 是统一错误 envelope；jsonResponse 固定返回 200，因此这里直接构造 400 响应。
+  const errorBody = JSON.stringify({ success: false, code: 'bad_request', message: '只有 data（批量卡密）类型支持追加卡密' });
+  stubContractFetch(vi.fn().mockResolvedValue(new Response(errorBody, { status: 400, headers: { 'content-type': 'application/json' } })));
+  await expect(exportCard(7, 'unsold')).rejects.toMatchObject({ status: 400 });
+});
+
+// 用例：订单已发卡密 adapter 使用版本化路径并把秒级时间归一为毫秒。
+test('getOrderDeliveredCards 使用版本化路径并把秒级时间归一为毫秒', /* 订单已发卡密 adapter 用例回调。 */ async () => {
+  // fetchMock 返回一条已售和一条待核对的已发卡密。
+  const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+    success: true,
+    data: [
+      { id: 2, card_id: 7, card_name: '组A', card_type: 'data', content: 'K1', status: 'sold', cookie_id: 'acc1', order_id: 'o 1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 200 },
+      { id: 1, card_id: 7, card_name: '接口', card_type: 'api', content: 'K2', status: 'reserved', cookie_id: 'acc1', order_id: 'o 1', item_id: 'i1', buyer_id: 'b1', created_at: 100, sold_at: 0 },
+    ],
+  }));
+  stubContractFetch(fetchMock);
+  // cards 是归一后的 UI 模型。
+  const cards = await getOrderDeliveredCards('o 1');
+  expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/orders/o%201/delivered-cards');
+  expect(cards).toEqual([
+    { id: 2, content: 'K1', status: 'sold', cardName: '组A', deliveredAtMs: 200_000 },
+    { id: 1, content: 'K2', status: 'reserved', cardName: '接口', deliveredAtMs: 100_000 },
+  ]);
 });

@@ -14,8 +14,10 @@ import (
 	defaultreplyapp "xianyu-go/internal/application/defaultreply"
 	deliveryapp "xianyu-go/internal/application/deliverytemplate"
 	imagelibraryapp "xianyu-go/internal/application/imagelibrary"
+	itemgreetingapp "xianyu-go/internal/application/itemgreeting"
 	itemapp "xianyu-go/internal/application/items"
 	keywordsapp "xianyu-go/internal/application/keywords"
+	libraryapp "xianyu-go/internal/application/library"
 	logsapp "xianyu-go/internal/application/logs"
 	notificationsapp "xianyu-go/internal/application/notifications"
 	orderapp "xianyu-go/internal/application/orders"
@@ -293,6 +295,11 @@ type AutomationIssuesPort interface {
 	ResolveDeferredIssue(context.Context, int64, int64, string) error
 }
 
+// AutomationAuditPort 定义规则日志（自动化行为审计）的分页查询能力。
+type AutomationAuditPort interface {
+	ListEvents(context.Context, int64, automationapp.AuditListInput) (automationapp.AuditPage, error)
+}
+
 // AutomationRulesPort 定义自动化规则的查询、规范化和写入能力。
 type AutomationRulesPort interface {
 	ListForUser(context.Context, int64) ([]automationapp.Rule, error)
@@ -332,6 +339,14 @@ type CardsPort interface {
 	Update(context.Context, int64, int64, cardsapp.Draft) error
 	Delete(context.Context, int64, int64) error
 	AppendData(context.Context, int64, int64, string) (int, error)
+	// ListSaleRecords 分页读取所属卡密组的售出记录。
+	ListSaleRecords(context.Context, int64, int64, cardsapp.SaleListInput) (cardsapp.SalePage, error)
+	// ExportUnsold 导出 data 卡密组当前未售库存。
+	ExportUnsold(context.Context, int64, int64) (cardsapp.Export, error)
+	// ExportSold 导出卡密组的售出记录 CSV。
+	ExportSold(context.Context, int64, int64) (cardsapp.Export, error)
+	// SaleRecordsByOrder 读取某账号某订单已发出的卡密；调用方必须先确认订单归属。
+	SaleRecordsByOrder(context.Context, int64, string, string) ([]cardsapp.SaleRecord, error)
 }
 
 // APIRequestTesterPort 定义卡券 API 测试请求所需的最小应用能力。
@@ -348,6 +363,29 @@ type DefaultRepliesPort interface {
 	List(context.Context, int64) ([]defaultreplyapp.Summary, error)
 	Delete(context.Context, int64, string) error
 	ClearRecords(context.Context, int64, string) error
+}
+
+// ItemGreetingsPort 定义商品首次回复规则能力。
+type ItemGreetingsPort interface {
+	List(context.Context, int64, string) ([]itemgreetingapp.Rule, error)
+	Create(context.Context, int64, itemgreetingapp.Draft) (itemgreetingapp.Rule, error)
+	Update(context.Context, int64, int64, itemgreetingapp.Draft) (itemgreetingapp.Rule, error)
+	Delete(context.Context, int64, int64) error
+	ClearRecords(context.Context, int64, string) error
+}
+
+// LibraryPort 定义本地资源库能力：图片库、商品模板，以及「模板 × 账号」发布预检。
+type LibraryPort interface {
+	ListImages(context.Context, int64) ([]libraryapp.Image, error)
+	UploadImages(context.Context, int64, []libraryapp.ImageUpload) ([]libraryapp.UploadResult, error)
+	ImageContent(context.Context, int64, int64) (libraryapp.Image, []byte, error)
+	DeleteImage(context.Context, int64, int64) error
+	ListTemplates(context.Context, int64) ([]libraryapp.Template, error)
+	GetTemplate(context.Context, int64, int64) (libraryapp.Template, error)
+	CreateTemplate(context.Context, libraryapp.Template) (libraryapp.Template, error)
+	UpdateTemplate(context.Context, libraryapp.Template) (libraryapp.Template, error)
+	DeleteTemplate(context.Context, int64, int64) error
+	PreviewPublish(context.Context, libraryapp.PublishPreviewInput) (itemapp.BatchPreviewPersistenceResult, error)
 }
 
 // KeywordsPort 定义关键词与指定商品回复能力。
@@ -475,6 +513,8 @@ type ApplicationPorts struct {
 	analytics AnalyticsPort
 	// automationIssues 是自动化异常用例。
 	automationIssues AutomationIssuesPort
+	// automationAudit 是规则日志查询用例。
+	automationAudit AutomationAuditPort
 	// automationRules 是自动化规则用例。
 	automationRules AutomationRulesPort
 	// deliveryTemplates 是发货模板管理用例。
@@ -487,6 +527,10 @@ type ApplicationPorts struct {
 	publishAutomationRules PublishAutomationRulesPort
 	// defaultReplies 是默认回复用例。
 	defaultReplies DefaultRepliesPort
+	// itemGreetings 是商品首次回复规则用例。
+	itemGreetings ItemGreetingsPort
+	// library 是本地资源库用例。
+	library LibraryPort
 	// keywords 是关键词回复用例。
 	keywords KeywordsPort
 	// settings 是系统设置用例。
@@ -533,6 +577,7 @@ type ApplicationPortsInput struct {
 	NotificationChannels        NotificationChannelsPort
 	Analytics                   AnalyticsPort
 	AutomationIssues            AutomationIssuesPort
+	AutomationAudit             AutomationAuditPort
 	AutomationRules             AutomationRulesPort
 	DeliveryTemplates           DeliveryTemplatesPort
 	Cards                       CardsPort
@@ -543,6 +588,8 @@ type ApplicationPortsInput struct {
 	APIRequestTester       APIRequestTesterPort
 	PublishAutomationRules PublishAutomationRulesPort
 	DefaultReplies         DefaultRepliesPort
+	ItemGreetings          ItemGreetingsPort
+	Library                LibraryPort
 	Keywords               KeywordsPort
 	Settings               SettingsPort
 	Admin                  AdminPort
@@ -562,8 +609,8 @@ func NewApplicationPorts(input ApplicationPortsInput) *ApplicationPorts {
 		accountLongLogin: input.AccountLongLogin, accountSettings: input.AccountSettings, accountRuntime: input.AccountRuntime,
 		accountSummaries: input.AccountSummaries, accountTasks: input.AccountTasks, chat: input.Chat,
 		uncertainNotifications: input.UncertainNotifications, notificationChannels: input.NotificationChannels,
-		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationRules: input.AutomationRules,
-		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies,
+		analytics: input.Analytics, automationIssues: input.AutomationIssues, automationAudit: input.AutomationAudit, automationRules: input.AutomationRules,
+		cards: input.Cards, deliveryTemplates: input.DeliveryTemplates, apiRequestTester: input.APIRequestTester, publishAutomationRules: input.PublishAutomationRules, defaultReplies: input.DefaultReplies, itemGreetings: input.ItemGreetings, library: input.Library,
 		keywords: input.Keywords, imageLibrary: input.ImageLibrary, settings: input.Settings, admin: input.Admin, runtimeLogs: input.RuntimeLogs,
 	}
 }
@@ -590,9 +637,9 @@ func (ports *ApplicationPorts) validate() error {
 		{"account_delete", ports.accountDelete}, {"account_profile", ports.accountProfile}, {"account_long_login", ports.accountLongLogin},
 		{"account_settings", ports.accountSettings}, {"account_runtime", ports.accountRuntime}, {"account_summaries", ports.accountSummaries},
 		{"account_tasks", ports.accountTasks}, {"chat", ports.chat}, {"uncertain_notifications", ports.uncertainNotifications},
-		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues},
+		{"notification_channels", ports.notificationChannels}, {"analytics", ports.analytics}, {"automation_issues", ports.automationIssues}, {"automation_audit", ports.automationAudit},
 		{"automation_rules", ports.automationRules}, {"cards", ports.cards}, {"publish_automation_rules", ports.publishAutomationRules},
-		{"default_replies", ports.defaultReplies}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
+		{"default_replies", ports.defaultReplies}, {"item_greetings", ports.itemGreetings}, {"library", ports.library}, {"keywords", ports.keywords}, {"settings", ports.settings}, {"admin", ports.admin},
 		{"image_library", ports.imageLibrary}, {"runtime_logs", ports.runtimeLogs},
 	}
 	// requiredPort 是当前必须在 Server 构造前绑定的应用 Port 名称。
@@ -606,151 +653,3 @@ func (ports *ApplicationPorts) validate() error {
 
 // emptyApplicationPorts 为零值 Server 的防御性读取提供不可变空快照。
 var emptyApplicationPorts = &ApplicationPorts{}
-
-// accountLoginApplication 返回 Cookie 与二维码登录用例 Port。
-func (server *Server) accountLoginApplication() AccountLoginPort {
-	return server.applicationServiceSet().accountLogin
-}
-
-// qrLoginApplication 返回二维码平台流程用例 Port。
-func (server *Server) qrLoginApplication() QRLoginPort {
-	return server.applicationServiceSet().qrLogin
-}
-
-// accountRuntimeApplication 返回账号运行时状态用例。
-func (server *Server) accountRuntimeApplication() AccountRuntimePort {
-	return server.applicationServiceSet().accountRuntime
-}
-
-// orderRefreshJobsApplication 返回订单刷新任务用例。
-func (server *Server) orderRefreshJobsApplication() OrderRefreshJobsPort {
-	return server.applicationServiceSet().orderRefreshJobs
-}
-
-// itemCatalogApplication 返回商品目录读取用例。
-func (server *Server) itemCatalogApplication() ItemCatalogPort {
-	return server.applicationServiceSet().itemCatalog
-}
-
-// itemSinglePublishApplication 返回单商品发布用例。
-func (server *Server) itemSinglePublishApplication() ItemSinglePublishPort {
-	return server.applicationServiceSet().itemSinglePublish
-}
-
-// itemCatalogMutationApplication 返回商品目录写入用例。
-func (server *Server) itemCatalogMutationApplication() ItemCatalogMutationPort {
-	return server.applicationServiceSet().itemCatalogMutation
-}
-
-// itemAISettingsApplication 返回商品级 AI 配置用例。
-func (server *Server) itemAISettingsApplication() ItemAISettingsPort {
-	return server.applicationServiceSet().itemAISettings
-}
-
-// itemSyncApplication 返回商品同步用例。
-func (server *Server) itemSyncApplication() ItemSyncPort {
-	return server.applicationServiceSet().itemSync
-}
-
-// cardsApplication 返回卡券库存用例。
-func (server *Server) cardsApplication() CardsPort {
-	return server.applicationServiceSet().cards
-}
-
-// imageLibraryApplication 返回资源中心图片用例。
-func (server *Server) imageLibraryApplication() ImageLibraryPort {
-	return server.applicationServiceSet().imageLibrary
-}
-
-// accountTaskApplication 返回账号自动化任务用例。
-func (server *Server) accountTaskApplication() AccountTasksPort {
-	return server.applicationServiceSet().accountTasks
-}
-
-// automationIssuesApplication 返回自动化异常用例。
-func (server *Server) automationIssuesApplication() AutomationIssuesPort {
-	return server.applicationServiceSet().automationIssues
-}
-
-// automationRulesApplication 返回自动化规则用例。
-func (server *Server) automationRulesApplication() AutomationRulesPort {
-	return server.applicationServiceSet().automationRules
-}
-
-// deliveryTemplatesApplication 返回发货模板管理用例。
-func (server *Server) deliveryTemplatesApplication() DeliveryTemplatesPort {
-	return server.applicationServiceSet().deliveryTemplates
-}
-
-// itemBatchPreviewApplication 返回批量发布预检用例。
-func (server *Server) itemBatchPreviewApplication() ItemBatchPreviewPort {
-	return server.applicationServiceSet().itemBatchPreview
-}
-
-// itemBatchManagementApplication 返回批量发布管理用例。
-func (server *Server) itemBatchManagementApplication() ItemBatchManagementPort {
-	return server.applicationServiceSet().itemBatchManagement
-}
-
-// itemCategoryRecommendationApplication 返回类目推荐用例。
-func (server *Server) itemCategoryRecommendationApplication() ItemCategoryRecommendationPort {
-	return server.applicationServiceSet().itemCategoryRecommendation
-}
-
-// itemBatchPreviewPersistenceApplication 返回批量预检保存用例。
-func (server *Server) itemBatchPreviewPersistenceApplication() ItemBatchPreviewPersistencePort {
-	return server.applicationServiceSet().itemBatchPreviewPersistence
-}
-
-// accountProfileApplication 返回账号资料刷新用例。
-func (server *Server) accountProfileApplication() AccountProfilePort {
-	return server.applicationServiceSet().accountProfile
-}
-
-// accountLongLoginApplication 返回账号长登录用例。
-func (server *Server) accountLongLoginApplication() AccountLongLoginPort {
-	return server.applicationServiceSet().accountLongLogin
-}
-
-// accountSettingsApplication 返回账号设置用例。
-func (server *Server) accountSettingsApplication() AccountSettingsPort {
-	return server.applicationServiceSet().accountSettings
-}
-
-// platformCredentialApplication 返回受控的平台凭证读取用例。
-func (server *Server) platformCredentialApplication() PlatformCredentialPort {
-	return server.applicationServiceSet().platformCredentials
-}
-
-// authenticationApplication 返回用户登录认证用例。
-func (server *Server) authenticationApplication() AuthenticationPort {
-	return server.applicationServiceSet().authentication
-}
-
-// accountSummaryApplication 返回账号摘要用例。
-func (server *Server) accountSummaryApplication() AccountSummaryPort {
-	return server.applicationServiceSet().accountSummaries
-}
-
-// accountDeleteApplication 返回账号删除用例。
-func (server *Server) accountDeleteApplication() AccountDeletePort {
-	return server.applicationServiceSet().accountDelete
-}
-
-// loginAuditApplication 返回登录审计用例。
-func (server *Server) loginAuditApplication() LoginAuditPort {
-	return server.applicationServiceSet().loginAudit
-}
-
-// settingsApplication 返回系统设置用例。
-func (server *Server) settingsApplication() SettingsPort {
-	return server.applicationServiceSet().settings
-}
-
-// applicationServiceSet 返回构造期注入的不可变 Port 快照；零值 Server 不会隐式装配业务服务。
-func (server *Server) applicationServiceSet() *ApplicationPorts {
-	if server == nil || server.applications == nil {
-		return emptyApplicationPorts
-	}
-	return server.applications
-}

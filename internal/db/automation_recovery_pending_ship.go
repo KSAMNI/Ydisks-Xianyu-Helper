@@ -9,12 +9,83 @@ import (
 	"database/sql"
 )
 
-// CancelObsoletePaidRecoveryRun 取消已不再处于待发货状态的付款运行恢复，并清除可重放发货凭证。
+// ObsoleteRunReasonMarker 标记「订单离开待发货时被安全取消、且从未触达任何外部动作」的付款运行。
+// 订单经平台快照从退款中回到待发货后，只有带此标记的运行才允许被重领或不再阻断无运行兜底；
+// 其余已取消运行（人工取消、已有发送副作用、动作结果未知）仍永久保持终态，避免重复发货。
+const ObsoleteRunReasonMarker = "[obsolete-pending-ship]"
+
+// reclaimableObsoleteRunSQL 是「可被新一轮付款发货接管的已取消运行」的行条件（列名不加别名，可用于 UPDATE 与子查询）。
+// 要求：带安全取消标记，且无已发送内容、无动作游标进度、无进行中动作、无发货凭证。
+const reclaimableObsoleteRunSQL = `status='canceled' AND error_message LIKE '` + ObsoleteRunReasonMarker + `%'
+	            AND action_started=0 AND sent_count=0 AND action_cursor=0 AND delivery_proof=''`
+
+// resumableObsoleteProgressRunSQL 是「订单离开待发货时被安全取消、且发卡/模板已确认完成」的运行行条件（列名不加别名）。
+// 动作游标只在动作成功后推进且取消时没有进行中动作，因此买家已收到内容；订单退款撤回后只允许由冻结计划
+// 判定为纯幂等收尾（确认发货）的运行续跑，绝不重发内容。
+const resumableObsoleteProgressRunSQL = `status='canceled' AND error_message LIKE '` + ObsoleteRunReasonMarker + `%'
+	            AND action_started=0 AND action_cursor>0`
+
+// MissingProofReasonMarker 标记「退款撤回后本可续跑、但发货凭证缺失」而被转入人工核对的运行。
+// 带此标记的运行不再进入自动续跑扫描，避免循环隔离，也避免用空凭证提交确认发货。
+const MissingProofReasonMarker = "[missing-delivery-proof]"
+
+// QuarantineCanceledRunMissingProof 把凭证缺失的可续跑已取消运行（含 07453c1 版本遗留的、取消时已清空凭证的记录）
+// 转入人工核对；仅当运行仍与 attempt 代次一致、带安全取消标记、无进行中动作且凭证为空时生效。
+// outbox 是同一事件的人工处理通知记录：它们与状态更新在同一事务内写入，只有真正隔离成功（恰好更新一行）才提交，
+// 因此不会出现「通知已发出而运行未进入人工核对」。返回是否真正隔离及数据库错误；零行是与其他调度器竞争的正常结果。
+func (a *AutomationRules) QuarantineCanceledRunMissingProof(ctx context.Context, runID int64, attempt int, reason string, outbox []NotificationOutboxInput) (bool, error) {
+	// tx、beginErr 保存状态更新与通知入队共用的事务。
+	tx, beginErr := a.DB.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return false, beginErr
+	}
+	defer tx.Rollback()
+	// result、err 保存条件隔离结果。
+	result, err := tx.ExecContext(ctx, `UPDATE automation_runs
+   SET status='needs_review',error_message=?,lease_expires_at=0,next_retry_at=0,updated_at=CURRENT_TIMESTAMP
+ WHERE id=? AND attempt_count=? AND `+resumableObsoleteProgressRunSQL+` AND delivery_proof=''`, MissingProofReasonMarker+reason, runID, attempt)
+	if err != nil {
+		return false, err
+	}
+	// affected、rowsErr 保存实际隔离行数与驱动错误。
+	affected, rowsErr := result.RowsAffected()
+	if rowsErr != nil {
+		return false, rowsErr
+	}
+	if affected != 1 {
+		return false, nil
+	}
+	// insertErr 保存事务内通知入队错误；失败时整体回滚，状态更新不生效。
+	if insertErr := insertOutboxMessages(ctx, tx, a.Dialect, outbox); insertErr != nil {
+		return false, insertErr
+	}
+	// commitErr 保存提交结果；提交不确定时不报告已隔离。
+	if commitErr := tx.Commit(); commitErr != nil {
+		return false, commitErr
+	}
+	return true, nil
+}
+
+// CancelObsoletePaidRecoveryRun 取消已不再处于待发货状态的付款运行恢复；除「退款中且发卡已完成」外清除可重放发货凭证。
 // 更新同时校验扫描快照和订单当前事实；并发续租、游标推进或订单重新进入待发货都会让本次取消失效。
 func (a *AutomationRules) CancelObsoletePaidRecoveryRun(ctx context.Context, run AutomationRun, reason string) (bool, error) {
+	// 取消时动作结果未知（action_started=1）的运行不打可接管标记，订单重新待发货后也不得自动重放。
+	if !run.ActionStarted {
+		reason = ObsoleteRunReasonMarker + reason
+	}
+	// proofSQL 决定取消后的发货凭证：订单因退款中而离开待发货、且发卡/模板已完成（游标已推进、无进行中动作）时，
+	// 退款撤回后的续跑需要用它恢复已发送的卡密文本/图片来确认发货，必须原样保留（仍为加密存储）；
+	// 其余取消（订单已发货、完成、取消等）不再需要，照旧清空。
+	proofSQL := "''"
+	if !run.ActionStarted && run.ActionCursor > 0 {
+		proofSQL = `CASE WHEN EXISTS (SELECT 1 FROM orders ro
+                           WHERE ro.order_id=automation_runs.order_id AND ro.cookie_id=automation_runs.cookie_id
+                             AND ro.order_status='refunding')
+                      THEN delivery_proof ELSE '' END`
+	}
 	// result、err 保存基于运行快照和最新订单状态的条件取消结果。
 	result, err := a.DB.ExecContext(ctx, `UPDATE automation_runs
-   SET status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0,error_message=?,delivery_proof='',updated_at=CURRENT_TIMESTAMP
+   SET status='canceled',action_started=0,lease_expires_at=0,next_retry_at=0,error_message=?,delivery_proof=`+proofSQL+`,updated_at=CURRENT_TIMESTAMP
  WHERE id=? AND attempt_count=? AND status=? AND action_cursor=? AND action_started=? AND lease_expires_at=?
    AND trigger_type='order_paid'
    AND NOT EXISTS (SELECT 1 FROM orders o
@@ -36,8 +107,9 @@ func (a *AutomationRules) CancelObsoletePaidRecoveryRun(ctx context.Context, run
 //
 // 兜底边界：
 //   - 只取 order_status 属于待发货取值集合（pending_ship、paid、2、pending_delivery，见 pendingShipStatuses），即平台侧已确认付款、只差我方发货；
-//   - 只取**完全没有任何** order_paid 运行的订单；已有运行的订单交给失败的运行恢复扫描处理，
-//     避免与恢复链重复触发、也避免形成第二个执行入口；
+//   - 只取**没有任何有效** order_paid 运行的订单；已有运行的订单交给失败的运行恢复扫描处理，
+//     避免与恢复链重复触发、也避免形成第二个执行入口。唯一例外是订单离开待发货时被安全取消、
+//     且无任何发送副作用的运行（ObsoleteRunReasonMarker），退款撤回后该订单重新进入候选并由同一幂等键重领；
 //   - 砍价订单只有在“待刀成”阶段已成功免拼后才允许进入候选集合；调度器不得调用免拼接口，
 //     也不得根据订单的砍价标记推断平台阶段；
 //   - 要求账号下存在启用的 order_paid 规则且商品匹配，否则没有可执行的动作；
@@ -69,7 +141,9 @@ WHERE o.order_status IN `+pendingShipStatusSQLList()+`
 	   AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
 	                                  WHERE bfs.order_id=o.order_id AND bfs.cookie_id=o.cookie_id AND bfs.status IN ('ready','succeeded')))
    AND NOT EXISTS (SELECT 1 FROM automation_runs r
-                    WHERE r.order_id=o.order_id AND r.trigger_type='order_paid')
+                    WHERE r.order_id=o.order_id AND r.trigger_type='order_paid'
+                      AND NOT (r.status='canceled' AND r.error_message LIKE '`+ObsoleteRunReasonMarker+`%'
+                               AND r.action_started=0 AND r.sent_count=0 AND r.action_cursor=0 AND r.delivery_proof=''))
    AND EXISTS (SELECT 1 FROM automation_rules r2
                 WHERE r2.cookie_id=o.cookie_id AND r2.trigger_type='order_paid'
                   AND r2.deleted_at IS NULL AND r2.enabled=1
@@ -134,7 +208,9 @@ type PendingShipResume struct {
 	Attempt int
 	// ActionCursor 是尚未执行的下一个动作下标。
 	ActionCursor int
-	// Status 是运行当前状态（needs_review 或 failed）。
+	// HasDeliveryProof 表示运行是否保存了发货凭证；canceled 候选缺失凭证时不得自动确认发货。
+	HasDeliveryProof bool
+	// Status 是运行当前状态（needs_review、failed，或退款撤回后可续跑的 canceled）。
 	Status string
 }
 
@@ -149,6 +225,8 @@ type PendingShipResume struct {
 // **归属规则仍处于启用状态**。真正的放行判据（剩余动作是否只含幂等状态动作）必须由调用方
 // 依据运行快照里冻结的动作计划判定：`automation_rule_actions` 是会被管理员编辑的现行配置，
 // 用它判定会把数字游标套用到改过的规则上，从而改变历史订单的发货义务。
+// 订单退款撤回后，带 ObsoleteRunReasonMarker 且游标已推进的已取消运行同样纳入，由调用方的冻结计划检查
+// 保证只会补做确认发货，不会重发内容。
 // 因此本方法额外返回 RawEventJSON，供调用方恢复冻结计划。
 func (a *AutomationRules) PendingShipResumableRunsAfter(ctx context.Context, afterOrderID string, maxAttempts, limit int) ([]PendingShipResume, error) {
 	if limit <= 0 {
@@ -173,7 +251,8 @@ SELECT o.order_id,o.item_id,o.buyer_id,o.spec_name,o.spec_value,o.quantity,o.amo
        COALESCE(o.paid_at,''),COALESCE(o.shipped_at,''),COALESCE(o.completed_at,''),
        COALESCE(o.buyer_reviewed_at,''),COALESCE(o.last_review_request_at,''),o.review_request_count,
        o.created_at,o.updated_at,
-       r.id,r.rule_id,COALESCE(r.raw_event_json,''),r.attempt_count,r.action_cursor,r.status
+       r.id,r.rule_id,COALESCE(r.raw_event_json,''),r.attempt_count,r.action_cursor,r.status,
+       CASE WHEN r.delivery_proof<>'' THEN 1 ELSE 0 END
   FROM orders o
   JOIN automation_runs r ON r.order_id=o.order_id AND r.trigger_type='order_paid'
 WHERE o.order_status IN `+pendingShipStatusSQLList()+`
@@ -182,7 +261,9 @@ WHERE o.order_status IN `+pendingShipStatusSQLList()+`
    AND (o.is_bargain=0 OR EXISTS (SELECT 1 FROM bargain_free_shipping_stages bfs
                                   WHERE bfs.order_id=o.order_id AND bfs.cookie_id=o.cookie_id AND bfs.status IN ('ready','succeeded')))
    AND r.cookie_id=o.cookie_id
-   AND r.status IN ('needs_review','failed')
+   AND (r.status IN ('needs_review','failed') AND r.error_message NOT LIKE '`+MissingProofReasonMarker+`%'
+        OR (r.status='canceled' AND r.error_message LIKE '`+ObsoleteRunReasonMarker+`%'
+            AND r.action_started=0 AND r.action_cursor>0))
    AND r.attempt_count<?
    AND r.id=(SELECT latest.id
                FROM automation_runs latest
@@ -210,7 +291,7 @@ WHERE o.order_status IN `+pendingShipStatusSQLList()+`
 		// candidate 保存当前行的订单事实与运行检查点。
 		var candidate PendingShipResume
 		// isBargain、version、sysShipped 保存订单行的整型事实字段。
-		var isBargain, version, sysShipped int
+		var isBargain, version, sysShipped, hasProof int
 		// 以下 NullString 保存可能为空的订单文本字段。
 		var itemID, buyerID, specName, specValue, qty, amount, status, cookieID,
 			receiverName, receiverPhone, receiverAddr, receiverCity, chatID sql.NullString
@@ -221,9 +302,10 @@ WHERE o.order_status IN `+pendingShipStatusSQLList()+`
 			&candidate.Order.ShippedAt, &candidate.Order.CompletedAt, &candidate.Order.BuyerReviewedAt,
 			&candidate.Order.LastReviewRequestAt, &candidate.Order.ReviewRequestCount,
 			&candidate.Order.CreatedAt, &candidate.Order.UpdatedAt,
-			&candidate.RunID, &candidate.RuleID, &candidate.RawEventJSON, &candidate.Attempt, &candidate.ActionCursor, &candidate.Status); err != nil {
+			&candidate.RunID, &candidate.RuleID, &candidate.RawEventJSON, &candidate.Attempt, &candidate.ActionCursor, &candidate.Status, &hasProof); err != nil {
 			return nil, err
 		}
+		candidate.HasDeliveryProof = hasProof != 0
 		candidate.Order.ItemID = itemID.String
 		candidate.Order.BuyerID = buyerID.String
 		candidate.Order.SpecName = specName.String

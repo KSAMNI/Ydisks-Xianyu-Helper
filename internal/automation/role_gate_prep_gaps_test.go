@@ -33,10 +33,13 @@ func TestAuthorizeSellerTaskEarlyRejections(t *testing.T) {
 		// task 是没有商品号的拍下任务。
 		task := createdTask
 		task.ItemID = ""
-		// _, ok、reason、err 保存核验结论。
+		// _, ok、reason、err 保存核验结论；缺商品号无法证明是本账号商品，按不可重试的静默跳过原因拒绝。
 		_, ok, reason, err := bare.authorizeWebSocketSellerTask(ctx, task)
-		if ok || reason != "missing_item_id" || err != nil {
+		if ok || reason != reasonOrderCreatedNotLocalItem || err != nil {
 			t.Fatalf("ok=%v reason=%s err=%v", ok, reason, err)
+		}
+		if roleVerificationRetryable(reason) {
+			t.Fatalf("缺商品号的拍下事件不应可重试: %s", reason)
 		}
 	})
 	t.Run("拍下事件商品仓库缺失", func(t *testing.T) {

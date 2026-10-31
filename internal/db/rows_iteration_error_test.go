@@ -169,6 +169,7 @@ func TestRepositoriesReturnRowsIterationErrors(t *testing.T) {
 	// businessWrites 收集除账号写锁之外的写语句：fork 的事务路径会在读取前先取 SQLite 写锁，
 	// 该锁语句属于并发控制而不是业务写入，行流失败后仍必须没有任何业务写语句。
 	businessWrites := make([]string, 0, len(rowsIterationSharedState.executed))
+	// statement 是当前被拦截到的写语句，用于识别并跳过 SQLite 事务写锁语句。
 	for _, statement := range rowsIterationSharedState.executed {
 		if strings.Contains(statement, "UPDATE cookies SET id=id") {
 			continue

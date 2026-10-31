@@ -549,7 +549,10 @@ func (a *AutomationRules) reclaimRun(ctx context.Context, execer sqlQueryExecer,
 	   SET status='running',error_message='',lease_expires_at=?,next_retry_at=0,
 	       attempt_count=attempt_count+1,updated_at=CURRENT_TIMESTAMP
 	 WHERE rule_id=? AND trigger_key=? AND cookie_id=? AND COALESCE(order_id,'')=?
-	   AND `+automationRunReclaimPredicate,
+	   AND ((status='running' AND action_started=0 AND (lease_expires_at=0 OR lease_expires_at<?))
+	        OR (status='failed' AND action_started=0 AND attempt_count<3 AND next_retry_at<=?
+	            AND ((sent_count=0 AND error_message NOT LIKE '[no_retry]%') OR error_message LIKE '[safe_retry]%'))
+	        OR (`+reclaimableObsoleteRunSQL+`))`,
 		leaseExpiresAt, run.RuleID, run.TriggerKey, run.CookieID, run.OrderID, now, now)
 	if err != nil {
 		return 0, false, err
@@ -695,12 +698,18 @@ func (a *AutomationRules) FinishRun(ctx context.Context, id int64, attempt int, 
 UPDATE automation_runs
 	   SET status=?,sent_count=?,error_message=?,lease_expires_at=0,next_retry_at=?,delivery_proof=CASE WHEN ? THEN '' ELSE delivery_proof END,updated_at=CURRENT_TIMESTAMP
 	 WHERE id=? AND attempt_count=? AND status='running'`
+	// tx、beginErr 保存运行终态与卡密台账收口共用的事务；成功运行必须原子地确认本次运行遗留的待核对卡密。
+	tx, beginErr := a.DB.BeginTx(ctx, nil)
+	if beginErr != nil {
+		return beginErr
+	}
+	defer func() { _ = tx.Rollback() }()
 	// res、err 保存运行终态更新结果及数据库错误。
-	res, err := a.DB.ExecContext(ctx, query, status, sentCount, errMsg, nextRetryAt, clearProof, id, attempt)
+	res, err := tx.ExecContext(ctx, query, status, sentCount, errMsg, nextRetryAt, clearProof, id, attempt)
 	if err != nil {
 		return err
 	}
-	return requireAutomationRunOwner(res)
+	return finishRunTail(ctx, tx, res, status, id)
 }
 
 // requireAutomationRunOwner 封装require自动化运行所有者业务协调。

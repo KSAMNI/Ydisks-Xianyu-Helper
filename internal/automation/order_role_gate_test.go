@@ -333,8 +333,39 @@ func TestUnknownWebSocketRecoveryRequiresSellerEvidence(t *testing.T) {
 	}
 }
 
+// TestUnknownWebSocketOrderCreatedForNonLocalItemIsSkipped 验证无角色拍下事件的商品不在本账号商品库时静默跳过：
+// 不写订单事实、不进入延期队列、不创建运行；同一用户作为买家拍下他人商品即属此类。
+func TestUnknownWebSocketOrderCreatedForNonLocalItemIsSkipped(t *testing.T) {
+	// store、cleanup 提供隔离数据库及连接释放责任。
+	store, cleanup := newAutomationTestStore(t)
+	defer cleanup()
+	// ctx 限制当前测试的自动化处理生命周期。
+	ctx := context.Background()
+	// task 模拟账号作为买家拍下他人商品；该商品不在本账号商品库。
+	task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderCreated, OrderID: "buyer-created", ItemID: "someone-else-item", BuyerID: "self", ChatID: "buyer-chat"}
+	// handleErr 保存拍下事件被静默跳过时的处理错误，必须为空。
+	if handleErr := New(store, nil, nil).HandleTask(ctx, task); handleErr != nil {
+		t.Fatalf("商品不在本地的拍下事件应被静默跳过: %v", handleErr)
+	}
+	// order、orderErr 验证订单没有被记入本账号。
+	if order, orderErr := store.Orders.Get(ctx, task.OrderID); !errors.Is(orderErr, db.ErrNotFound) || order != nil {
+		t.Fatalf("订单不应落入当前账号: order=%+v err=%v", order, orderErr)
+	}
+	// runCount、pendingCount 验证没有运行记录和延期任务。
+	var runCount, pendingCount int
+	// queryErr 保存运行表与延期任务表计数查询的错误。
+	if queryErr := store.DB.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM automation_runs),(SELECT COUNT(*) FROM automation_pending_tasks)`).Scan(&runCount, &pendingCount); queryErr != nil {
+		t.Fatal(queryErr)
+	}
+	if runCount != 0 || pendingCount != 0 {
+		t.Fatalf("拍下事件产生副作用: runs=%d pending=%d", runCount, pendingCount)
+	}
+}
+
 // TestMissingOrderIDReasonClassification 验证缺少订单号的未知角色付款事件按本地待发货候选细分为
 // 缺会话、无候选、多候选三类原因，而不是统一笼统的 missing_order_id。
+// 上游语义下这三类原因都不可重试：延期快照不会因重放而获得订单号，事件必须直接丢弃，
+// 订单同步后的丢消息兜底由待发货扫描负责。
 func TestMissingOrderIDReasonClassification(t *testing.T) {
 	// store、cleanup 提供隔离的订单表与延期队列。
 	store, cleanup := newAutomationTestStore(t)
@@ -371,8 +402,17 @@ func TestMissingOrderIDReasonClassification(t *testing.T) {
 			if verified || reason != scenario.reason {
 				t.Fatalf("细分原因不符: verified=%t reason=%s want=%s", verified, reason, scenario.reason)
 			}
-			if !roleVerificationRetryable(reason) {
-				t.Fatalf("细分原因应保持可重试以等待订单同步: %s", reason)
+			if roleVerificationRetryable(reason) {
+				t.Fatalf("缺订单号原因不应可重试: %s", reason)
+			}
+			// handleErr 保存丢弃路径的处理错误；缺订单号事件必须被直接丢弃且不报错。
+			if handleErr := center.HandleTask(ctx, scenario.task); handleErr != nil {
+				t.Fatalf("缺订单号事件应被直接丢弃: %v", handleErr)
+			}
+			// pending、runs 是丢弃后的延期任务数与运行数，两者都必须为零。
+			pending, runs := countPendingAndRuns(t, store)
+			if pending != 0 || runs != 0 {
+				t.Fatalf("缺订单号事件不应延期或创建运行: pending=%d runs=%d", pending, runs)
 			}
 		})
 	}
@@ -467,8 +507,8 @@ func TestZeroEvidenceReminderDiscarded(t *testing.T) {
 		}
 	})
 
-	// t.Run 子测试四：带商品号的真实拍下事件即使商品暂未同步，也保留延期核验（不静默丢弃）。
-	t.Run("带商品号订单创建保留延期", func(t *testing.T) {
+	// t.Run 子测试四：带商品号的拍下事件若商品不在本账号本地商品库，按上游语义静默跳过，不进入延期队列。
+	t.Run("商品不在本地时静默跳过", func(t *testing.T) {
 		// store、cleanup 提供无商品的隔离数据库。
 		store, cleanup := newAutomationTestStore(t)
 		defer cleanup()
@@ -478,13 +518,13 @@ func TestZeroEvidenceReminderDiscarded(t *testing.T) {
 		center := New(store, testSenderProvider{sender: sender}, nil)
 		// task 是带商品号但本地未同步商品的未知角色拍下事件。
 		task := Task{Source: "ws", AccountID: "cid", TriggerType: TriggerOrderCreated, ItemID: "new-item", ChatID: "chat", Text: "等待买家付款"}
-		// handleErr 保存带商品号事件的延期处理结果。
+		// handleErr 保存静默跳过结果；不应返回错误。
 		if handleErr := center.HandleTask(context.Background(), task); handleErr != nil {
-			t.Fatalf("带商品号订单创建延期失败: %v", handleErr)
+			t.Fatalf("商品不在本地的拍下事件应静默跳过: %v", handleErr)
 		}
-		// got 保存延期处理后的队列任务数。
-		if got := pendingCount(t, store); got != 1 {
-			t.Fatalf("带商品号订单创建应保留延期核验: pending=%d", got)
+		// got 保存静默跳过后的队列任务数。
+		if got := pendingCount(t, store); got != 0 || len(sender.texts) != 0 {
+			t.Fatalf("商品不在本地的拍下事件不应进入延期队列: pending=%d sends=%d", got, len(sender.texts))
 		}
 	})
 }

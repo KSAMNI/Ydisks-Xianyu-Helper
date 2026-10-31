@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -184,14 +183,44 @@ func (n *Notifier) NotifyAutomationRunForTrigger(ctx context.Context, triggerTyp
 
 // notifyAutomationRun 统一处理自动化终态通知的输入校验、格式化和幂等入队。
 func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) {
+	// event、idempotencyKey、ok 保存构造出的通知事件、稳定幂等键及入参是否有效。
+	event, idempotencyKey, ok := n.automationRunEvent(eventType, runID, accountID, buyerID, itemID, status, message, chatID)
+	if !ok {
+		return
+	}
+	n.notifyEvent(ctx, event, idempotencyKey)
+}
+
+// PrepareAutomationRunOutbox 只计算自动化运行终态通知应写入的 outbox 记录，不执行任何写入。
+// 调用方（数据库仓储）必须在推进业务状态的同一事务内写入这些记录，使「状态变化」与「通知」要么同时生效、要么同时不生效。
+// 没有启用渠道、订阅不匹配或入参无效时返回空切片；渠道查询失败返回错误，调用方应放弃本轮并稍后重试。
+func (n *Notifier) PrepareAutomationRunOutbox(ctx context.Context, triggerType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) ([]db.NotificationOutboxInput, error) {
+	// event、idempotencyKey、ok 保存构造出的通知事件、稳定幂等键及入参是否有效。
+	event, idempotencyKey, ok := n.automationRunEvent(automationEventType(triggerType), runID, accountID, buyerID, itemID, status, message, chatID)
+	if !ok || n.repository == nil || ctx == nil {
+		return nil, nil
+	}
+	if event.Time.IsZero() {
+		event.Time = time.Now()
+	}
+	// eligible、err 保存订阅匹配的渠道及渠道查询错误。
+	eligible, err := n.eligibleChannels(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	return buildOutboxMessages(eligible, event, idempotencyKey), nil
+}
+
+// automationRunEvent 校验输入并构造自动化终态通知事件及其稳定幂等键；ok 为 false 表示输入无效应被忽略。
+func (n *Notifier) automationRunEvent(eventType string, runID int64, accountID, buyerID, itemID, status, message, chatID string) (event NotificationEvent, idempotencyKey string, ok bool) {
 	if n == nil || runID <= 0 || strings.TrimSpace(status) == "" {
 		if n != nil && n.logger != nil {
 			n.logger.Warn("忽略无效的自动化终态通知", "run_id", runID, "account_id", accountID, "status", status)
 		}
-		return
+		return NotificationEvent{}, "", false
 	}
 	// idempotencyKey 绑定自动化运行主键与终态，避免恢复扫描或状态收口重试创建新 outbox 消息。
-	idempotencyKey := fmt.Sprintf("automation-run:%d:%s", runID, strings.TrimSpace(status))
+	idempotencyKey = fmt.Sprintf("automation-run:%d:%s", runID, strings.TrimSpace(status))
 	// notificationType、notificationLevel、notificationTitle 和 fallbackTypes 共同区分普通终态与必须人工介入的终态。
 	notificationType, notificationLevel, notificationTitle := eventType, "info", "自动化运行通知"
 	// fallbackTypes 保存人工处理终态原本所属的自动化类别，兼容现有渠道订阅。
@@ -200,7 +229,7 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 		notificationType, notificationLevel, notificationTitle = EventManualInterventionRequired, "critical", eventLabel(eventType)+"需要人工处理"
 		fallbackTypes = []string{eventType}
 	}
-	n.notifyEvent(ctx, NotificationEvent{
+	return NotificationEvent{
 		AccountID: accountID,
 		Type:      notificationType,
 		Level:     notificationLevel,
@@ -213,7 +242,7 @@ func (n *Notifier) notifyAutomationRun(ctx context.Context, eventType string, ru
 			"结果":   message,
 		},
 		SubscriptionFallbackTypes: fallbackTypes,
-	}, idempotencyKey)
+	}, idempotencyKey, true
 }
 
 // NotifyManualIntervention 将没有 automation_run 主键的自动化异常按稳定业务键写入人工处理通知。
@@ -341,46 +370,18 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
 	}
-	// channels、err 用于本次流程后续判断的channels、err
-	channels, err := n.repository.AccountChannels(ctx, ev.AccountID)
-	if err != nil {
-		n.logger.Error("查询通知渠道失败", "event_type", ev.Type, "account_id", ev.AccountID, "err", logsafe.Error(err))
-		return
-	}
-	if len(channels) == 0 {
-		n.logger.Info("通知事件未找到已启用渠道", "event_type", ev.Type, "account_id", ev.AccountID)
-		return
-	}
 	// full 用于本次流程后续判断的full
 	full := formatEvent(ev)
-	// eligible 用于本次流程后续判断的eligible
-	eligible := make([]db.NotificationChannel, 0, len(channels))
-	// ch 表示当前遍历过程中的ch
-	for _, ch := range channels {
-		// allowed、err 用于本次流程后续判断的allowed、err
-		allowed, err := eventAllowedWithFallbacks(ch.EventTypes, ev.Type, ev.SubscriptionFallbackTypes)
-		if err != nil {
-			n.logger.Warn("通知事件订阅配置无效，跳过渠道", "channel", ch.ID, "event_types", ch.EventTypes, "err", err)
-			continue
-		}
-		if !allowed {
-			continue
-		}
-		eligible = append(eligible, ch)
-	}
-	if len(eligible) == 0 {
-		n.logger.Info("通知事件没有匹配的订阅渠道", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(channels))
+	// eligible、err 保存订阅匹配的渠道及渠道查询错误。
+	eligible, err := n.eligibleChannels(ctx, ev)
+	if err != nil || len(eligible) == 0 {
 		return
 	}
 	// 自动化运行终态必须先进入 outbox：即使 worker 尚未随应用生命周期启动，也不能回退到
 	// 同步网络发送，否则会绕过业务幂等键和发送成功后的 uncertain 隔离。
 	if n.started.Load() || strings.TrimSpace(idempotencyKey) != "" {
 		// messages 保存本事件每个允许渠道的一条 outbox 记录，并共享同一个业务投递键。
-		messages := make([]db.NotificationOutboxInput, 0, len(eligible))
-		// ch 表示当前遍历过程中的ch
-		for _, ch := range eligible {
-			messages = append(messages, db.NotificationOutboxInput{ChannelID: ch.ID, EventType: ev.Type, Body: full, IdempotencyKey: idempotencyKey})
-		}
+		messages := buildOutboxMessages(eligible, ev, idempotencyKey)
 		if // err 用于本次流程后续判断的err
 		err := n.repository.EnqueueOutbox(ctx, messages); err != nil {
 			n.logger.Error("持久化通知失败", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(eligible), "err", logsafe.Error(err))
@@ -398,6 +399,53 @@ func (n *Notifier) notifyEvent(ctx context.Context, ev NotificationEvent, idempo
 			n.logger.Info("通知已发送", "channel", ch.Type, "channel_id", ch.ID, "event_type", ev.Type)
 		}
 	}
+}
+
+// eligibleChannels 查询账号已启用渠道并按事件订阅过滤；无渠道或无匹配订阅返回空切片，仅渠道查询失败返回错误。
+func (n *Notifier) eligibleChannels(ctx context.Context, ev NotificationEvent) ([]db.NotificationChannel, error) {
+	// channels、err 保存账号渠道查询结果
+	channels, err := n.repository.AccountChannels(ctx, ev.AccountID)
+	if err != nil {
+		n.logger.Error("查询通知渠道失败", "event_type", ev.Type, "account_id", ev.AccountID, "err", logsafe.Error(err))
+		return nil, err
+	}
+	if len(channels) == 0 {
+		n.logger.Info("通知事件未找到已启用渠道", "event_type", ev.Type, "account_id", ev.AccountID)
+		return nil, nil
+	}
+	// eligible 用于本次流程后续判断的eligible
+	eligible := make([]db.NotificationChannel, 0, len(channels))
+	// ch 表示当前遍历过程中的ch
+	for _, ch := range channels {
+		// allowed、err 用于本次流程后续判断的allowed、err
+		allowed, err := eventAllowedWithFallbacks(ch.EventTypes, ev.Type, ev.SubscriptionFallbackTypes)
+		if err != nil {
+			n.logger.Warn("通知事件订阅配置无效，跳过渠道", "channel", ch.ID, "event_types", ch.EventTypes, "err", err)
+			continue
+		}
+		if !allowed {
+			continue
+		}
+		eligible = append(eligible, ch)
+	}
+	if len(eligible) == 0 {
+		n.logger.Info("通知事件没有匹配的订阅渠道", "event_type", ev.Type, "account_id", ev.AccountID, "channel_count", len(channels))
+		return nil, nil
+	}
+	return eligible, nil
+}
+
+// buildOutboxMessages 为每个允许渠道生成一条共享业务投递键的 outbox 记录。
+func buildOutboxMessages(eligible []db.NotificationChannel, ev NotificationEvent, idempotencyKey string) []db.NotificationOutboxInput {
+	// full 是格式化后的通知正文
+	full := formatEvent(ev)
+	// messages 保存每个渠道的一条待写入记录
+	messages := make([]db.NotificationOutboxInput, 0, len(eligible))
+	// ch 是一个允许接收该事件的渠道。
+	for _, ch := range eligible {
+		messages = append(messages, db.NotificationOutboxInput{ChannelID: ch.ID, EventType: ev.Type, Body: full, IdempotencyKey: idempotencyKey})
+	}
+	return messages
 }
 
 // runOutbox 封装运行Outbox业务协调。
@@ -536,233 +584,3 @@ func (n *Notifier) SendToChannel(channelID int64, body string) error {
 	}
 	return n.send(*ch, body)
 }
-
-// levelLabel 封装levelLabel业务协调。
-func levelLabel(level string) string {
-	switch level {
-	case "critical":
-		return "严重"
-	case "warn":
-		return "警告"
-	case "info":
-		return "提示"
-	default:
-		return level
-	}
-}
-
-// eventLabel 封装eventLabel业务协调。
-func eventLabel(eventType string) string {
-	switch eventType {
-	case EventAccountOffline:
-		return "掉线通知"
-	case EventAccountRecovered:
-		return "恢复通知"
-	case EventAccountDisabled:
-		return "禁用通知"
-	case EventSecurityVerification:
-		return "风控验证"
-	case EventTokenRenewal:
-		return "续期通知"
-	case EventDeliveryResult:
-		return "交易通知"
-	case EventAutomationOrderCreated:
-		return "拍下改价"
-	case EventAutomationOrderPaid:
-		return "付款发货"
-	case EventAutomationBuyerReviewed:
-		return "评价赠品"
-	case EventAutomationReviewMissingTimeout:
-		return "求评价"
-	case EventAutomationAutoRate:
-		return "自动评价"
-	case EventManualDeliveryResult:
-		return "手动发货结果"
-	case EventManualInterventionRequired:
-		return "需要人工处理"
-	case EventSystemError:
-		return "系统错误"
-	default:
-		if eventType == "" {
-			return "通知"
-		}
-		return eventType
-	}
-}
-
-// classifyAccountAlertEvent 封装classify账号AlertEvent业务协调。
-func classifyAccountAlertEvent(title, body string) string {
-	// msg 用于本次流程后续判断的msg
-	msg := strings.ToLower(title + " " + body)
-	switch {
-	case strings.Contains(msg, "风控"), strings.Contains(msg, "验证"),
-		strings.Contains(msg, "滑块"), strings.Contains(msg, "captcha"),
-		strings.Contains(msg, "risk"), strings.Contains(msg, "x5sec"):
-		return EventSecurityVerification
-	case strings.Contains(msg, "禁用"), strings.Contains(msg, "disabled"):
-		return EventAccountDisabled
-	case strings.Contains(msg, "掉线"), strings.Contains(msg, "离线"),
-		strings.Contains(msg, "offline"), strings.Contains(msg, "session"),
-		strings.Contains(msg, "登录凭证已失效"):
-		return EventAccountOffline
-	case strings.Contains(msg, "token"), strings.Contains(msg, "续期"), strings.Contains(msg, "renew"):
-		return EventTokenRenewal
-	default:
-		return EventSystemError
-	}
-}
-
-// formatEvent 封装formatEvent业务协调。
-func formatEvent(ev NotificationEvent) string {
-	// b 用于本次流程后续判断的b
-	var b strings.Builder
-	// label 用于本次流程后续判断的label
-	label := eventLabel(ev.Type)
-	// level 用于本次流程后续判断的level
-	level := levelLabel(ev.Level)
-	if level == "" {
-		level = "提示"
-	}
-	// title 用于本次流程后续判断的标题
-	title := strings.TrimSpace(ev.Title)
-	if title == "" {
-		title = label
-	}
-	b.WriteString("[")
-	b.WriteString(level)
-	b.WriteString("] ")
-	b.WriteString(title)
-	b.WriteString("\n\n类型: ")
-	b.WriteString(label)
-	if ev.AccountID != "" {
-		b.WriteString("\n账号: ")
-		b.WriteString(ev.AccountID)
-	}
-	b.WriteString("\n时间: ")
-	b.WriteString(ev.Time.Format("2006-01-02 15:04:05"))
-	if len(ev.Fields) > 0 {
-		// keys 用于本次流程后续判断的keys
-		keys := make([]string, 0, len(ev.Fields))
-		// k 表示当前遍历过程中的k
-		for k := range ev.Fields {
-			keys = append(keys, k)
-		}
-		sortStrings(keys)
-		// k 表示当前遍历过程中的k
-		for _, k := range keys {
-			// v 用于本次流程后续判断的v
-			v := strings.TrimSpace(ev.Fields[k])
-			if v == "" {
-				continue
-			}
-			b.WriteByte('\n')
-			b.WriteString(k)
-			b.WriteString(": ")
-			b.WriteString(v)
-		}
-	}
-	// body 用于本次流程后续判断的请求体
-	body := strings.TrimSpace(ev.Body)
-	if body != "" {
-		b.WriteString("\n\n")
-		b.WriteString(body)
-	}
-	return b.String()
-}
-
-// eventAllowed 封装eventAllowed业务协调。
-func eventAllowed(raw, eventType string) (bool, error) {
-	eventType = strings.TrimSpace(eventType)
-	if eventType == "" {
-		return true, nil
-	}
-	// events、err 用于本次流程后续判断的events、err
-	events, err := parseEventTypes(raw)
-	if err != nil {
-		return false, err
-	}
-	if len(events) == 0 {
-		return true, nil
-	}
-	if events[eventType] {
-		return true, nil
-	}
-	// delivery_result 是旧版统一交易开关；保留它对新四类自动化事件、人工发货结果和人工处理告警的兼容放行。
-	if events[EventDeliveryResult] && (isAutomationEventType(eventType) || eventType == EventManualDeliveryResult || eventType == EventManualInterventionRequired) {
-		return true, nil
-	}
-	return false, nil
-}
-
-// eventAllowedWithFallbacks 先匹配事件实际类别，再匹配来源类别，保证新增人工处理分类不会切断旧自动化订阅。
-func eventAllowedWithFallbacks(raw, eventType string, fallbackTypes []string) (bool, error) {
-	// allowed、err 保存实际事件类别的订阅判断结果。
-	allowed, err := eventAllowed(raw, eventType)
-	if err != nil || allowed {
-		return allowed, err
-	}
-	// fallbackType 表示当前兼容检查的来源事件类别。
-	for _, fallbackType := range fallbackTypes {
-		allowed, err = eventAllowed(raw, fallbackType)
-		if err != nil || allowed {
-			return allowed, err
-		}
-	}
-	return false, nil
-}
-
-// isAutomationEventType 判断事件是否属于四类可单独控制的自动化任务。
-func isAutomationEventType(eventType string) bool {
-	switch eventType {
-	case EventAutomationOrderCreated, EventAutomationOrderPaid, EventAutomationBuyerReviewed, EventAutomationReviewMissingTimeout:
-		return true
-	default:
-		return false
-	}
-}
-
-// parseEventTypes 封装parseEventTypes业务协调。
-func parseEventTypes(raw string) (map[string]bool, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
-	}
-	// arr 用于本次流程后续判断的arr
-	var arr []string
-	if strings.HasPrefix(raw, "[") {
-		if // err 用于本次流程后续判断的err
-		err := json.Unmarshal([]byte(raw), &arr); err != nil {
-			return nil, err
-		}
-	} else {
-		arr = strings.FieldsFunc(raw, func(r rune) bool {
-			return r == ',' || r == ';' || r == ' ' || r == '\n' || r == '\t'
-		})
-	}
-	if len(arr) == 0 {
-		return nil, nil
-	}
-	// out 用于本次流程后续判断的out
-	out := make(map[string]bool, len(arr))
-	// v 表示当前遍历过程中的v
-	for _, v := range arr {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			out[v] = true
-		}
-	}
-	return out, nil
-}
-
-// sortStrings 封装sortStrings业务协调。
-func sortStrings(values []string) {
-	for // i 用于本次流程后续判断的i
-	i := 1; i < len(values); i++ {
-		for // j 用于本次流程后续判断的j
-		j := i; j > 0 && values[j-1] > values[j]; j-- {
-			values[j-1], values[j] = values[j], values[j-1]
-		}
-	}
-}
-
-// send 封装send业务协调。

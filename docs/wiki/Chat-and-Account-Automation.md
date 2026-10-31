@@ -14,6 +14,13 @@ Chat supports:
 - Sender labels for the other party and the account owner, with corresponding avatars. Conversations and live messages are isolated between accounts.
 - Real-time events through `/api/v1/chat/ws`. After refresh or reconnect, history API data and the local database remain authoritative; the UI does not rely only on messages received while a WebSocket was open.
 
+### Conversation actions
+
+- **Send item**: pick an item card (switch between the buyer's items and your account's items, with search) and send it straight into the chat.
+- **Message status**: your messages show sending, failed (with retry), sent-unread and read by the other side.
+- **Delete conversation**: clears the chat messages with that buyer from this machine and hides the conversation. Orders, automation and AI memory are untouched, and the conversation reappears when the buyer writes again.
+- The search box finds users, items or message text; paste or choose images to send (up to 10 MB).
+
 ### Official-message recognition
 
 Transaction cards and platform notices must not be handled as ordinary buyer messages. The current protocol metadata rules are:
@@ -65,3 +72,9 @@ Automatic Reviews/Daily Refresh handles account-level tasks. Automation handles 
 - delivery templates, which are limited to paid delivery and review gifts.
 
 Official system messages are for platform-event recognition only and should not be configured as ordinary buyer keyword triggers.
+
+## Quick replies and buyer notes
+
+- **Quick replies:** saved per account (up to 50). Click one in the chat side panel to send it through the normal reliable-send path; your unsent draft is kept. Add or delete them from the same panel (deleting asks for confirmation).
+- **Buyer notes:** when chatting with a confirmed buyer, the chat header shows the note (or "Add user note"). Click it to open a dialog to read and edit the full note. The entry is hidden when the other party is a seller.
+- **Unread alert:** a global unread indicator and browser-title flashing notify you of new messages; browser notifications play a sound by default, switchable under System Settings → Basic Settings.

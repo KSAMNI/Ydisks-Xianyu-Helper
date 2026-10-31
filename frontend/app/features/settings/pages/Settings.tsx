@@ -6,7 +6,6 @@ Eye,EyeOff,
 LockKeyhole,
 RefreshCw,
 Save,
-Settings as SettingsIcon,
 ShieldCheck,
 Sparkles,
 UserRound,
@@ -14,7 +13,9 @@ Zap
 } from 'lucide-react';
 import React from 'react';
 import { DEFAULT_AI_API_URL,LOG_LEVELS } from '../constants';
+import { useNotificationSoundPreference } from '../../../../shared/browser/notificationSound';
 import { useSettings } from '../hooks';
+import { PageHeader } from '../../../../shared/ui/PageHeader';
 
 // Settings 展示系统配置、AI 模型和登录凭据编辑页面。
 const Settings: React.FC = () => {
@@ -27,6 +28,8 @@ const Settings: React.FC = () => {
     setSettings, setModelDropdownOpen, setShowApiKey, setShowCaptchaSecret, setShowCurrentPassword,
     setShowNewPassword, setCredentials,
   } = useSettings();
+  // notificationSound 保存当前浏览器的新消息提示音偏好，仅存于本机浏览器，不随系统配置保存。
+  const notificationSound = useNotificationSoundPreference();
 
   if (!settings) {
     return (
@@ -47,18 +50,8 @@ const Settings: React.FC = () => {
   const visibleAIModels = aiModels;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 animate-fade-in pb-24">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-gray-100 rounded-2xl flex items-center justify-center">
-              <SettingsIcon className="w-6 h-6 text-gray-600" />
-          </div>
-          <div>
-              <h2 className="text-3xl font-extrabold text-gray-900">系统设置</h2>
-              <p className="text-gray-500 mt-1 text-sm font-medium">配置全局自动化规则与系统参数</p>
-          </div>
-        </div>
+    <div className="min-w-0 space-y-8 animate-fade-in">
+      <PageHeader title="系统设置" description="配置全局自动化规则与系统参数">
         <button
           onClick={loadSettings}
           className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-xl font-bold text-gray-700 flex items-center gap-2 transition-colors"
@@ -66,7 +59,7 @@ const Settings: React.FC = () => {
           <RefreshCw className="w-4 h-4" />
           刷新
         </button>
-      </div>
+      </PageHeader>
 
       {saveError && (
         <div className="flex items-center justify-between gap-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -128,6 +121,14 @@ const Settings: React.FC = () => {
                 />
                 <p className="text-xs text-gray-500">0 表示不自动清理续期日志</p>
               </div>
+
+              <label className="flex items-start gap-3 rounded-xl border border-gray-200 bg-gray-50 p-4 cursor-pointer">
+                <input type="checkbox" className="mt-1" aria-label="新消息提示音" checked={notificationSound.enabled} onChange={/* 当前回调写入本机提示音偏好，开启时试听。 */ event => notificationSound.setEnabled(event.target.checked)} />
+                <span>
+                  <span className="block text-sm font-bold text-gray-800">新消息浏览器通知提示音</span>
+                  <span className="mt-1 block text-xs leading-5 text-gray-500">收到买家新消息并弹出浏览器通知时播放默认提示音。仅对当前浏览器生效，需要先在在线聊天页开启浏览器提醒；浏览器可能要求页面至少交互过一次才允许发声。</span>
+                </span>
+              </label>
 
               <label className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 cursor-pointer">
                 <input type="checkbox" className="mt-1" checked={settings.outbound_http_public_only || false} onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => setSettings({ ...settings, outbound_http_public_only: event.target.checked })} />

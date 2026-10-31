@@ -3,6 +3,8 @@ package db
 import (
 	"context"
 	"errors"
+	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -175,79 +177,141 @@ func TestDueAutoRateOrderIDsOnlyReturnsLocallyCompletedOrders(t *testing.T) {
 	}
 }
 
-// TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates 验证卖家评价事实只写一次、不跨账号生效，并使该订单退出自动评价候选。
-func TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates(t *testing.T) {
+// TestDueAutoRateOrderIDsSkipsOrdersThatCannotBeClaimedAgain 回归 issue #96：
+// 累计已办完订单超过候选窗口后，新订单仍必须进入候选；仍可重试的失败记录继续保留。
+func TestDueAutoRateOrderIDsSkipsOrdersThatCannotBeClaimedAgain(t *testing.T) {
 	// store、cleanup 保存本地迁移数据库及其释放函数。
 	store, cleanup := newTestDB(t)
 	defer cleanup()
-	// ctx 是订单事实写入与候选读取共用的数据库上下文。
+	// ctx 是本测试共用的数据库上下文。
 	ctx := context.Background()
-	// created、createErr 保存测试用户初始化结果；账号凭证外键要求存在归属用户。
-	created, createErr := store.Users.Create(ctx, "rated-user", "rated-user@example.com", "pw")
-	if createErr != nil || !created {
-		t.Fatalf("创建测试用户失败: created=%v err=%v", created, createErr)
+	if created, err := store.Users.Create(ctx, "rate-window-user", "rate-window@example.com", "pw"); err != nil || !created { // created、err 保存测试用户初始化结果。
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, err)
 	}
-	// user、userErr 保存账号归属所需的用户身份及读取错误。
-	user, userErr := store.Users.GetByUsername(ctx, "rated-user")
+	// user、userErr 保存账号归属用户。
+	user, userErr := store.Users.GetByUsername(ctx, "rate-window-user")
 	if userErr != nil || user == nil {
-		t.Fatalf("读取测试用户失败: user=%+v err=%v", user, userErr)
+		t.Fatalf("读取测试用户失败: %v", userErr)
 	}
-	// cookieErr 保存目标账号的凭证写入错误。
-	cookieErr := store.Cookies.Save(ctx, "rated-account", "sid=rated", user.ID)
-	// otherCookieErr 保存其他账号的凭证写入错误，用于证明评价事实不会跨账号生效。
-	otherCookieErr := store.Cookies.Save(ctx, "rated-other-account", "sid=other", user.ID)
-	if cookieErr != nil || otherCookieErr != nil {
-		t.Fatalf("保存测试账号失败: rated=%v other=%v", cookieErr, otherCookieErr)
+	if cookieErr := store.Cookies.Save(ctx, "rate-window-account", "sid=window", user.ID); cookieErr != nil { // cookieErr 保存账号写入错误。
+		t.Fatal(cookieErr)
 	}
-	// ratedErr 保存已评价订单的事实写入错误。
-	ratedErr := store.Orders.Upsert(ctx, "rated-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
-	// pendingErr 保存待评价订单的事实写入错误，用于证明排除只作用于已评价订单。
-	pendingErr := store.Orders.Upsert(ctx, "pending-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
-	if ratedErr != nil || pendingErr != nil {
-		t.Fatalf("写入测试订单失败: rated=%v pending=%v", ratedErr, pendingErr)
+	// seed 写入一个已确认收货的订单；completedAt 控制它在候选窗口中的先后。
+	seed := func(orderID, completedAt string) {
+		t.Helper()
+		if err := store.Orders.Upsert(ctx, orderID, OrderUpsertOpts{CookieID: "rate-window-account", OrderStatus: "completed"}); err != nil { // err 保存订单写入错误。
+			t.Fatal(err)
+		}
+		if _, err := store.DB.ExecContext(ctx, `UPDATE orders SET completed_at=? WHERE order_id=?`, completedAt, orderID); err != nil { // err 保存确认收货时间写入错误。
+			t.Fatal(err)
+		}
 	}
-	// completedErr 保存已评价订单的确认收货时间写入错误；完成时间是候选门槛。
-	completedErr := store.Automation.MarkOrderEventTime(ctx, "rated-order", "completed_at")
-	// pendingCompletedErr 保存待评价订单的确认收货时间写入错误。
-	pendingCompletedErr := store.Automation.MarkOrderEventTime(ctx, "pending-order", "completed_at")
-	if completedErr != nil || pendingCompletedErr != nil {
-		t.Fatalf("写入确认收货时间失败: rated=%v pending=%v", completedErr, pendingCompletedErr)
+	// finish 为订单写入指定终态的评价运行记录。
+	finish := func(orderID, status, message string, attempts int, nextRetryAt int64) {
+		t.Helper()
+		// insertErr 保存运行记录写入错误。
+		if _, insertErr := store.DB.ExecContext(ctx, `INSERT INTO account_task_runs
+			(run_key,cookie_id,task_type,target_id,run_date,status,error_message,attempt_count,next_retry_at,started_at,finished_at)
+			VALUES (?,?,?,?,'',?,?,?,?,1,1)`, "rate:rate-window-account:"+orderID, "rate-window-account", "auto_rate", orderID, status, message, attempts, nextRetryAt); insertErr != nil {
+			t.Fatal(insertErr)
+		}
 	}
-	// wrongAccountErr 保存跨账号写入尝试的返回错误；该尝试必须不匹配任何行。
-	if wrongAccountErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-other-account", "rated-order"); wrongAccountErr != nil {
-		t.Fatalf("跨账号写入应静默不匹配: %v", wrongAccountErr)
+	// 窗口为 200：先放入 200 个更早的已评价成功订单，把窗口占满。
+	for index := 0; index < 200; index++ {
+		// orderID 是第 index 个历史已评价订单，时间戳按序递增保证排在新订单之前。
+		orderID := fmt.Sprintf("done-%03d", index)
+		seed(orderID, fmt.Sprintf("2024-01-01 00:%02d:%02d", index/60, index%60))
+		finish(orderID, "success", "", 1, 0)
 	}
-	// beforeMark、beforeErr 保存跨账号尝试后的候选集合，两笔订单都必须仍在候选内。
-	beforeMark, beforeErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
-	if beforeErr != nil || len(beforeMark) != 2 {
-		t.Fatalf("跨账号写入后候选错误: candidates=%v err=%v", beforeMark, beforeErr)
+	// 其余订单均晚于历史订单：新订单、各类终态记录与可重试失败。
+	seed("fresh-1", "2024-02-01 00:00:01")
+	seed("fresh-2", "2024-02-01 00:00:02")
+	seed("review", "2024-02-01 00:00:03")
+	finish("review", "needs_review", "人工核对", 1, 0)
+	seed("stuck-running", "2024-02-01 00:00:04")
+	finish("stuck-running", "running", "", 1, 0)
+	seed("no-retry", "2024-02-01 00:00:05")
+	finish("no-retry", "failed", NoRetryErrorPrefix+": 超出期限", 1, 0)
+	seed("exhausted", "2024-02-01 00:00:06")
+	finish("exhausted", "failed", "平台错误", accountTaskMaxAttempts, 0)
+	seed("cooling", "2024-02-01 00:00:07")
+	finish("cooling", "failed", "平台错误", 1, 4102444800)
+	seed("retryable", "2024-02-01 00:00:08")
+	finish("retryable", "failed", "平台错误", 1, 1)
+
+	// candidates、candidatesErr 保存窗口内的候选订单；必须只含两个新订单与可重试订单。
+	candidates, candidatesErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rate-window-account", 200)
+	if candidatesErr != nil {
+		t.Fatal(candidatesErr)
 	}
-	// markErr 保存卖家评价事实的首次写入错误。
-	if markErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); markErr != nil {
-		t.Fatalf("写入卖家评价事实失败: %v", markErr)
+	// want 是期望的候选集合，按完成时间升序。
+	want := []string{"fresh-1", "fresh-2", "retryable"}
+	if !reflect.DeepEqual(candidates, want) {
+		t.Fatalf("候选应排除不可再领取的订单: got=%v want=%v", candidates, want)
 	}
-	// firstRatedAt 保存首次写入的评价时间文本，必须非空。
-	var firstRatedAt string
-	// scanErr 保存首次评价时间读取的数据库错误。
-	scanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&firstRatedAt)
-	if scanErr != nil || firstRatedAt == "" {
-		t.Fatalf("首次评价时间读取失败: value=%q err=%v", firstRatedAt, scanErr)
+}
+
+// TestDueAutoRateOrderIDsForManualKeepsCooldownAndExhaustedCandidates 验证人工“立即评价”候选口径：
+// 冷却中与累计次数已用尽的失败订单仍必须是候选（由抢占层给出明确原因），
+// 而已成功、待人工核对、仍在运行以及带永久失败前缀的运行记录在候选层就被排除。
+func TestDueAutoRateOrderIDsForManualKeepsCooldownAndExhaustedCandidates(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是本测试共用的数据库上下文。
+	ctx := context.Background()
+	if created, err := store.Users.Create(ctx, "rate-manual-user", "rate-manual@example.com", "pw"); err != nil || !created { // created、err 保存测试用户初始化结果。
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, err)
 	}
-	// repeatErr 保存重复写入的返回错误；已存在值必须保留首次时间。
-	if repeatErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); repeatErr != nil {
-		t.Fatalf("重复写入应幂等: %v", repeatErr)
+	// user、userErr 保存账号归属用户。
+	user, userErr := store.Users.GetByUsername(ctx, "rate-manual-user")
+	if userErr != nil || user == nil {
+		t.Fatalf("读取测试用户失败: %v", userErr)
 	}
-	// secondRatedAt 保存重复写入后的评价时间文本。
-	var secondRatedAt string
-	// secondScanErr 保存重复写入后评价时间读取的数据库错误。
-	secondScanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&secondRatedAt)
-	if secondScanErr != nil || secondRatedAt != firstRatedAt {
-		t.Fatalf("重复写入不应覆盖首次时间: first=%q second=%q err=%v", firstRatedAt, secondRatedAt, secondScanErr)
+	if cookieErr := store.Cookies.Save(ctx, "rate-manual-account", "sid=manual", user.ID); cookieErr != nil { // cookieErr 保存账号写入错误。
+		t.Fatal(cookieErr)
 	}
-	// candidates、candidateErr 保存排除已评价订单后的候选集合。
-	candidates, candidateErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
-	if candidateErr != nil || len(candidates) != 1 || candidates[0] != "pending-order" {
-		t.Fatalf("已评价订单必须排除: candidates=%v err=%v", candidates, candidateErr)
+	// seed 写入一个已确认收货的订单；completedAt 决定候选排序。
+	seed := func(orderID, completedAt string) {
+		t.Helper()
+		if err := store.Orders.Upsert(ctx, orderID, OrderUpsertOpts{CookieID: "rate-manual-account", OrderStatus: "completed"}); err != nil { // err 保存订单写入错误。
+			t.Fatal(err)
+		}
+		if _, err := store.DB.ExecContext(ctx, `UPDATE orders SET completed_at=? WHERE order_id=?`, completedAt, orderID); err != nil { // err 保存确认收货时间写入错误。
+			t.Fatal(err)
+		}
+	}
+	// finish 为订单写入指定终态的评价运行记录。
+	finish := func(orderID, status, message string, attempts int, nextRetryAt int64) {
+		t.Helper()
+		// insertErr 保存运行记录写入错误。
+		if _, insertErr := store.DB.ExecContext(ctx, `INSERT INTO account_task_runs
+			(run_key,cookie_id,task_type,target_id,run_date,status,error_message,attempt_count,next_retry_at,started_at,finished_at)
+			VALUES (?,?,?,?,'',?,?,?,?,1,1)`, "rate:rate-manual-account:"+orderID, "rate-manual-account", "auto_rate", orderID, status, message, attempts, nextRetryAt); insertErr != nil {
+			t.Fatal(insertErr)
+		}
+	}
+	seed("cooling", "2024-03-01 00:00:01")
+	finish("cooling", "failed", "平台错误", 1, 4102444800)
+	seed("exhausted", "2024-03-01 00:00:02")
+	finish("exhausted", "failed", "平台错误", accountTaskMaxAttempts, 0)
+	seed("no-retry", "2024-03-01 00:00:03")
+	finish("no-retry", "failed", NoRetryErrorPrefix+": 超出期限", 1, 0)
+	seed("review", "2024-03-01 00:00:04")
+	finish("review", "needs_review", "人工核对", 1, 0)
+	seed("stuck-running", "2024-03-01 00:00:05")
+	finish("stuck-running", "running", "", 1, 0)
+	seed("rated", "2024-03-01 00:00:06")
+	finish("rated", "success", "", 1, 0)
+	// candidates、candidatesErr 保存人工入口候选；只允许冷却中与次数用尽的失败订单进入。
+	candidates, candidatesErr := store.AccountTasks.DueAutoRateOrderIDsForManual(ctx, "rate-manual-account", 200)
+	if candidatesErr != nil {
+		t.Fatal(candidatesErr)
+	}
+	// want 是期望的人工入口候选集合，按完成时间升序。
+	want := []string{"cooling", "exhausted"}
+	if !reflect.DeepEqual(candidates, want) {
+		t.Fatalf("人工入口候选错误: got=%v want=%v", candidates, want)
 	}
 }
 
@@ -351,5 +415,81 @@ func TestAccountTaskRunNextRetryAtReportsExhaustion(t *testing.T) {
 	// missingErr 保存读取不存在运行记录的错误；缺失记录不能伪装成“已耗尽”。
 	if _, missingErr := store.AccountTasks.RunNextRetryAt(ctx, "rate:retry-cookie:missing"); missingErr == nil {
 		t.Fatal("不存在的运行记录必须返回错误")
+	}
+}
+
+// TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates 验证卖家评价事实只写一次、不跨账号生效，并使该订单退出自动评价候选。
+func TestMarkOrderSellerRatedExcludesRatedOrderFromCandidates(t *testing.T) {
+	// store、cleanup 保存本地迁移数据库及其释放函数。
+	store, cleanup := newTestDB(t)
+	defer cleanup()
+	// ctx 是订单事实写入与候选读取共用的数据库上下文。
+	ctx := context.Background()
+	// created、createErr 保存测试用户初始化结果；账号凭证外键要求存在归属用户。
+	created, createErr := store.Users.Create(ctx, "rated-user", "rated-user@example.com", "pw")
+	if createErr != nil || !created {
+		t.Fatalf("创建测试用户失败: created=%v err=%v", created, createErr)
+	}
+	// user、userErr 保存账号归属所需的用户身份及读取错误。
+	user, userErr := store.Users.GetByUsername(ctx, "rated-user")
+	if userErr != nil || user == nil {
+		t.Fatalf("读取测试用户失败: user=%+v err=%v", user, userErr)
+	}
+	// cookieErr 保存目标账号的凭证写入错误。
+	cookieErr := store.Cookies.Save(ctx, "rated-account", "sid=rated", user.ID)
+	// otherCookieErr 保存其他账号的凭证写入错误，用于证明评价事实不会跨账号生效。
+	otherCookieErr := store.Cookies.Save(ctx, "rated-other-account", "sid=other", user.ID)
+	if cookieErr != nil || otherCookieErr != nil {
+		t.Fatalf("保存测试账号失败: rated=%v other=%v", cookieErr, otherCookieErr)
+	}
+	// ratedErr 保存已评价订单的事实写入错误。
+	ratedErr := store.Orders.Upsert(ctx, "rated-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
+	// pendingErr 保存待评价订单的事实写入错误，用于证明排除只作用于已评价订单。
+	pendingErr := store.Orders.Upsert(ctx, "pending-order", OrderUpsertOpts{CookieID: "rated-account", OrderStatus: "completed"})
+	if ratedErr != nil || pendingErr != nil {
+		t.Fatalf("写入测试订单失败: rated=%v pending=%v", ratedErr, pendingErr)
+	}
+	// completedErr 保存已评价订单的确认收货时间写入错误；完成时间是候选门槛。
+	completedErr := store.Automation.MarkOrderEventTime(ctx, "rated-order", "completed_at")
+	// pendingCompletedErr 保存待评价订单的确认收货时间写入错误。
+	pendingCompletedErr := store.Automation.MarkOrderEventTime(ctx, "pending-order", "completed_at")
+	if completedErr != nil || pendingCompletedErr != nil {
+		t.Fatalf("写入确认收货时间失败: rated=%v pending=%v", completedErr, pendingCompletedErr)
+	}
+	// wrongAccountErr 保存跨账号写入尝试的返回错误；该尝试必须不匹配任何行。
+	if wrongAccountErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-other-account", "rated-order"); wrongAccountErr != nil {
+		t.Fatalf("跨账号写入应静默不匹配: %v", wrongAccountErr)
+	}
+	// beforeMark、beforeErr 保存跨账号尝试后的候选集合，两笔订单都必须仍在候选内。
+	beforeMark, beforeErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
+	if beforeErr != nil || len(beforeMark) != 2 {
+		t.Fatalf("跨账号写入后候选错误: candidates=%v err=%v", beforeMark, beforeErr)
+	}
+	// markErr 保存卖家评价事实的首次写入错误。
+	if markErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); markErr != nil {
+		t.Fatalf("写入卖家评价事实失败: %v", markErr)
+	}
+	// firstRatedAt 保存首次写入的评价时间文本，必须非空。
+	var firstRatedAt string
+	// scanErr 保存首次评价时间读取的数据库错误。
+	scanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&firstRatedAt)
+	if scanErr != nil || firstRatedAt == "" {
+		t.Fatalf("首次评价时间读取失败: value=%q err=%v", firstRatedAt, scanErr)
+	}
+	// repeatErr 保存重复写入的返回错误；已存在值必须保留首次时间。
+	if repeatErr := store.AccountTasks.MarkOrderSellerRated(ctx, "rated-account", "rated-order"); repeatErr != nil {
+		t.Fatalf("重复写入应幂等: %v", repeatErr)
+	}
+	// secondRatedAt 保存重复写入后的评价时间文本。
+	var secondRatedAt string
+	// secondScanErr 保存重复写入后评价时间读取的数据库错误。
+	secondScanErr := store.DB.QueryRowContext(ctx, `SELECT seller_rated_at FROM orders WHERE order_id='rated-order'`).Scan(&secondRatedAt)
+	if secondScanErr != nil || secondRatedAt != firstRatedAt {
+		t.Fatalf("重复写入不应覆盖首次时间: first=%q second=%q err=%v", firstRatedAt, secondRatedAt, secondScanErr)
+	}
+	// candidates、candidateErr 保存排除已评价订单后的候选集合。
+	candidates, candidateErr := store.AccountTasks.DueAutoRateOrderIDs(ctx, "rated-account", 10)
+	if candidateErr != nil || len(candidates) != 1 || candidates[0] != "pending-order" {
+		t.Fatalf("已评价订单必须排除: candidates=%v err=%v", candidates, candidateErr)
 	}
 }

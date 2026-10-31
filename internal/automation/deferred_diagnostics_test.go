@@ -12,21 +12,29 @@ import (
 	"xianyu-go/internal/db"
 )
 
-// TestDeferredRoleEvidenceDiagnosticsAndDeadLetter 用 t 验证缺少字段的事件保持阻断，精确原因持久化，第五次失败仅通知一次。
+// TestDeferredRoleEvidenceDiagnosticsAndDeadLetter 用 t 验证缺少字段的事件保持阻断，精确原因持久化，第五次失败仅通知一次；
+// 上游语义下不可重试的原因（缺商品号、商品不在本账号、缺会话、无待发货候选）必须在首次处理时直接丢弃。
 func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
-	// cases 将缺商品号、商品归属未同步、缺会话、无待发货候选和订单未同步分别诊断。
+	// cases 将可重试与不可重试的缺失事实分别诊断；dropped 为真表示事件必须被直接丢弃。
 	cases := []struct {
 		// name、reason 分别是子测试名和预期稳定原因码。
 		name, reason string
 		// task 是无真实凭证的测试交易事件。
 		task Task
+		// dropped 表示该原因不可重试：事件必须被丢弃而不是延期核验。
+		dropped bool
 	}{
-		// 缺商品号用例带买家标识，避免被零事实静默丢弃拦截，专注于验证缺商品号时的延期退避链路。
-		{name: "缺商品号", reason: "missing_item_id", task: Task{TriggerType: TriggerOrderCreated, BuyerID: "buyer"}},
-		{name: "缺商品事实", reason: "missing_local_item", task: Task{TriggerType: TriggerOrderCreated, ItemID: "item"}},
-		{name: "缺会话标识", reason: "missing_chat_id", task: Task{TriggerType: TriggerOrderPaid}},
-		// 无待发货候选用例带买家标识，避免被零事实静默丢弃拦截，专注于验证无候选时的延期退避链路。
-		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat", BuyerID: "buyer"}},
+		// 缺商品号的拍下事件无法证明是本账号商品，静默跳过。
+		{name: "缺商品号", reason: reasonOrderCreatedNotLocalItem, task: Task{TriggerType: TriggerOrderCreated, BuyerID: "buyer"}, dropped: true},
+		// 商品不在本账号商品库的拍下事件同样静默跳过。
+		{name: "拍下商品不在本账号", reason: reasonOrderCreatedNotLocalItem, task: Task{TriggerType: TriggerOrderCreated, ItemID: "foreign-item"}, dropped: true},
+		// 本地订单已同步但商品归属尚未同步，属于可重试证据缺失，必须延期到死信。
+		{name: "缺商品事实", reason: "missing_local_item", task: Task{TriggerType: TriggerOrderPaid, OrderID: "local-order"}},
+		// 缺会话标识无法按会话细分候选，且重放不会补全会话，直接丢弃。
+		{name: "缺会话标识", reason: "missing_chat_id", task: Task{TriggerType: TriggerOrderPaid}, dropped: true},
+		// 同会话没有任何待发货候选，说明不是本账号的卖家事件，直接丢弃。
+		{name: "无待发货候选", reason: "no_pending_order_candidate", task: Task{TriggerType: TriggerOrderPaid, ChatID: "chat", BuyerID: "buyer"}, dropped: true},
+		// 订单号存在但本地尚未同步，属于可重试证据缺失，必须延期到死信。
 		{name: "缺订单事实", reason: "missing_local_order", task: Task{TriggerType: TriggerOrderPaid, OrderID: "missing-order"}},
 	}
 	// scenario 是本轮验证的字段或本地事实缺失场景。
@@ -38,6 +46,12 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 			defer cleanup()
 			// ctx 是队列写入和模拟重试的取消根。
 			ctx := context.Background()
+			// seedErr 写入“缺商品事实”用例所需的本地待发货订单；该订单的商品故意不在商品库中。
+			// 会话与买家使用独立标识，避免干扰“无待发货候选”用例的候选统计。
+			if seedErr := store.Orders.Upsert(ctx, "local-order", db.OrderUpsertOpts{CookieID: "cid", ItemID: "item",
+				BuyerID: "local-buyer", ChatID: "local-chat", OrderStatus: "pending_ship"}); seedErr != nil {
+				t.Fatal(seedErr)
+			}
 			// notifier 记录独立人工处理通知；sender 验证没有外部消息动作。
 			notifier := &triggerAwareNotificationProbe{}
 			// sender 仅记录本地模拟发送，缺失卖家证据时必须始终为空。
@@ -49,9 +63,23 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 			// task 固定来源、账号和合成敏感字段，验证日志与快照不输出 Cookie 或原始正文。
 			task := scenario.task
 			task.Source, task.AccountID, task.CookieStr, task.Text = "ws", "cid", "TEST-COOKIE-DO-NOT-LOG", "TEST-RAW-DO-NOT-LOG"
-			// handleErr 保存首次门禁延期错误，不足证据不是立即丢弃。
+			// handleErr 保存首次门禁处理结果：可重试原因延期，不可重试原因直接丢弃，两者都不应报错。
 			if handleErr := center.HandleTask(ctx, task); handleErr != nil {
 				t.Fatal(handleErr)
+			}
+			// typedErr 验证改进诊断没有破坏已有 errors.Is 兼容判断。
+			typedErr := newSellerRoleEvidenceError(task, scenario.reason)
+			if !errors.Is(typedErr, errSellerRoleEvidencePending) {
+				t.Fatal("丢失待核验哨兵兼容语义")
+			}
+			if scenario.dropped {
+				// 不可重试原因必须在首次处理时丢弃：不写延期队列、不创建运行、不通知人工、不发送外部消息。
+				pending, runs := countPendingAndRuns(t, store)
+				if pending != 0 || runs != 0 || len(sender.texts) != 0 || notifier.manualCalls != 0 {
+					t.Fatalf("不可重试原因应直接丢弃: pending=%d runs=%d sends=%d notifications=%d",
+						pending, runs, len(sender.texts), notifier.manualCalls)
+				}
+				return
 			}
 			// scheduler 仅手动驱动队列，不启动后台 goroutine。
 			scheduler := NewScheduler(center)
@@ -90,29 +118,25 @@ func TestDeferredRoleEvidenceDiagnosticsAndDeadLetter(t *testing.T) {
 			if strings.Contains(output, task.CookieStr) || strings.Contains(output, task.Text) || strings.Contains(output, "重放成功") {
 				t.Fatal("日志泄漏敏感正文或误报外部成功")
 			}
-			// typedErr 验证改进诊断没有破坏已有 errors.Is 兼容判断。
-			typedErr := newSellerRoleEvidenceError(task, scenario.reason)
-			if !errors.Is(typedErr, errSellerRoleEvidencePending) {
-				t.Fatal("丢失待核验哨兵兼容语义")
-			}
 		})
 	}
 }
 
 // TestUnknownRoleReplayDoesNotGuessOrReopenOrders 用 t 验证多候选不串单、已结束同单只处理完成、邻近已发货订单不能用来关闭无号事件。
+// 上游语义下这三类原因都不可重试：延期任务必须在候选层之外安全收口，不创建运行、不发消息、不保留延期任务。
 func TestUnknownRoleReplayDoesNotGuessOrReopenOrders(t *testing.T) {
 	// cases 覆盖精确订单终态和没有唯一订单证据的两种情况。
 	cases := []struct {
 		// name 是子测试名称；orderID 非空才允许精确关联已结束订单。
 		name, orderID string
-		// pending 控制本地会话订单是否仍待发货；expectQueue 是预期保留的延期任务数。
+		// pending 控制本地会话订单是否仍待发货。
 		pending bool
-		// expectQueue 为零表示明确终态安全关闭，为一表示证据不足必须保留。
-		expectQueue int
+		// expectReason 是门禁必须给出的稳定原因码，也是安全收口的审计依据。
+		expectReason string
 	}{
-		{name: "确切已发货同单", orderID: "order-a", expectQueue: 0},
-		{name: "无号事件不能借用已发货邻单", expectQueue: 1},
-		{name: "两笔待发货候选不能择近", pending: true, expectQueue: 1},
+		{name: "确切已发货同单", orderID: "order-a", expectReason: "order_not_pending_ship"},
+		{name: "无号事件不能借用已发货邻单", expectReason: "no_pending_order_candidate"},
+		{name: "两笔待发货候选不能择近", pending: true, expectReason: "multiple_pending_order_candidates"},
 	}
 	// scenario 指定此次安全收口所具备的证据。
 	for _, scenario := range cases {
@@ -165,16 +189,12 @@ func TestUnknownRoleReplayDoesNotGuessOrReopenOrders(t *testing.T) {
 			if replayErr := NewScheduler(center).runDeferredTasks(ctx); replayErr != nil {
 				t.Fatal(replayErr)
 			}
-			// queueCount 是安全关闭或保留阻断后的队列行数。
-			var queueCount int
-			// countErr 保存队列审计查询错误。
-			if countErr := store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM automation_pending_tasks`).Scan(&queueCount); countErr != nil {
-				t.Fatal(countErr)
+			// pendingCount、runCount 保存安全收口后残留的延期任务数与运行数，两者都必须为零。
+			pendingCount, runCount := countPendingAndRuns(t, store)
+			if pendingCount != 0 || runCount != 0 || len(sender.texts) != 0 {
+				t.Fatalf("安全处理不符: pending=%d runs=%d sends=%d", pendingCount, runCount, len(sender.texts))
 			}
-			if queueCount != scenario.expectQueue || len(sender.texts) != 0 {
-				t.Fatalf("安全处理不符: queue=%d sends=%d", queueCount, len(sender.texts))
-			}
-			if scenario.expectQueue == 0 && (!strings.Contains(logs.String(), "order_not_pending_ship") || !strings.Contains(logs.String(), "延期自动化事件处理完成")) {
+			if !strings.Contains(logs.String(), `"reason":"`+scenario.expectReason+`"`) || !strings.Contains(logs.String(), "未执行外部动作") {
 				t.Fatal("明确终态收口缺少未执行外部动作的审计")
 			}
 		})
