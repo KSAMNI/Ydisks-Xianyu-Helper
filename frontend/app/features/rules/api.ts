@@ -711,6 +711,7 @@ const normalizeItemGreeting = (raw: unknown): ItemGreetingRule => {
     enabled: dto.enabled === true,
     reply_content: typeof dto.reply_content === 'string' ? dto.reply_content : '',
     reply_image_url: typeof dto.reply_image_url === 'string' ? dto.reply_image_url : '',
+    reply_image_path: typeof dto.reply_image_path === 'string' ? dto.reply_image_path : '',
     item_ids: Array.isArray(dto.item_ids) ? dto.item_ids.filter(/* itemID 是服务端返回的商品标识。 */ (itemID): itemID is string => typeof itemID === 'string') : [],
   };
 };
@@ -725,7 +726,7 @@ export const getItemGreetings = async (accountID?: string, options?: RequestCont
 // saveItemGreeting 创建（id 为 0）或更新商品首次回复规则，返回服务端确认的规则。
 export const saveItemGreeting = async (rule: ItemGreetingRule): Promise<ItemGreetingRule> => {
   // body 是创建和更新共用的请求载荷。
-  const body = { cookie_id: rule.cookie_id, name: rule.name, enabled: rule.enabled, reply_content: rule.reply_content, reply_image_url: rule.reply_image_url, item_ids: rule.item_ids };
+  const body = { cookie_id: rule.cookie_id, name: rule.name, enabled: rule.enabled, reply_content: rule.reply_content, reply_image_url: rule.reply_image_url, reply_image_path: rule.reply_image_path || '', item_ids: rule.item_ids };
   // response 保存写入接口返回的规则。
   const response = rule.id
     ? await runContractRequest(/* signal 控制首次回复规则更新请求的取消和超时。 */ signal => contractClient.PUT('/api/v1/reply-rules/greetings/{id}', { params: { path: { id: rule.id } }, body, signal }))

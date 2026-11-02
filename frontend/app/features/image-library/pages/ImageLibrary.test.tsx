@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { deleteImageAsset, listImageAssets, renameImageAsset, uploadImageAsset } from '../api';
 import type { ImageAsset } from '../models';
 import ImageLibrary from './ImageLibrary';
+import { ImageLibraryRefreshContext } from '../../../../shared/components/ImageLibraryContext';
 
 vi.mock('../api', /* imageLibraryApiMockFactory 提供资源中心页面全部请求替身。 */ () => ({
   deleteImageAsset: vi.fn(),
@@ -155,4 +156,15 @@ describe('资源中心页面', /* 当前回调覆盖列表、上传、改名、�
     expect(screen.queryByText('旧图片')).toBeNull();
     expect(screen.getByText('教程图')).toBeTruthy();
   });
+});
+
+test('内嵌消息图片不重复标题，上传成功通知共享选择器刷新', /* 验证统一资源中心到规则选择器的图片更新连接。 */ async () => {
+  // refreshOptions 是应用层图片选项失效通知的替身。
+  const refreshOptions = vi.fn();
+  render(<ImageLibraryRefreshContext.Provider value={refreshOptions}><ImageLibrary embedded /></ImageLibraryRefreshContext.Provider>);
+  await screen.findByText('主图');
+  expect(screen.queryByRole('heading', { name: '资源中心 · 消息图片' })).toBeNull();
+  fireEvent.change(screen.getByLabelText('图片文件'), { target: { files: [new File(['png'], 'new.png', { type: 'image/png' })] } });
+  fireEvent.click(screen.getByRole('button', { name: '上传图片' }));
+  await waitFor(/* 上传已确认成功后恰好通知一次共享刷新。 */ () => expect(refreshOptions).toHaveBeenCalledTimes(1));
 });

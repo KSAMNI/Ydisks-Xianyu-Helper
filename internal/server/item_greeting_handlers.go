@@ -23,6 +23,8 @@ type itemGreetingRequest struct {
 	ReplyContent string `json:"reply_content"`
 	// ReplyImageURL 是首次回复图片地址。
 	ReplyImageURL string `json:"reply_image_url"`
+	// ReplyImagePath 是资源中心图片引用或安全相对路径，空串表示不使用本地图片。
+	ReplyImagePath string `json:"reply_image_path"`
 	// ItemIDs 是规则覆盖的商品标识。
 	ItemIDs []string `json:"item_ids"`
 }
@@ -41,6 +43,8 @@ type itemGreetingResponse struct {
 	ReplyContent string `json:"reply_content"`
 	// ReplyImageURL 是首次回复图片地址。
 	ReplyImageURL string `json:"reply_image_url"`
+	// ReplyImagePath 是已保存的本地图片引用，不包含图片字节或系统绝对路径。
+	ReplyImagePath string `json:"reply_image_path"`
 	// ItemIDs 是规则覆盖的商品标识。
 	ItemIDs []string `json:"item_ids"`
 }
@@ -54,7 +58,7 @@ func newItemGreetingResponse(rule itemgreetingapp.Rule) itemGreetingResponse {
 	}
 	return itemGreetingResponse{
 		ID: rule.ID, CookieID: rule.CookieID, Name: rule.Name, Enabled: rule.Enabled,
-		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ItemIDs: itemIDs,
+		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ReplyImagePath: rule.ReplyImagePath, ItemIDs: itemIDs,
 	}
 }
 
@@ -175,7 +179,7 @@ func (s *Server) clearItemGreetingRecords(w http.ResponseWriter, r *http.Request
 func (req itemGreetingRequest) draft() itemgreetingapp.Draft {
 	return itemgreetingapp.Draft{
 		CookieID: req.CookieID, Name: req.Name, Enabled: req.Enabled,
-		ReplyContent: req.ReplyContent, ReplyImageURL: req.ReplyImageURL, ItemIDs: req.ItemIDs,
+		ReplyContent: req.ReplyContent, ReplyImageURL: req.ReplyImageURL, ReplyImagePath: req.ReplyImagePath, ItemIDs: req.ItemIDs,
 	}
 }
 

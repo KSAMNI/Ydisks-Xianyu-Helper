@@ -178,15 +178,15 @@ func (r *ReplyService) handleItemGreeting(ctx context.Context, m ChatMessage) {
 		r.logger.ErrorContext(ctx, "读取商品首次回复规则失败", "err", err)
 		return
 	}
-	// res 保存首次回复内容，使用商品首次回复专属的一次性记录。
-	res := &ReplyResult{Source: "商品首次回复", ReplyOnce: true, onceRecords: r.store.ItemGreetings}
+	// res 使用首次回复专属记录，并把本地引用交给既有图片发送器和分段幂等保护。
+	res := &ReplyResult{Source: "商品首次回复", ReplyOnce: true, onceRecords: r.store.ItemGreetings, ImagePath: strings.TrimSpace(rule.ReplyImagePath)}
 	if strings.TrimSpace(rule.ReplyContent) != "" {
 		res.Text = formatReplyWithItem(rule.ReplyContent, m)
 	}
 	if strings.TrimSpace(rule.ReplyImageURL) != "" {
 		res.ImageURL = rule.ReplyImageURL
 	}
-	if res.Text == "" && res.ImageURL == "" {
+	if res.Text == "" && res.ImageURL == "" && res.ImagePath == "" {
 		return
 	}
 	// deliverErr 保存首次回复投递错误，仅记录日志不阻断后续回复。

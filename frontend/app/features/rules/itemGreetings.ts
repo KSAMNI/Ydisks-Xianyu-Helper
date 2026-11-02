@@ -4,14 +4,22 @@ import type { Item, ItemGreetingRule } from './api';
 import { finishRuleSubmission, idleRuleSubmitState, isCurrentRequest, nextRequestGeneration, startRuleSubmission } from './interactionState';
 import type { RuleSubmitState } from './interactionState';
 
+/** ItemGreetingDraft 在已保存规则之外记录尚未填写图片时的来源选择，不进入 HTTP 请求。 */
+export interface ItemGreetingDraft extends ItemGreetingRule {
+  /** imageSource 保留空选择状态；历史规则由非空路径推断来源。 */
+  imageSource?: 'url' | 'local';
+}
+
 // emptyItemGreetingDraft 创建指定账号下的空白首次回复草稿。
-export const emptyItemGreetingDraft = (cookieID: string): ItemGreetingRule => ({
+export const emptyItemGreetingDraft = (cookieID: string): ItemGreetingDraft => ({
   id: 0,
   cookie_id: cookieID,
   name: '',
   enabled: true,
   reply_content: '',
   reply_image_url: '',
+  reply_image_path: '',
+  imageSource: 'url',
   item_ids: [],
 });
 
@@ -53,7 +61,7 @@ export const useItemGreetings = (accountID: string) => {
   // loadError 保存最近一次列表加载失败文案，成功后清空。
   const [loadError, setLoadError] = useState('');
   // draft 是正在编辑的规则草稿；null 表示编辑器关闭。
-  const [draft, setDraft] = useState<ItemGreetingRule | null>(null);
+  const [draft, setDraft] = useState<ItemGreetingDraft | null>(null);
   // draftItems 是草稿所属账号的商品候选。
   const [draftItems, setDraftItems] = useState<Item[]>([]);
   // submitState 阻断重复提交并记录最近结果。
@@ -71,6 +79,8 @@ export const useItemGreetings = (accountID: string) => {
   // listAbort、itemsAbort 取消被新请求取代的在途请求。
   const listAbort = useRef<AbortController | null>(null);
   const itemsAbort = useRef<AbortController | null>(null);
+  // editorGeneration 区分关闭、切换账号和重新打开后的草稿，防止旧保存结果关闭新编辑器。
+  const editorGeneration = useRef(0);
 
   // reload 重新读取当前账号筛选下的规则。
   const reload = useCallback(/* 当前回调按最新代次加载规则列表。 */ async () => {
@@ -134,6 +144,7 @@ export const useItemGreetings = (accountID: string) => {
 
   // openCreate 为指定账号打开空白草稿。
   const openCreate = useCallback(/* 当前回调打开新建编辑器并加载商品候选。 */ (cookieID: string) => {
+    ++editorGeneration.current;
     setDraft(emptyItemGreetingDraft(cookieID));
     setDraftItems([]);
     void loadDraftItems(cookieID);
@@ -141,18 +152,24 @@ export const useItemGreetings = (accountID: string) => {
 
   // openEdit 打开已有规则的编辑器。
   const openEdit = useCallback(/* 当前回调打开编辑器并加载规则所属账号的商品候选。 */ (rule: ItemGreetingRule) => {
-    setDraft({ ...rule, item_ids: [...rule.item_ids] });
+    ++editorGeneration.current;
+    setDraft({ ...rule, imageSource: rule.reply_image_path ? 'local' : 'url', item_ids: [...rule.item_ids] });
     setDraftItems([]);
     void loadDraftItems(rule.cookie_id);
   }, [loadDraftItems]);
 
   // closeEditor 关闭编辑器并使在途商品请求失效，避免旧账号商品回填。
   const closeEditor = useCallback(/* 当前回调清空草稿并取消商品候选请求。 */ () => {
+    ++editorGeneration.current;
     itemsGeneration.current = nextRequestGeneration(itemsGeneration.current);
     itemsAbort.current?.abort();
     setDraft(null);
     setDraftItems([]);
   }, []);
+
+  useEffect(/* 账号筛选变化时丢弃旧账号草稿，并取消其商品候选请求。 */ () => {
+    closeEditor();
+  }, [accountID, closeEditor]);
 
   // run 执行一次写操作：阻断重复提交，成功后刷新列表，失败时提示。
   const run = useCallback(/* 当前回调串行化写操作并统一收口提示。 */ async (action: () => Promise<unknown>, successText: string): Promise<boolean> => {
@@ -183,11 +200,17 @@ export const useItemGreetings = (accountID: string) => {
       setToast({ type: 'error', text: '请至少选择一个商品' });
       return;
     }
-    if (!draft.reply_content.trim() && !draft.reply_image_url.trim()) {
+    if (draft.reply_image_url.trim() && draft.reply_image_path.trim()) {
+      setToast({ type: 'error', text: '图片 URL 与资源中心图片只能选择一种' });
+      return;
+    }
+    if (!draft.reply_content.trim() && !draft.reply_image_url.trim() && !draft.reply_image_path.trim()) {
       setToast({ type: 'error', text: '回复文字和图片至少填写一项' });
       return;
     }
-    if (await run(/* 当前回调保存草稿。 */ () => saveItemGreeting(draft), '保存成功')) closeEditor();
+    // generation 固定本次提交所属编辑器；保存完成后不能关闭后来新开的草稿。
+    const generation = editorGeneration.current;
+    if (await run(/* 当前回调保存草稿，API adapter 不发送临时来源字段。 */ () => saveItemGreeting(draft), '保存成功') && generation === editorGeneration.current) closeEditor();
   }, [closeEditor, draft, run]);
 
   // remove 删除一条规则。

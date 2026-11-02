@@ -38,12 +38,16 @@ const summarizeBatch = (result: BatchDeleteResult, nameOf: (id: number) => strin
 export interface ResourceLibraryProps {
   /** onBatchStarted 在模板批次启动后通知应用壳，例如跳转到商品页查看进度。 */
   onBatchStarted?: (batchId: string) => void;
+  /** section 由统一资源中心控制分类；缺省时保留独立页面的旧页签行为。 */
+  section?: 'templates' | 'images';
 }
 
-/** ResourceLibrary 是本地资源库页面：商品模板（批量铺货入口）与图片库。 */
-const ResourceLibrary: React.FC<ResourceLibraryProps> = ({ onBatchStarted }) => {
-  // tab 是当前标签页。
-  const [tab, setTab] = useState<'templates' | 'images'>('templates');
+/** ResourceLibrary 管理资源中心的商品模板与商品图片，统一入口只挂载选中的分类。 */
+const ResourceLibrary: React.FC<ResourceLibraryProps> = ({ onBatchStarted, section }) => {
+  // localTab 与 setTab 保留独立页面分类；嵌入时直接使用外部 section，不复制到状态。
+  const [localTab, setTab] = useState<'templates' | 'images'>('templates');
+  // tab 是当前实际展示的分类，外部指定优先于独立页面的选择。
+  const tab = section ?? localTab;
   // images 是图片库状态；templates 是模板状态。
   const images = useLibraryImages();
   const templates = useProductTemplates();
@@ -134,12 +138,12 @@ const ResourceLibrary: React.FC<ResourceLibraryProps> = ({ onBatchStarted }) => 
 
   return (
     <div className="min-w-0 space-y-8 animate-fade-in">
-      <PageHeader title="本地资源库" description="保存常用商品模板与图片，一键把同款商品铺到多个账号。">
+      {!section && <PageHeader title="资源中心" description="保存常用商品模板与商品图片，一键把同款商品铺到多个账号。">
         <div className="flex gap-2" role="tablist" aria-label="资源库分类">
           <button type="button" role="tab" aria-selected={tab === 'templates'} onClick={/* 切换到商品模板。 */ () => setTab('templates')} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold ${tab === 'templates' ? 'bg-gray-950 text-white' : 'ios-btn-secondary '}`}><Package className="h-4 w-4" />商品模板</button>
-          <button type="button" role="tab" aria-selected={tab === 'images'} onClick={/* 切换到图片库。 */ () => setTab('images')} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold ${tab === 'images' ? 'bg-gray-950 text-white' : 'ios-btn-secondary '}`}><ImageIcon className="h-4 w-4" />图片库</button>
+          <button type="button" role="tab" aria-selected={tab === 'images'} onClick={/* 切换到商品图片。 */ () => setTab('images')} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold ${tab === 'images' ? 'bg-gray-950 text-white' : 'ios-btn-secondary '}`}><ImageIcon className="h-4 w-4" />商品图片</button>
         </div>
-      </PageHeader>
+      </PageHeader>}
 
       {notice.text && <div role="status" className={`rounded-xl border px-4 py-3 text-sm ${notice.tone === 'warn' ? 'border-amber-100 bg-amber-50 text-amber-800' : 'border-emerald-100 bg-emerald-50 text-emerald-800'}`}>{notice.text}</div>}
 
@@ -177,6 +181,7 @@ const ResourceLibrary: React.FC<ResourceLibraryProps> = ({ onBatchStarted }) => 
         </section>
       ) : (
         <section className="space-y-4" aria-label="图片库">
+          <p className="text-sm text-gray-500">用于商品发布的主图和规格图；自动回复、卡密与发货模板的图片请到“消息图片”上传。</p>
           {images.error && <div role="alert" className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{images.error}</div>}
           <div className="flex flex-wrap items-center gap-3">
             <ImageUploadButton busy={images.busy} onUpload={images.upload} onResults={/* 上传摘要作为普通提示展示。 */ text => setNotice({ text, tone: 'ok' })} />

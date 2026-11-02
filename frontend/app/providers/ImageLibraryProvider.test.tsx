@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { useImageLibraryOptions } from '../../shared/components/ImageLibraryContext';
+import { useImageLibraryOptions, useRefreshImageLibrary } from '../../shared/components/ImageLibraryContext';
 import { listImageAssets } from '../features/image-library/api';
 import type { ImageAsset } from '../features/image-library/models';
 import { ImageLibraryProvider } from './ImageLibraryProvider';
@@ -34,6 +34,13 @@ const OptionsProbe = () => {
   // options 是当前上下文中的图片选项，没有 Provider 时为空数组。
   const options = useImageLibraryOptions();
   return <p>{options.length === 0 ? '无图片' : options.map(/* option 是单个图片选项。 */ option => `${option.name}:${option.reference}`).join(',')}</p>;
+};
+
+/** RefreshProbe 模拟资源页面发出显式失效通知，不依赖任何业务接口。 */
+const RefreshProbe = () => {
+  // refresh 是 Provider 拥有的列表刷新入口。
+  const refresh = useRefreshImageLibrary();
+  return <button onClick={refresh}>刷新共享图片</button>;
 };
 
 beforeEach(/* 当前回调重置登录态和列表替身。 */ () => {
@@ -76,5 +83,23 @@ describe('ImageLibraryProvider', /* 当前回调验证图片选项读取、失�
     render(<ImageLibraryProvider><OptionsProbe /></ImageLibraryProvider>);
     expect(screen.getByText('无图片')).toBeTruthy();
     expect(listMock).not.toHaveBeenCalled();
+  });
+  test('图片变更触发刷新并取消旧请求，迟到响应不能覆盖新选项', /* 验证上传后无需重新登录且旧列表不会复活。 */ async () => {
+    // resolveOld 在新请求完成后才返回旧图片列表。
+    let resolveOld!: (assets: ImageAsset[]) => void;
+    // oldSignal 用于确认旧请求被取消。
+    let oldSignal: AbortSignal | undefined;
+    listMock.mockImplementationOnce(/* options 是首个列表请求的取消控制。 */ options => {
+      oldSignal = options?.signal;
+      return new Promise<ImageAsset[]>(/* resolve 暴露旧请求的延迟完成入口。 */ resolve => { resolveOld = resolve; });
+    });
+    listMock.mockResolvedValueOnce([buildAsset(3, '新图', '_library/new.png')]);
+    render(<ImageLibraryProvider><OptionsProbe /><RefreshProbe /></ImageLibraryProvider>);
+    fireEvent.click(screen.getByRole('button', { name: '刷新共享图片' }));
+    expect(await screen.findByText('新图:_library/new.png')).toBeTruthy();
+    expect(oldSignal?.aborted).toBe(true);
+    await act(/* 返回已取消请求，Provider 必须忽略它。 */ async () => { resolveOld([buildAsset(1, '旧图', '_library/old.png')]); });
+    expect(screen.queryByText('旧图:_library/old.png')).toBeNull();
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 });

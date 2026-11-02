@@ -146,7 +146,7 @@ func itemGreetingError(err error) error {
 func itemGreetingRuleModel(rule db.ItemGreetingRule) itemgreetingapp.Rule {
 	return itemgreetingapp.Rule{
 		ID: rule.ID, CookieID: rule.CookieID, Name: rule.Name, Enabled: rule.Enabled,
-		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ItemIDs: rule.ItemIDs,
+		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ReplyImagePath: rule.ReplyImagePath, ItemIDs: rule.ItemIDs,
 	}
 }
 
@@ -165,7 +165,7 @@ func itemGreetingRuleModels(rows []db.ItemGreetingRule) []itemgreetingapp.Rule {
 func itemGreetingDBModel(rule itemgreetingapp.Rule) db.ItemGreetingRule {
 	return db.ItemGreetingRule{
 		ID: rule.ID, CookieID: rule.CookieID, Name: rule.Name, Enabled: rule.Enabled,
-		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ItemIDs: rule.ItemIDs,
+		ReplyContent: rule.ReplyContent, ReplyImageURL: rule.ReplyImageURL, ReplyImagePath: rule.ReplyImagePath, ItemIDs: rule.ItemIDs,
 	}
 }
 

@@ -16,15 +16,21 @@ const extractSingleQuotedValues = (source: string, pattern: RegExp) => {
 }; /* extractSingleQuotedValues 表示extractSingleQuoted值集合。 */
 
 describe('frontend navigation routing', () => {
-  test('sidebar entries and App activeTab routes stay in sync', () => {
-    const sidebar = readFrontendFile('shared/ui/Sidebar.tsx'); /* sidebar 表示sidebar。 */
-    const app = readFrontendFile('app/shell/AuthenticatedShell.tsx'); /* app 表示认证后页面组合器源码。 */
-
-    const sidebarIDs = extractSingleQuotedValues(sidebar, /id:\s*'([^']+)'/g); /* sidebarIDs 表示sidebarIDs。 */
-    const appRouteIDs = extractSingleQuotedValues(app, /case\s+'([^']+)'/g); /* appRouteIDs 表示appRouteIDs。 */
-
-    expect([...sidebarIDs].sort()).toEqual([...appRouteIDs].sort());
-  } /* 测试回调断言已登录应用的路由、访问控制或延迟加载契约。 */);
+  test('侧边栏覆盖所有规范入口并保留资源中心的旧地址别名', /* 验证合并后的唯一资源入口，旧 library 仅作为可访问地址保留。 */ () => {
+    // sidebar 是主导航源码，app 是实际挂载页面的组合器。
+    const sidebar = readFrontendFile('shared/ui/Sidebar.tsx');
+    const app = readFrontendFile('app/shell/AuthenticatedShell.tsx');
+    // sidebarIDs、appRouteIDs 分别收集唯一菜单入口及全部可访问页面标识。
+    const sidebarIDs = extractSingleQuotedValues(sidebar, /id:\s*'([^']+)'/g);
+    // appRouteIDs 包括应用壳保留的历史资源地址，用于验证兼容地址仍有真实页面。
+    const appRouteIDs = extractSingleQuotedValues(app, /case\s+'([^']+)'/g);
+    expect(appRouteIDs.has('library')).toBe(true);
+    expect(appRouteIDs.has('image-library')).toBe(true);
+    expect(sidebarIDs.has('library')).toBe(false);
+    // canonicalRoutes 把唯一的历史资源地址归并到资源中心，其余路由必须逐一对应菜单。
+    const canonicalRoutes = new Set([...appRouteIDs].map(/* route 仅对已授权合并的历史资源入口做等价归一。 */ route => route === 'library' ? 'image-library' : route));
+    expect([...sidebarIDs].sort()).toEqual([...canonicalRoutes].sort());
+  });
 
   test('active navigation uses the primary action blue', () => {
     const sidebar = readFrontendFile('shared/ui/Sidebar.tsx'); /* sidebar 表示sidebar。 */

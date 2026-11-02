@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { deleteImageAsset, isImageLibraryConflict, listImageAssets, renameImageAsset, uploadImageAsset } from './api';
 import type { ImageAsset } from './models';
+import { useRefreshImageLibrary } from '../../../shared/components/ImageLibraryContext';
 
 /** ImageLibraryHookResult 描述资源中心页面需要的列表、变更和错误状态。 */
 export type ImageLibraryHookResult = {
@@ -27,6 +28,8 @@ const isAbortError = (error: unknown): boolean => error instanceof Error && erro
 
 /** useImageLibrary 集中管理图片库请求的取消、最新代次和变更后的唯一刷新。 */
 export const useImageLibrary = (): ImageLibraryHookResult => {
+  // refreshOptions 通知应用层在消息图片变更后更新全部选择器，不新增 feature 间依赖。
+  const refreshOptions = useRefreshImageLibrary();
   // assets 保存当前唯一有效列表请求返回的图片数据。
   const [assets, setAssets] = useState<ImageAsset[]>([]);
   // loading 表示首屏或重试列表请求正在进行。
@@ -83,6 +86,7 @@ export const useImageLibrary = (): ImageLibraryHookResult => {
     try {
       await mutation(controller.signal);
       if (!controller.signal.aborted && mountedRef.current) {
+        refreshOptions();
         try {
           await reload();
         } catch {
@@ -97,7 +101,7 @@ export const useImageLibrary = (): ImageLibraryHookResult => {
         if (mountedRef.current) setSubmitting(false);
       }
     }
-  }, [reload]);
+  }, [reload, refreshOptions]);
 
   // uploadAsset 上传浏览器选择的图片文件，名称留空时由服务端使用原始文件名。
   const uploadAsset = useCallback(/* uploadCallback 绑定当前变更串行化逻辑。 */ async (file: File, name: string): Promise<void> => {

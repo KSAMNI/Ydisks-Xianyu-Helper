@@ -5,6 +5,7 @@ import { useItemGreetings } from '../itemGreetings';
 import type { ItemGreetingRule } from '../api';
 import ItemMultiSelect from './ItemMultiSelect';
 import Toast from './Toast';
+import { ImageLibraryPicker } from '../../../../shared/components/ImageLibraryPicker';
 
 // ITEM_GREETING_TOAST_MS 是操作提示的自动消失时长（毫秒）。
 const ITEM_GREETING_TOAST_MS = 2500;
@@ -73,7 +74,7 @@ const ItemGreetingPanel: React.FC<ItemGreetingPanelProps> = ({ accountID }) => {
                 <span className={`px-2 py-0.5 rounded-lg text-xs font-bold ${rule.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'}`}>{rule.enabled ? '已启用' : '已停用'}</span>
                 <span className="px-2 py-0.5 rounded-lg text-xs font-bold bg-purple-100 text-purple-700">{rule.item_ids.length} 个商品</span>
               </div>
-              <div className="text-sm text-gray-600 line-clamp-2">{rule.reply_content || rule.reply_image_url}</div>
+              <div className="text-sm text-gray-600 line-clamp-2">{rule.reply_content || rule.reply_image_path || rule.reply_image_url}</div>
             </div>
             <div className="flex items-center gap-3">
               <button onClick={/* 当前回调切换启停。 */ () => void greetings.toggle(rule)} className="px-3 py-2 text-xs font-bold text-gray-600 hover:bg-gray-100 rounded-xl transition-colors">{rule.enabled ? '停用' : '启用'}</button>
@@ -109,9 +110,21 @@ const ItemGreetingPanel: React.FC<ItemGreetingPanelProps> = ({ accountID }) => {
                 <textarea value={draft.reply_content} onChange={/* 当前回调更新回复文字。 */ event => greetings.setDraft({ ...draft, reply_content: event.target.value })} placeholder="例如：你好{send_user_name}，欢迎咨询，在的~" className="w-full ios-input px-4 py-3 rounded-xl h-32 resize-none" />
                 <p className="mt-2 text-xs text-gray-400">支持变量：{'{send_user_name}'} {'{send_user_id}'} {'{send_message}'} {'{item_id}'}</p>
               </div>
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-2">回复图片 URL（可选）</label>
-                <input value={draft.reply_image_url} onChange={/* 当前回调更新图片地址。 */ event => greetings.setDraft({ ...draft, reply_image_url: event.target.value })} placeholder="https://example.com/image.jpg" className="w-full ios-input px-4 py-3 rounded-xl" />
+              <div className="space-y-3">
+                <label className="block text-sm font-bold text-gray-700">
+                  图片来源（可选）
+                  <select value={draft.imageSource ?? (draft.reply_image_path ? 'local' : 'url')} onChange={/* event 是新的来源；切换时清空旧 URL 和路径，避免隐藏字段同时提交。 */ event => greetings.setDraft(/* current 是仍然打开的草稿，关闭后不再恢复。 */ current => current ? { ...current, imageSource: event.target.value as 'url' | 'local', reply_image_url: '', reply_image_path: '' } : null)} className="w-full ios-input px-4 py-3 rounded-xl mt-2">
+                    <option value="url">图片 URL</option>
+                    <option value="local">资源中心图片</option>
+                  </select>
+                </label>
+                {(draft.imageSource ?? (draft.reply_image_path ? 'local' : 'url')) === 'local' ? <ImageLibraryPicker
+                  value={draft.reply_image_path} allowManualPath={false}
+                  onChange={/* path 是用户选中的已上传消息图片引用，空串表示清空图片。 */ path => greetings.setDraft(/* current 是当前编辑草稿，关闭后不再回填。 */ current => current ? { ...current, reply_image_path: path, reply_image_url: '', imageSource: 'local' } : null)}
+                /> : <label className="block text-sm font-bold text-gray-700">
+                  回复图片 URL（可选）
+                  <input value={draft.reply_image_url} onChange={/* event 是当前输入的远程图片地址，保持旧规则兼容。 */ event => greetings.setDraft(/* current 是当前编辑草稿。 */ current => current ? { ...current, reply_image_url: event.target.value, reply_image_path: '' } : null)} placeholder="https://example.com/image.jpg" className="w-full ios-input px-4 py-3 rounded-xl mt-2" />
+                </label>}
               </div>
               <label className="flex items-center justify-between p-4 bg-gray-50 rounded-xl text-sm font-bold text-gray-800">
                 <span>启用此规则</span>

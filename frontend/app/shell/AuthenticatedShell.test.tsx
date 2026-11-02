@@ -50,6 +50,13 @@ vi.mock('../features/rules/pages/Rules', /* rulesMockFactory 提供规则页面�
   return { default: RulesMock };
 });
 
+vi.mock('../features/library/pages/ResourceLibrary', /* 资源库替身验证应用壳正确注入受控分类。 */ () => ({
+  default: /* section 是统一容器选择的商品分类；onBatchStarted 保留批量铺货导航。 */ ({ section, onBatchStarted }: { /** 当前商品分类。 */ section: string; /** 批次启动后的导航回调。 */ onBatchStarted?: () => void }) => <div>{section === 'templates' ? <button onClick={onBatchStarted}>模板发布</button> : '商品图片管理'}</div>,
+}));
+vi.mock('../features/image-library/pages/ImageLibrary', /* 消息图片替身确认统一容器使用内嵌模式。 */ () => ({
+  default: /* embedded 表示统一入口已提供页面标题。 */ ({ embedded }: { /** 内嵌时不显示重复标题。 */ embedded: boolean }) => <div>{embedded ? '消息图片管理' : '独立图片页'}</div>,
+}));
+
 // loadAppContent 动态导入认证后页面组合器，等待懒加载模块完成解析。
 const loadAppContent = async () => import('./AuthenticatedShell');
 
@@ -130,5 +137,21 @@ describe('AuthenticatedShell 页面组合行为', /* 当前回调验证权限回
     expect(screen.getByText('cookie-1:item-1')).toBeTruthy();
     fireEvent.click(screen.getByText('完成'));
     expect(handledTarget).toHaveBeenCalledTimes(1);
+  });
+  test('两个旧资源地址进入统一页面并保留原分类与批量发布导航', /* 覆盖旧书签、分类切换和模板发布回调。 */ async () => {
+    // AppContentComponent 是真实页面组合器，业务页面仅替换为轻量渲染。
+    const { AppContent: AppContentComponent } = await loadAppContent();
+    // navigateToItems 记录模板批次启动后的商品页导航。
+    const navigateToItems = vi.fn();
+    // view 控制同一个组合器在两个历史路由间切换。
+    const view = render(<AppContentComponent activeTab="library" isAdmin={false} onConfigureDelivery={vi.fn()} onDeliveryTargetHandled={vi.fn()} onNavigateToItems={navigateToItems} />);
+    fireEvent.click(await screen.findByRole('button', { name: '模板发布' }));
+    expect(navigateToItems).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByRole('heading', { name: '资源中心' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('tab', { name: '商品图片' }));
+    expect(await screen.findByText('商品图片管理')).toBeTruthy();
+    view.rerender(<AppContentComponent activeTab="image-library" isAdmin={false} onConfigureDelivery={vi.fn()} onDeliveryTargetHandled={vi.fn()} />);
+    expect(await screen.findByText('消息图片管理')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '消息图片' }).getAttribute('aria-selected')).toBe('true');
   });
 });

@@ -143,7 +143,7 @@ func (a *ImageAssets) NameTaken(ctx context.Context, name string, excludeID int6
 	return count > 0, nil
 }
 
-// ReferenceCounts 统计每张本地图片引用被卡片、发货模板和默认回复使用的次数。
+// ReferenceCounts 统计图片被卡片、发货模板、默认回复和商品首次回复引用的次数（停用规则也保留引用）。
 // 返回键是配置中保存的原始引用文本；调用方按 `_library/<file_name>` 查找对应图片。
 func (a *ImageAssets) ReferenceCounts(ctx context.Context) (map[string]int, error) {
 	// rows、err 保存按引用文本聚合的统计游标及查询错误。
@@ -152,6 +152,7 @@ SELECT image_path AS ref FROM cards WHERE image_path<>''
 UNION ALL SELECT image_path FROM delivery_template_messages WHERE COALESCE(image_path,'')<>''
 UNION ALL SELECT reply_image_path FROM default_replies WHERE COALESCE(reply_image_path,'')<>''
 UNION ALL SELECT reply_image_path FROM item_replay WHERE COALESCE(reply_image_path,'')<>''
+UNION ALL SELECT reply_image_path FROM item_greeting_rules WHERE COALESCE(reply_image_path,'')<>''
 ) AS refs GROUP BY refs.ref`)
 	if err != nil {
 		return nil, err

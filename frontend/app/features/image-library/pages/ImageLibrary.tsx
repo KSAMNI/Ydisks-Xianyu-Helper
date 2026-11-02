@@ -4,11 +4,17 @@ import { formatImageSize, imageLibraryContentURL } from '../../../../shared/imag
 import { useImageLibrary } from '../hooks';
 import type { ImageAsset } from '../models';
 
+/** ImageLibraryProps 控制独立页面与统一资源中心内嵌时的标题展示。 */
+interface ImageLibraryProps {
+  /** embedded 为真时不再显示重复页面标题，上传与管理功能保持不变。 */
+  embedded?: boolean;
+}
+
 /**
  * ImageLibrary 是全局共享的资源中心图片库页面。
  * 页面只负责上传、改名、删除和网格展示；请求取消、代次隔离和刷新都由 Hook 承担。
  */
-const ImageLibrary: React.FC = () => {
+const ImageLibrary: React.FC<ImageLibraryProps> = ({ embedded = false }) => {
   // assets、loading、submitting、error 由 Hook 统一管理请求生命周期和竞态保护。
   const { assets, loading, submitting, error, reload, uploadAsset, renameAsset, removeAsset } = useImageLibrary();
   // selectedFile 保存待上传的浏览器文件，null 表示尚未选择文件。
@@ -59,8 +65,8 @@ const ImageLibrary: React.FC = () => {
   return <div className="space-y-6">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 className="flex items-center gap-2 text-2xl font-extrabold text-gray-900"><Images className="h-6 w-6 text-brand" />资源中心</h2>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">资源中心是所有闲鱼账号共享的图片库。卡密、发货模板和默认回复从这里选择图片后保存 <code>_library/</code> 引用，不再需要把图片分别放到每个账号目录。</p>
+        {!embedded && <h2 className="flex items-center gap-2 text-2xl font-extrabold text-gray-900"><Images className="h-6 w-6 text-brand" />资源中心 · 消息图片</h2>}
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">消息图片供所有闲鱼账号共用。商品首次回复、默认回复、卡密和发货模板从这里选择已上传的图片；商品发布的主图和规格图请到“商品图片”管理。</p>
       </div>
       <button type="button" onClick={/* 当前回调重新读取图片库，取消旧请求并只接受最新结果。 */ () => void reload().catch(/* error 是刷新失败原因，Hook 已记录用户可见错误。 */ () => undefined)} className="flex items-center gap-2 rounded-xl bg-gray-100 px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-200"><RefreshCw className="h-4 w-4" />刷新列表</button>
     </div>
@@ -86,7 +92,7 @@ const ImageLibrary: React.FC = () => {
 
     {loading && <p role="status" className="text-sm text-gray-500">正在读取图片库…</p>}
 
-    {!loading && assets.length === 0 && !error && <p className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-gray-500">资源中心还没有图片，上传后会显示在这里。</p>}
+    {!loading && assets.length === 0 && !error && <p className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-gray-500">还没有消息图片，上传后可在自动回复、卡密和发货模板中选择。</p>}
 
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {assets.map(/* asset 是当前渲染的资源中心图片。 */ asset => <div key={asset.id} className="space-y-3 rounded-2xl border border-slate-200 bg-white p-4">

@@ -18,3 +18,9 @@ export const ImageLibraryContext = createContext<readonly ImageLibraryOption[]>(
 
 /** useImageLibraryOptions 读取图片选项；缺少 Provider 时返回空数组而不是抛错。 */
 export const useImageLibraryOptions = (): readonly ImageLibraryOption[] => useContext(ImageLibraryContext);
+
+/** ImageLibraryRefreshContext 提供显式刷新入口，图片变更后通知应用层重新加载；独立组件无 Provider 时安全忽略。 */
+export const ImageLibraryRefreshContext = createContext<() => void>(/* 独立渲染没有列表请求，刷新为空操作。 */ () => undefined);
+
+/** useRefreshImageLibrary 返回应用层拥有的刷新回调，feature 不需要互相导入 API。 */
+export const useRefreshImageLibrary = (): (() => void) => useContext(ImageLibraryRefreshContext);

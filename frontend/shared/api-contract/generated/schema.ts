@@ -2703,6 +2703,8 @@ export interface components {
             enabled: boolean;
             reply_content: string;
             reply_image_url?: string;
+            /** @description 资源中心的 _library/ 图片引用或账号图片目录内安全相对路径；禁止绝对路径和目录穿越，与非空 reply_image_url 互斥；旧请求省略时为空 */
+            reply_image_path?: string;
             item_ids: string[];
         };
         ItemGreetingResponse: {
@@ -2712,6 +2714,8 @@ export interface components {
             enabled: boolean;
             reply_content: string;
             reply_image_url: string;
+            /** @description 已保存的安全本地图片引用；历史 URL 规则为空 */
+            reply_image_path?: string;
             item_ids: string[];
         };
         ItemGreetingListResponse: components["schemas"]["ItemGreetingResponse"][];

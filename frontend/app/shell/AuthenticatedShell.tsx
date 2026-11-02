@@ -4,6 +4,7 @@ import Sidebar from '../../shared/ui/Sidebar';
 import { useChatTitleNotification } from '../features/chat/titleNotification';
 import { getHealth } from '../features/system/api';
 import type { BuildInfo } from '../features/system/types';
+import { ResourceCenter } from './ResourceCenter';
 
 // DeliveryRuleTarget 描述商品页跳转到自动化规则页时需要携带的目标信息。
 export interface DeliveryRuleTarget {
@@ -57,7 +58,7 @@ const PublishImagesEditor = lazy(/* 图片编辑器随商品页面路由加载�
 const ItemAISettingsModal = lazy(/* 商品 AI 弹窗随商品页面路由加载。 */ () => import('../features/items/components/ItemAISettingsModal').then(/* module 提供商品 AI 弹窗的具名导出。 */ module => ({ default: module.ItemAISettingsModal })));
 // LibraryImagePicker 供商品页单品发布按需使用，图片库代码仅在打开选择器时加载。
 const LibraryImagePicker = lazy(/* 图片库选择器随商品页面路由按需加载。 */ () => import('../features/library/components/LibraryImagePicker'));
-// ResourceLibrary 是按需加载的本地资源库页面（商品模板与图片库）。
+// ResourceLibrary 按需加载资源中心的商品模板与商品图片功能，页面组合由应用壳负责。
 const ResourceLibrary = lazy(/* ResourceLibrary 页面按路由激活时加载。 */ () => import('../features/library/pages/ResourceLibrary'));
 // Settings 是按需加载的系统设置页面，仅在管理员访问时加载。
 const Settings = lazy(/* Settings 页面按路由激活时加载。 */ () => import('../features/settings/pages/Settings'));
@@ -133,8 +134,12 @@ export const AppContent: React.FC<AppContentProps> = ({
         auditPanel={AutomationAuditPanel}
       />;
       case 'delivery-templates': return <DeliveryTemplates />;
-      case 'image-library': return <ImageLibrary />;
-      case 'library': return <ResourceLibrary onBatchStarted={onNavigateToItems} />;
+      case 'image-library':
+      case 'library': return <ResourceCenter key={activeTab} initialSection={activeTab === 'library' ? 'templates' : 'messages'}
+        templates={<ResourceLibrary key="templates" section="templates" onBatchStarted={onNavigateToItems} />}
+        images={<ResourceLibrary key="images" section="images" onBatchStarted={onNavigateToItems} />}
+        messages={<ImageLibrary embedded />}
+      />;
       case 'notifications': return <Notifications isAdmin={isAdmin} />;
       case 'logs': return isAdmin ? <RuntimeLogs /> : <Dashboard />;
       case 'settings': return isAdmin ? <Settings /> : <Dashboard />;

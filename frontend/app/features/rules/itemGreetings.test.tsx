@@ -24,7 +24,7 @@ const deleteMock = vi.mocked(deleteItemGreeting);
 const clearMock = vi.mocked(clearItemGreetingRecords);
 
 // ruleFixture 是账号 a1 下覆盖 i1 的启用规则。
-const ruleFixture: ItemGreetingRule = { id: 1, cookie_id: 'a1', name: '欢迎', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] };
+const ruleFixture: ItemGreetingRule = { id: 1, cookie_id: 'a1', name: '欢迎', enabled: true, reply_content: '你好', reply_image_url: '', reply_image_path: '', item_ids: ['i1'] };
 // itemFixture 是编辑器商品候选。
 const itemFixture = { id: 1, cookie_id: 'a1', item_id: 'i1', item_title: '商品' } as Item;
 
@@ -161,6 +161,48 @@ describe('useItemGreetings', /* 当前回调覆盖首次回复 Hook 的成功、
     expect(result.current.toast).toEqual({ type: 'error', text: '清理失败' });
     act(/* 当前回调在 act 中触发 Hook 同步动作。 */ () => result.current.dismissToast());
     expect(result.current.toast).toBeNull();
+  });
+  test('纯资源图片可保存且冲突来源被拒绝，失败时保留图片草稿', /* 覆盖本地图必填校验、互斥和失败重试。 */ async () => {
+    // result 提供真实 Hook 状态，API 使用可控替身。
+    const { result } = renderHook(/* 渲染账号 a1 的首次回复。 */ () => useItemGreetings('a1'));
+    await waitFor(/* 等待初始读取完成。 */ () => expect(result.current.loading).toBe(false));
+    act(/* 编辑一条只有本地图的规则。 */ () => result.current.openEdit({ ...ruleFixture, reply_content: '', reply_image_path: '_library/guide.png' }));
+    expect(result.current.draft?.imageSource).toBe('local');
+    act(/* 注入错误双来源，验证提交保护而不是依赖界面隐藏。 */ () => result.current.setDraft(/* current 是已打开的本地图片草稿。 */ current => current ? { ...current, reply_image_url: 'https://example.test/a.png' } : null));
+    await act(/* 发起校验，应在请求前停止。 */ async () => { await result.current.save(); });
+    expect(saveMock).not.toHaveBeenCalled();
+    expect(result.current.toast?.text).toContain('只能选择一种');
+    act(/* 移除冲突的远程来源。 */ () => result.current.setDraft(/* current 保留本地图和商品集合。 */ current => current ? { ...current, reply_image_url: '' } : null));
+    saveMock.mockRejectedValueOnce(new Error('保存失败'));
+    await act(/* 首次保存故意失败。 */ async () => { await result.current.save(); });
+    expect(result.current.draft?.reply_image_path).toBe('_library/guide.png');
+    expect(result.current.submitState.result).toBe('failure');
+    await act(/* 重试同一纯图片规则。 */ async () => { await result.current.save(); });
+    expect(saveMock).toHaveBeenLastCalledWith(expect.objectContaining({ reply_content: '', reply_image_url: '', reply_image_path: '_library/guide.png' }));
+    expect(result.current.draft).toBeNull();
+  });
+
+  test('旧保存迟到不会关闭新草稿，账号切换清空旧图片选择', /* 覆盖取消、重新编辑与跨账号的草稿生命周期。 */ async () => {
+    // slow 让首次保存保持在途，模拟用户在响应前关闭弹窗。
+    const slow = deferred<ItemGreetingRule>();
+    saveMock.mockReturnValueOnce(slow.promise);
+    // result、rerender 控制账号筛选与当前草稿。
+    const { result, rerender } = renderHook(/* id 是当前账号筛选。 */ ({ id }) => useItemGreetings(id), { initialProps: { id: 'a1' } });
+    await waitFor(/* 等待初始列表完成。 */ () => expect(result.current.loading).toBe(false));
+    act(/* 打开原规则。 */ () => result.current.openEdit(ruleFixture));
+    // saving 保存旧编辑器的异步完成句柄。
+    let saving!: Promise<void>;
+    act(/* 启动但暂不完成保存。 */ () => { saving = result.current.save(); });
+    act(/* 关闭旧编辑器并选择新的本地图片规则。 */ () => {
+      result.current.closeEditor();
+      result.current.openEdit({ ...ruleFixture, id: 2, reply_image_path: '_library/new.png' });
+    });
+    await act(/* 完成旧请求并等待其收尾。 */ async () => { slow.resolve(ruleFixture); await saving; });
+    expect(result.current.draft?.id).toBe(2);
+    expect(result.current.draft?.reply_image_path).toBe('_library/new.png');
+    rerender({ id: 'a2' });
+    expect(result.current.draft).toBeNull();
+    expect(result.current.draftItems).toEqual([]);
   });
 });
 

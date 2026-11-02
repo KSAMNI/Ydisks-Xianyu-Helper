@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { render, screen } from '@testing-library/react';
-import { describe, expect, test, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import Sidebar from './Sidebar';
 
+afterEach(/* 清理导航 DOM，避免后续用例读取多个侧边栏。 */ () => cleanup());
 describe('Sidebar', /* 当前测试组验证全局聊天新消息状态在侧边栏中的可见标记。 */ () => {
   test('资源中心入口位于发货模板之后且两个入口都在自动化规则上方', /* 当前回调验证相关自动化入口保持连续且符合操作顺序。 */ () => {
     // navigationHandler 是侧边栏导航测试使用的无副作用回调。
@@ -19,8 +20,16 @@ describe('Sidebar', /* 当前测试组验证全局聊天新消息状态在侧边
     const navigationLabels = screen.getAllByRole('button').map(/* button 是当前侧边栏中的可见按钮。 */ button => button.textContent?.trim() || '');
     expect(navigationLabels.indexOf('资源中心')).toBe(navigationLabels.indexOf('发货模板') + 1);
     expect(navigationLabels.indexOf('发货模板')).toBe(navigationLabels.indexOf('自动化规则') - 2);
+    expect(screen.queryByRole('button', { name: '本地资源库' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: '资源中心' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '资源中心' }));
+    expect(navigationHandler).toHaveBeenCalledWith('image-library');
   });
 
+  test('旧本地资源库链接仍高亮唯一资源中心入口', /* 验证旧书签不会失去导航归属。 */ () => {
+    render(<Sidebar activeTab="library" collapsed={false} onToggleCollapsed={vi.fn()} onNavigate={vi.fn()} onLogout={vi.fn()} buildInfo={{ version: 'dev', commit: 'test' }} />);
+    expect(screen.getByRole('button', { name: '资源中心' }).getAttribute('aria-current')).toBe('page');
+  });
   test('未查看聊天消息时仅在在线聊天入口显示红点', /* 当前回调验证红点出现与消失不依赖页面标题状态。 */ () => {
     // navigationHandler 是侧边栏导航测试使用的无副作用回调。
     const navigationHandler = vi.fn();

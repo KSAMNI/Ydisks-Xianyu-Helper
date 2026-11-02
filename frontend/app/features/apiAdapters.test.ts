@@ -1111,25 +1111,26 @@ test('商品首次回复 API 归一规则并使用版本化路径', /* 当前回
   // fetchMock 依次响应列表、创建、更新、删除和清理请求。
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(jsonResponse([{ id: 3, cookie_id: 'a1', enabled: true, item_ids: ['i1', 5, 'i2'] }, null]))
-    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
-    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: false, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: true, reply_content: '', reply_image_url: '', reply_image_path: '_library/guide.png', item_ids: ['i1'] }))
+    .mockResolvedValueOnce(jsonResponse({ id: 4, cookie_id: 'a1', name: '新', enabled: false, reply_content: '', reply_image_url: '', reply_image_path: '_library/guide.png', item_ids: ['i1'] }))
     .mockResolvedValueOnce(jsonResponse({ success: true }))
     .mockResolvedValueOnce(jsonResponse({ success: true }));
   stubContractFetch(fetchMock);
   await expect(getItemGreetings('a1')).resolves.toEqual([
-    { id: 3, cookie_id: 'a1', name: '', enabled: true, reply_content: '', reply_image_url: '', item_ids: ['i1', 'i2'] },
-    { id: 0, cookie_id: '', name: '', enabled: false, reply_content: '', reply_image_url: '', item_ids: [] },
+    { id: 3, cookie_id: 'a1', name: '', enabled: true, reply_content: '', reply_image_url: '', reply_image_path: '', item_ids: ['i1', 'i2'] },
+    { id: 0, cookie_id: '', name: '', enabled: false, reply_content: '', reply_image_url: '', reply_image_path: '', item_ids: [] },
   ]);
   expect(fetchMock.mock.calls[0][0]).toBe('/api/v1/reply-rules/greetings?cookie_id=a1');
   // draft 是创建与更新共用的规则草稿。
-  const draft = { id: 0, cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] };
-  await expect(saveItemGreeting(draft)).resolves.toMatchObject({ id: 4 });
+  const draft = { id: 0, cookie_id: 'a1', name: '新', enabled: true, reply_content: '', reply_image_url: '', reply_image_path: '_library/guide.png', imageSource: 'local' as const, item_ids: ['i1'] };
+  await expect(saveItemGreeting(draft)).resolves.toMatchObject({ id: 4, reply_image_path: '_library/guide.png' });
   expect(fetchMock.mock.calls[1][0]).toBe('/api/v1/reply-rules/greetings');
   expect(fetchMock.mock.calls[1][1].method).toBe('POST');
-  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ cookie_id: 'a1', name: '新', enabled: true, reply_content: '你好', reply_image_url: '', item_ids: ['i1'] });
+  expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ cookie_id: 'a1', name: '新', enabled: true, reply_content: '', reply_image_url: '', reply_image_path: '_library/guide.png', item_ids: ['i1'] });
   await expect(saveItemGreeting({ ...draft, id: 4, enabled: false })).resolves.toMatchObject({ enabled: false });
   expect(fetchMock.mock.calls[2][0]).toBe('/api/v1/reply-rules/greetings/4');
   expect(fetchMock.mock.calls[2][1].method).toBe('PUT');
+  expect(JSON.parse(fetchMock.mock.calls[2][1].body).reply_image_path).toBe('_library/guide.png');
   await deleteItemGreeting(4);
   expect(fetchMock.mock.calls[3][0]).toBe('/api/v1/reply-rules/greetings/4');
   expect(fetchMock.mock.calls[3][1].method).toBe('DELETE');

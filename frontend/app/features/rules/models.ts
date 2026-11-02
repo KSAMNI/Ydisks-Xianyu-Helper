@@ -394,6 +394,8 @@ export interface ItemGreetingRule {
   reply_content: string;
   /** 首次回复图片地址，可为空串。 */
   reply_image_url: string;
+  /** 首次回复本地图片引用，通常为资源中心的 _library/ 路径；与 URL 互斥。 */
+  reply_image_path: string;
   /** 规则覆盖的商品标识集合。 */
   item_ids: string[];
 }

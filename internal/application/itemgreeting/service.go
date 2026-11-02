@@ -7,6 +7,8 @@ import (
 	"errors"
 	"strings"
 	"unicode/utf8"
+
+	"xianyu-go/internal/replyimage"
 )
 
 // 以下输入上限保护存储与回复链路，超过即视为非法请求。
@@ -76,6 +78,8 @@ type Rule struct {
 	ReplyContent string
 	// ReplyImageURL 是首次回复图片地址。
 	ReplyImageURL string
+	// ReplyImagePath 是本地图片相对引用，资源中心使用 _library/ 前缀，与 URL 互斥。
+	ReplyImagePath string
 	// ItemIDs 是规则覆盖的商品标识。
 	ItemIDs []string
 }
@@ -92,6 +96,8 @@ type Draft struct {
 	ReplyContent string
 	// ReplyImageURL 是首次回复图片地址。
 	ReplyImageURL string
+	// ReplyImagePath 是用户选择的本地图片引用，省略时保持历史 URL 规则语义。
+	ReplyImagePath string
 	// ItemIDs 是规则覆盖的商品标识。
 	ItemIDs []string
 }
@@ -235,6 +241,11 @@ func normalizeDraft(draft Draft) (Rule, error) {
 	rule := Rule{
 		CookieID: draft.CookieID, Name: strings.TrimSpace(draft.Name), Enabled: draft.Enabled,
 		ReplyContent: strings.TrimSpace(draft.ReplyContent), ReplyImageURL: strings.TrimSpace(draft.ReplyImageURL),
+		ReplyImagePath: strings.TrimSpace(draft.ReplyImagePath),
+	}
+	// sourceErr 复用默认回复的安全路径与来源互斥校验，不读取文件或调用平台。
+	if sourceErr := replyimage.ValidateSource(rule.ReplyImageURL, rule.ReplyImagePath); sourceErr != nil {
+		return Rule{}, &InvalidInputError{Reason: sourceErr.Error()}
 	}
 	// seen 记录已加入的商品，保持首次出现顺序并去重。
 	seen := make(map[string]struct{}, len(draft.ItemIDs))
@@ -257,7 +268,7 @@ func normalizeDraft(draft Draft) (Rule, error) {
 		return Rule{}, &InvalidInputError{Reason: "至少选择一个商品"}
 	case len(rule.ItemIDs) > MaxItemsPerRule:
 		return Rule{}, &InvalidInputError{Reason: "单条规则覆盖的商品过多"}
-	case rule.ReplyContent == "" && rule.ReplyImageURL == "":
+	case rule.ReplyContent == "" && rule.ReplyImageURL == "" && rule.ReplyImagePath == "":
 		return Rule{}, &InvalidInputError{Reason: "回复文字和图片至少填写一项"}
 	case utf8.RuneCountInString(rule.Name) > MaxNameRunes:
 		return Rule{}, &InvalidInputError{Reason: "规则名称过长"}

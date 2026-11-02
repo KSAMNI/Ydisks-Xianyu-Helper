@@ -1,6 +1,6 @@
 import React from 'react';
 import {
-  Bell, Box, ChevronLeft, ChevronRight, CreditCard, FileStack, Images, LayoutDashboard, Library,
+  Bell, Box, ChevronLeft, ChevronRight, CreditCard, FileStack, Images, LayoutDashboard,
   GitCommitHorizontal, LogOut, MessageCircleMore, ScrollText, Settings, ShoppingBag, TrendingUp, Users, Zap,
 } from 'lucide-react';
 import { YdisksBrandIcon } from './YdisksLogo';
@@ -34,7 +34,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: 'dashboard', icon: LayoutDashboard, label: '仪表盘' },
     { id: 'accounts', icon: Users, label: '账号管理' },
     { id: 'chat', icon: MessageCircleMore, label: '在线聊天' },
-    { id: 'library', icon: Library, label: '本地资源库' },
     { id: 'cards', icon: CreditCard, label: '卡密库存' },
     { id: 'items', icon: Box, label: '商品列表' },
     { id: 'orders', icon: ShoppingBag, label: '订单管理' },
@@ -66,8 +65,8 @@ const Sidebar: React.FC<SidebarProps> = ({
         {menuItems.map(/* 当前回调处理集合中的单个元素。 */ (item) => {
           // Icon 渲染Icon React 组件。
           const Icon = item.icon;
-          // active 当前状态。
-          const active = activeTab === item.id;
+          // active 将旧本地资源库链接也归入唯一资源中心入口，保留旧书签的导航高亮。
+          const active = activeTab === item.id || (item.id === 'image-library' && activeTab === 'library');
           return (
             <React.Fragment key={item.id}>
               <button

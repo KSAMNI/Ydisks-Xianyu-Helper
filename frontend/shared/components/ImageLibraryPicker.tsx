@@ -14,11 +14,13 @@ export interface ImageLibraryPickerProps {
   helpId?: string;
   /** help 覆盖默认帮助文案，供需要按账号目录说明的调用方替换通用说明。 */
   help?: ReactNode;
+  /** allowManualPath 默认保留历史相对路径输入；纯资源选择场景设为 false，不开放任意路径编辑。 */
+  allowManualPath?: boolean;
 }
 
 /** defaultImageLibraryHelp 说明资源中心共享图片与历史账号目录引用的关系，并保留格式和体积边界。 */
 const defaultImageLibraryHelp = <>
-  <p>资源中心图片在“资源中心”页面上传，所有闲鱼账号共用一份；这里下拉选中的就是该图片。每次发送读取 PNG、JPEG 或 GIF 图片，最大 10 MiB。</p>
+  <p>图片在“资源中心 → 消息图片”上传，所有闲鱼账号共用一份。每次发送读取 PNG、JPEG 或 GIF 图片，最大 10 MiB。</p>
   <p>手填路径只用于兼容历史配置：图片必须放在运行程序机器的 <code>XIANYU_UPLOAD_DIR/reply-images/&lt;实际发货账号&gt;/</code> 内，默认目录为 <code>data/uploads/reply-images/&lt;实际发货账号&gt;/</code>，使用 / 分隔；Docker 需挂载该目录。</p>
 </>;
 
@@ -26,8 +28,8 @@ const defaultImageLibraryHelp = <>
  * ImageLibraryPicker 编辑一处图片引用：下拉选择全局共享的资源中心图片，同时保留手填相对路径的兼容输入。
  * 控件不发起任何请求，缩略图直接使用受登录保护的图片内容地址。
  */
-export function ImageLibraryPicker({ value, onChange, label = '本地图片相对路径', helpId, help }: ImageLibraryPickerProps) {
-  // options 是 Provider 提供的资源中心图片；缺少 Provider 时为空数组，控件退化为纯手填输入。
+export function ImageLibraryPicker({ value, onChange, label = '本地图片相对路径', helpId, help, allowManualPath = true }: ImageLibraryPickerProps) {
+  // options 是 Provider 提供的消息图片；缺少 Provider 时为空数组，仍保留当前引用以免误清空。
   const options = useImageLibraryOptions();
   // trimmedValue 去掉手填值首尾空格后用于匹配资源中心引用，不改变最终提交的原文。
   const trimmedValue = (value || '').trim();
@@ -45,10 +47,10 @@ export function ImageLibraryPicker({ value, onChange, label = '本地图片相�
       </select>
     </label>
     {matchedOption && <img src={imageLibraryContentURL(matchedOption.id)} alt={`${matchedOption.name} 缩略图`} loading="lazy" className="h-16 w-16 rounded-xl border border-slate-200 object-cover" />}
-    <label className="block text-sm font-bold text-gray-700">
+    {allowManualPath && <label className="block text-sm font-bold text-gray-700">
       {label}
       <input type="text" value={value} onChange={/* event 是用户手填的相对路径原文，直接写入配置以兼容历史目录引用。 */ event => onChange(event.target.value)} placeholder="product-a/guide.jpg" aria-describedby={helpId} className="w-full ios-input px-4 py-3 rounded-xl mt-2" />
-    </label>
-    <div id={helpId} className="space-y-1 text-xs leading-5 text-gray-500 break-all">{help ?? defaultImageLibraryHelp}</div>
+    </label>}
+    <div id={helpId} className="space-y-1 text-xs leading-5 text-gray-500 break-all">{help ?? (allowManualPath ? defaultImageLibraryHelp : '从“资源中心 → 消息图片”选择已上传的图片；这里不上传文件。支持 PNG、JPEG、GIF，单张最大 10 MiB。')}</div>
   </div>;
 }
