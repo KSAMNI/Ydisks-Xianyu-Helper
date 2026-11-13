@@ -15,6 +15,8 @@ export function TemplateVariableGuide() {
         <p><code className="font-mono text-sky-700">{'{{order_id}}'}</code>：订单号。</p>
         <p><code className="font-mono text-sky-700">{'{{buyer_id}}'}</code>：买家 ID。</p>
         <p><code className="font-mono text-sky-700">{'{{card_name}}'}</code>：当前模板绑定的卡密库存名称。</p>
+        <p><code className="font-mono text-sky-700">{'{{delivery_date}}'}</code>：发货日期，例如 <code className="font-mono">2026-01-02</code>。</p>
+        <p><code className="font-mono text-sky-700">{'{{delivery_time}}'}</code>：发货日期和时间，例如 <code className="font-mono">2026-01-02 15:04</code>。</p>
         <p><code className="font-mono text-sky-700">{'{{cards.<变量名>}}'}</code>：卡密内容；变量名只能使用英文字母、数字、下划线或短横线。</p>
         <p><code className="font-mono text-sky-700">{'{{custom.<变量名>}}'}</code>：发货规则传入的自定义字符串；变量名与规则页 key 对应。</p>
       </div>
@@ -32,7 +34,7 @@ export function TemplateVariableGuide() {
         <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px]">{'感谢购买！\n订单：{{order_id}}\n主卡：{{cards.main}}\n备注：{{custom.remark}}'}</pre>
         <p className="mt-2">上例会要求在规则页绑定 <code className="font-mono">main</code> 卡密库存，并填写 <code className="font-mono">remark</code> 对应的字符串。</p>
       </div>
-      <p className="text-[11px] leading-5 text-gray-500">买家昵称缺失时替换为空字符串；模板变量仅用于文本消息。图片不参与变量解析，图片卡密不能绑定文本模板变量。</p>
+      <p className="text-[11px] leading-5 text-gray-500">买家昵称缺失时替换为空字符串；模板变量仅用于文本消息。图片不参与变量解析，图片卡密不能绑定文本模板变量。发货日期和发货时间按北京时间（UTC+8）渲染，取消息发送时刻而不是下单时刻；同一模板的多条消息共用同一个时刻。</p>
     </aside>
   );
 }

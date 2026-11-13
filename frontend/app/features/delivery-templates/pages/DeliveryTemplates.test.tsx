@@ -229,6 +229,7 @@ describe('DeliveryTemplates 页面组合行为', /* 当前回调验证模板编�
     expect(screen.getByText('内置、卡密、自定义变量均用双大括号')).toBeTruthy();
     expect(screen.getByText('{{buyer_nickname}}')).toBeTruthy();
     expect(screen.getByText('{{custom.<变量名>}}')).toBeTruthy();
+    expect(screen.getByText('{{delivery_time}}')).toBeTruthy();
     expect(screen.getByText('如何声明和使用')).toBeTruthy();
 
     // cancelButton 是浮窗底部放弃当前未保存模板草稿的操作入口。

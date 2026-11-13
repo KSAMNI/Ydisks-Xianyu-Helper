@@ -5,19 +5,39 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
+
+// DeliveryZone 是发货时间变量使用的固定时区；统一北京时间 UTC+8，避免服务器或容器时区改变渲染结果。
+var DeliveryZone = time.FixedZone("Asia/Shanghai", 8*60*60)
+
+// deliveryDateLayout 是 {{delivery_date}} 的渲染格式，只保留年月日。
+const deliveryDateLayout = "2006-01-02"
+
+// deliveryMomentLayout 是 {{delivery_time}} 的渲染格式，保留到分钟且不带时区偏移文本。
+const deliveryMomentLayout = "2006-01-02 15:04"
 
 // cardVariablePattern 匹配模板中按名称绑定卡密库存的变量。
 var cardVariablePattern = regexp.MustCompile(`\{\{(?:delivery\.)?cards\.([A-Za-z0-9_-]+)\}\}`)
 
-// builtinVariablePattern 匹配由订单和买家事实直接提供的模板变量。
-var builtinVariablePattern = regexp.MustCompile(`\{\{(?:delivery\.)?(buyer_nickname|order_id|buyer_id|card_name)\}\}`)
+// builtinVariablePattern 匹配由订单、买家事实和发货时刻直接提供的模板变量。
+var builtinVariablePattern = regexp.MustCompile(`\{\{(?:delivery\.)?(buyer_nickname|order_id|buyer_id|card_name|delivery_date|delivery_time)\}\}`)
 
 // customVariablePattern 匹配发货规则传入的字符串键值变量。
 var customVariablePattern = regexp.MustCompile(`\{\{(?:delivery\.)?custom\.([A-Za-z0-9_-]+)\}\}`)
 
 // fullVariablePattern 只匹配完整且受支持的模板变量令牌。
-var fullVariablePattern = regexp.MustCompile(`^\{\{(?:delivery\.)?(?:cards\.[A-Za-z0-9_-]+|custom\.[A-Za-z0-9_-]+|buyer_nickname|order_id|buyer_id|card_name)\}\}$`)
+var fullVariablePattern = regexp.MustCompile(`^\{\{(?:delivery\.)?(?:cards\.[A-Za-z0-9_-]+|custom\.[A-Za-z0-9_-]+|buyer_nickname|order_id|buyer_id|card_name|delivery_date|delivery_time)\}\}$`)
+
+// FormatDeliveryMoment 把发货时刻转换为日期和日期时间两个变量文本；零值表示调用方没有提供时刻，渲染为空字符串而不是零值日期。
+func FormatDeliveryMoment(moment time.Time) (string, string) {
+	if moment.IsZero() {
+		return "", ""
+	}
+	// local 是把发货时刻换算到 DeliveryZone 后的时间视图。
+	local := moment.In(DeliveryZone)
+	return local.Format(deliveryDateLayout), local.Format(deliveryMomentLayout)
+}
 
 // Parsed 保存校验后的消息副本、卡密变量键和自定义变量键。
 type Parsed struct {
@@ -131,16 +151,22 @@ type VariableValues struct {
 	CardValues map[string]string
 	// CustomValues 是发货规则传入的自定义字符串键值表。
 	CustomValues map[string]string
+	// DeliveryMoment 是本次模板动作的发货时刻，用于渲染 delivery_date 和 delivery_time；零值渲染为空字符串。
+	DeliveryMoment time.Time
 }
 
 // Replace 将模板支持的变量替换为当前订单和规则上下文中的值。
 func Replace(message string, values VariableValues) string {
+	// deliveryDate、deliveryMoment 保存按固定时区格式化的发货日期和日期时间文本。
+	deliveryDate, deliveryMoment := FormatDeliveryMoment(values.DeliveryMoment)
 	// fixedValues 保存固定变量令牌和当前任务字段的对应关系。
 	fixedValues := map[string]string{
 		"buyer_nickname": values.BuyerNickname,
 		"order_id":       values.OrderID,
 		"buyer_id":       values.BuyerID,
 		"card_name":      values.CardName,
+		"delivery_date":  deliveryDate,
+		"delivery_time":  deliveryMoment,
 	}
 	// out 保存逐类替换后的消息正文。
 	out := builtinVariablePattern.ReplaceAllStringFunc(message, func(token string) string {

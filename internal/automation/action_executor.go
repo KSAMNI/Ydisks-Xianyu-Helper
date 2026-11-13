@@ -39,6 +39,16 @@ type automationActionExecutor struct {
 	apiFetcher func() APICardFetcher
 	// cardLocks 串行化同一卡密组的数据库存取和消费。
 	cardLocks sync.Map
+	// now 返回渲染发货时间变量所用的当前时刻；为空时使用系统时钟，测试注入固定时刻以获得确定性结果。
+	now func() time.Time
+}
+
+// currentTime 返回本次动作使用的当前时刻；未注入时钟时回退到系统时钟，保证生产行为不变而测试可固定时间。
+func (e *automationActionExecutor) currentTime() time.Time {
+	if e.now == nil {
+		return time.Now()
+	}
+	return e.now()
 }
 
 // shipmentConsignSession 保存一次交易类 MTOP 请求（确认发货、订单改价共用）开始前固定的凭证视图和响应 Cookie 会话；Cookie 明文只在本次 MTOP 调用及条件写回期间存在，禁止记录到日志或任务快照。

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"xianyu-go/internal/db"
 	"xianyu-go/internal/deliverytemplate"
@@ -34,6 +35,8 @@ type templateCardReservation struct {
 type templateDeliveryState struct {
 	// cardName 保存模板动作展示给订单上下文的卡密库存名称。
 	cardName string
+	// moment 保存本次模板动作统一的发货时刻，保证多条消息渲染出同一个 delivery_date 和 delivery_time。
+	moment time.Time
 	// bindingCards 保存按模板变量键索引的卡密绑定。
 	bindingCards map[string]templateBindingCard
 	// apiFetcher 保存 API 卡密变量使用的远端取卡客户端。
@@ -98,14 +101,15 @@ func (e *automationActionExecutor) sendTemplate(ctx context.Context, task Task, 
 			}
 			return result, loadErr
 		}
-		// text 保存订单字段、卡密变量和规则自定义变量都渲染后的最终消息。
+		// text 保存订单字段、卡密变量、规则自定义变量和发货时刻都渲染后的最终消息。
 		text := deliverytemplate.Replace(message, deliverytemplate.VariableValues{
-			BuyerNickname: task.BuyerNickname,
-			OrderID:       task.OrderID,
-			BuyerID:       task.BuyerID,
-			CardName:      state.cardName,
-			CardValues:    state.values,
-			CustomValues:  action.CustomVariables,
+			BuyerNickname:  task.BuyerNickname,
+			OrderID:        task.OrderID,
+			BuyerID:        task.BuyerID,
+			CardName:       state.cardName,
+			CardValues:     state.values,
+			CustomValues:   action.CustomVariables,
+			DeliveryMoment: state.moment,
 		})
 		if strings.TrimSpace(text) == "" {
 			// restoreErr 保存空消息导致的库存恢复错误。
@@ -148,10 +152,11 @@ func (e *automationActionExecutor) sendTemplate(ctx context.Context, task Task, 
 
 // prepareTemplateDelivery 读取并校验模板绑定，构造后续消息渲染需要的动作状态。
 func (e *automationActionExecutor) prepareTemplateDelivery(ctx context.Context, task Task, action db.AutomationAction) (templateDeliveryState, error) {
-	// state 保存模板绑定、展示名称及卡密变量缓存。
+	// state 保存模板绑定、展示名称、发货时刻及卡密变量缓存。
 	state := templateDeliveryState{
-		cardName: action.CardName, bindingCards: make(map[string]templateBindingCard, len(action.TemplateBindings)),
-		values: make(map[string]string, len(action.TemplateBindings)), loadedKeys: make(map[string]bool, len(action.TemplateBindings)),
+		cardName: action.CardName, moment: e.currentTime(),
+		bindingCards: make(map[string]templateBindingCard, len(action.TemplateBindings)),
+		values:       make(map[string]string, len(action.TemplateBindings)), loadedKeys: make(map[string]bool, len(action.TemplateBindings)),
 	}
 	for /* binding 表示当前模板变量到卡密组的绑定。 */ _, binding := range action.TemplateBindings {
 		if state.cardName == "" {

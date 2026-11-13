@@ -15,15 +15,17 @@
 Template messages can use these variables:
 
 - `{{order_id}}`: order ID
-- `{{item_id}}`: product ID
-- `{{item_title}}`: product title
 - `{{buyer_id}}`: buyer ID
-- `{{buyer_nick}}`: buyer nickname
+- `{{buyer_nickname}}`: buyer nickname
 - `{{card_name}}`: name of the card inventory bound to the rule
+- `{{delivery_date}}`: delivery date, for example `2026-01-02`
+- `{{delivery_time}}`: delivery date and time, for example `2026-01-02 15:04`
 - `{{cards.<name>}}`: card content bound to the rule, for example `{{cards.main}}`
 - `{{custom.<name>}}`: custom text entered in the automation rule
 
 Variable names must not contain spaces or Chinese characters, and all braces must be present. The system validates variable spelling when saving.
+
+`{{delivery_date}}` and `{{delivery_time}}` are rendered in Beijing time (UTC+8) from the moment the message is sent, not the moment the order was placed. Every message of one template action shares the same moment.
 
 ## Use a template in automation
 

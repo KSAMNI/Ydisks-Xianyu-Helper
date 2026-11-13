@@ -1,6 +1,9 @@
 package deliverytemplate
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // TestParseExtractsKeysAndRejectsUnknownVariables 验证变量提取顺序和非法语法拒绝。
 func TestParseExtractsKeysAndRejectsUnknownVariables(t *testing.T) {
@@ -111,5 +114,39 @@ func TestReplacePreservesUnboundVariables(t *testing.T) {
 	got := Replace("{{cards.main}}/{{custom.region}}", VariableValues{})
 	if got != "{{cards.main}}/{{custom.region}}" {
 		t.Fatalf("Replace=%q", got)
+	}
+}
+
+// TestParseAcceptsDeliveryMomentVariables 验证发货日期和发货时间属于受支持的内置变量，且不需要卡密或自定义绑定。
+func TestParseAcceptsDeliveryMomentVariables(t *testing.T) {
+	// parsed 保存包含发货日期、发货时间及带前缀写法的解析结果。
+	parsed, err := Parse([]string{"{{delivery_date}} {{delivery_time}} {{delivery.delivery_time}}"})
+	if err != nil || len(parsed.Messages) != 1 || len(parsed.Keys) != 0 || len(parsed.CustomKeys) != 0 {
+		t.Fatalf("delivery moment parse: parsed=%+v err=%v", parsed, err)
+	}
+}
+
+// TestReplaceRendersDeliveryMomentInFixedZone 验证发货时间变量按固定时区渲染，未提供时刻时渲染为空字符串。
+func TestReplaceRendersDeliveryMomentInFixedZone(t *testing.T) {
+	// moment 是 UTC 07:04:30 的时刻，按北京时间应渲染成 15:04，且不保留秒。
+	moment := time.Date(2026, 1, 2, 7, 4, 30, 0, time.UTC)
+	// got 保存提供时刻后的渲染文本。
+	got := Replace("{{delivery_date}}|{{delivery_time}}", VariableValues{DeliveryMoment: moment})
+	if got != "2026-01-02|2026-01-02 15:04" {
+		t.Fatalf("Replace=%q", got)
+	}
+	// zeroGot 保存未提供时刻时的渲染文本，必须为空而不是零值日期。
+	zeroGot := Replace("{{delivery_date}}|{{delivery_time}}", VariableValues{})
+	if zeroGot != "|" {
+		t.Fatalf("zero moment Replace=%q", zeroGot)
+	}
+}
+
+// TestFormatDeliveryMomentZero 验证零值时刻返回空文本，避免把零值日期渲染进消息。
+func TestFormatDeliveryMomentZero(t *testing.T) {
+	// date、moment 分别是零值时刻对应的日期和日期时间文本。
+	date, moment := FormatDeliveryMoment(time.Time{})
+	if date != "" || moment != "" {
+		t.Fatalf("FormatDeliveryMoment=%q,%q", date, moment)
 	}
 }
