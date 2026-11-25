@@ -154,6 +154,34 @@ export const postForm = async <T>(url: string, body: FormData, options: RequestC
 
   return payload as T;
 }; /* postForm 表示postForm。 */
+/**
+ * getBlob 读取受登录保护的二进制资源（例如资源中心图片内容），返回保留服务端 Content-Type 的 Blob。
+ * 该入口复用统一超时、取消与错误 envelope 语义，使调用方不需要直接接触 fetch。
+ */
+export const getBlob = async (url: string, options: RequestControlOptions = {}): Promise<Blob> => {
+  // control 统一管理外部取消信号与本次二进制读取的默认超时，结束后必须 cleanup。
+  const control = controlledSignal(options.signal, options.timeoutMs ?? defaultRequestTimeoutMs);
+  try {
+    // res 保存本次二进制读取的原始响应；只有成功响应才继续读取响应体。
+    const res = await fetch(url, { method: 'GET', credentials: 'include', signal: control.signal });
+    if (!res.ok) {
+      if (res.status === 401) notifyAuthExpired();
+      // contentType 决定错误体按统一 envelope（JSON）还是纯文本解析。
+      const contentType = res.headers.get('content-type') || '';
+      // payload 保存错误响应体，解析失败时由 ApiError 用状态码兜底。
+      const payload = await readResponsePayload(res, contentType.includes('application/json'));
+      throw new ApiError(res.status, payload);
+    }
+    return await res.blob();
+  } catch (error /* error 是底层 fetch、错误体解析或 ApiError 抛出的原始失败原因。 */) {
+    if (control.signal.aborted) {
+      throw new Error(options.signal?.aborted ? '请求已取消' : '请求超时，请稍后重试');
+    }
+    throw error;
+  } finally {
+    control.cleanup();
+  }
+};
 
 // controlledSignal 组合外部取消与内部超时，调用方必须在请求结束后执行 cleanup。
 export const controlledSignal = (external: AbortSignal | undefined, timeoutMs: number) => {

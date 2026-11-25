@@ -1,5 +1,5 @@
 import {
-AlertCircle,Check,CheckCheck,ImagePlus,Loader2,MessageCircleMore,PackageSearch,PanelRightClose,PanelRightOpen,
+AlertCircle,Check,CheckCheck,ImagePlus,Images,Loader2,MessageCircleMore,PackageSearch,PanelRightClose,PanelRightOpen,
 RefreshCw,Search,Send,Smile,UserRound,Wifi,WifiOff,X,
 } from 'lucide-react';
 import React from 'react';
@@ -8,6 +8,7 @@ import 'yet-another-react-lightbox/styles.css';
 import { AudioMessage } from '../components/AudioMessage';
 import BrowserNotificationToggle from '../components/BrowserNotificationToggle';
 import { ChatItemPickerDialog } from '../components/ChatItemPickerDialog';
+import ChatLibraryImagePicker from '../components/ChatLibraryImagePicker';
 import ChatMetadataFeature from '../components/ChatMetadataFeature';
 import { ConversationListItem } from '../components/ConversationListItem';
 import { DeleteConversationDialog } from '../components/DeleteConversationDialog';
@@ -25,6 +26,7 @@ const Chat: React.FC = () => {
     hasMoreContacts, emojiOpen, sending, error, sendNotice, liveState, pendingImage, scrollRef, imageInputRef, setActiveAccountID,
     setActiveChatID, setSearch, setUnreadOnly, setDraft, setEmojiOpen, reloadSessions, loadMoreContacts,
     loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable,
+    libraryImageOpen, setLibraryImageOpen, libraryImageLoadingID, handleLibraryImage,
     deletingChatID, deleteError, deleteConversation, clearDeleteError, acceptOutgoingMessage, unreadForAccount, emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
   } = useChat();
 
@@ -220,7 +222,7 @@ const Chat: React.FC = () => {
                 <div className="relative z-10 shrink-0 border-t border-slate-200 bg-white p-4 shadow-chat-input">
                   <div className="mb-2 flex items-center gap-1">
                     <div className="relative">
-                      <button type="button" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => setEmojiOpen(/* 当前回调处理用户交互或异步状态变化。 */ value => !value)} disabled={sending || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 hover:bg-sky-50 hover:text-sky-600 disabled:opacity-40" title="闲鱼表情"><Smile className="h-5 w-5" /></button>
+                      <button type="button" onClick={/* 当前回调展开或收起闲鱼表情面板，并同时收起资源中心图片面板。 */ () => { setLibraryImageOpen(false); setEmojiOpen(/* 当前回调切换表情面板可见性。 */ value => !value); }} disabled={sending || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 hover:bg-sky-50 hover:text-sky-600 disabled:opacity-40" title="闲鱼表情"><Smile className="h-5 w-5" /></button>
                       {emojiOpen && <div className="absolute bottom-11 left-0 z-30 w-[360px] rounded-2xl border border-slate-200 bg-white p-3 shadow-2xl">
                         <div className="mb-2 text-xs font-bold text-slate-500">全部表情</div>
                         <div className="grid max-h-72 grid-cols-8 gap-1 overflow-y-auto">
@@ -230,6 +232,10 @@ const Chat: React.FC = () => {
                     </div>
                     <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={/* 当前回调处理用户交互或异步状态变化。 */ event => void handleImage(event.target.files?.[0])} />
                     <button type="button" onClick={/* 当前回调处理用户交互或异步状态变化。 */ () => imageInputRef.current?.click()} disabled={sending || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600 disabled:opacity-40" title="发送图片（最大 10MB）"><ImagePlus className="h-5 w-5" /></button>
+                    <div className="relative">
+                      <button type="button" onClick={/* 当前回调切换资源中心图片面板，并同时收起表情面板。 */ () => { setEmojiOpen(false); setLibraryImageOpen(/* 当前回调切换资源中心图片面板可见性。 */ value => !value); }} disabled={sending || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600 disabled:opacity-40" title="从资源中心发送图片" aria-label="从资源中心发送图片"><Images className="h-5 w-5" /></button>
+                      <ChatLibraryImagePicker open={libraryImageOpen} loadingAssetID={libraryImageLoadingID} disabled={sending || activeAccount?.runtime_state !== 'online'} onSelect={/* 当前回调把选中的资源中心图片交给聊天发送流程。 */ asset => void handleLibraryImage(asset)} onClose={/* 当前回调收起资源中心图片面板。 */ () => setLibraryImageOpen(false)} />
+                    </div>
                     <button type="button" onClick={/* 当前回调打开居中商品选择弹窗并收起表情面板。 */ () => { setEmojiOpen(false); setItemPickerOpen(true); }} disabled={sending || !selectedSession || activeAccount?.runtime_state !== 'online'} className="rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600 focus:bg-sky-50 focus:text-sky-600 focus:outline-none focus:ring-2 focus:ring-sky-100 active:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-40" title="发送宝贝" aria-label="发送宝贝"><PackageSearch className="h-5 w-5" /></button>
                     <button type="button" onClick={/* 当前回调依当前渲染状态切换右侧账号快捷回复抽屉，避免页面级外部点击监听与按钮切换相互抵消。 */ () => setQuickReplyPanelOpen(!quickReplyPanelOpen)} className="ml-auto rounded-lg p-2 text-slate-500 transition hover:bg-sky-50 hover:text-sky-600" title={quickReplyPanelOpen ? '收起快捷回复' : '展开快捷回复'} aria-label={quickReplyPanelOpen ? '收起快捷回复' : '展开快捷回复'}>
                       {quickReplyPanelOpen ? <PanelRightClose className="h-5 w-5" /> : <PanelRightOpen className="h-5 w-5" />}

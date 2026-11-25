@@ -11,6 +11,8 @@ OperationResponse
 import { contractClient, contractMultipartBody, runContractRequest } from '../../../shared/api-contract/client';
 import { type RequestControlOptions } from '../../../shared/http/client';
 import { ApiError } from '../../../shared/http/client';
+import { getBlob } from '../../../shared/http/client';
+import { imageLibraryContentURL } from '../../../shared/imageLibrary';
 export type * from './models';
 import type { ChatReadReceipt } from './types';
 
@@ -230,3 +232,65 @@ export const markChatRead = async (accountId: string, chatId: string, messageIDs
     body: { account_id: accountId, chat_id: chatId, message_ids: messageIDs.map(/* receipt 是当前待序列化的平台已读回执。 */ receipt => ({ messageId: receipt.messageId, sessionId: receipt.sessionId, cid: receipt.cid, conversationType: receipt.conversationType })) },
     signal,
   }), options);
+
+/** chatImageMaxBytes 与后端聊天单图上限保持一致，避免把必然被拒绝的资源中心图片送进发送流程。 */
+const chatImageMaxBytes = 10 * 1024 * 1024;
+
+/** chatImageExtensionByMimeType 把服务端返回的图片 MIME 类型映射为上传文件名后缀。 */
+const chatImageExtensionByMimeType: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+
+/** ChatLibraryImageAsset 描述聊天窗口引用一张资源中心图片所需的最小字段。 */
+export type ChatLibraryImageAsset = {
+  /** id 是资源中心图片主键，用于拼接受登录保护的内容地址。 */
+  id: number;
+  /** name 是用户可见的图片名，用作上传文件名的前缀。 */
+  name: string;
+};
+
+/**
+ * loadChatLibraryImage 读取资源中心图片内容并转换为聊天发送流程可直接预览、上传的 File。
+ * 读取沿用登录态、统一超时与错误 envelope；图片类型和 10 MiB 体积上限在这里先做一次本地校验。
+ */
+export const loadChatLibraryImage = async (asset: ChatLibraryImageAsset, options?: RequestControlOptions): Promise<File> => {
+  // blob 是受登录保护的图片二进制内容，其类型来自服务端 Content-Type。
+  const blob = await getBlob(imageLibraryContentURL(asset.id), { timeoutMs: 60_000, ...options });
+  if (!blob.type.startsWith('image/')) throw new Error('资源中心图片内容不是图片');
+  if (blob.size === 0) throw new Error('资源中心图片内容为空');
+  if (blob.size > chatImageMaxBytes) throw new Error('资源中心图片超过 10 MiB，无法发送');
+  // extension 是上传文件名后缀；未知图片类型按 png 兜底，真实 MIME 类型仍由 blob 提供。
+  const extension = chatImageExtensionByMimeType[blob.type] || 'png';
+  return new File([blob], `${asset.name || `image-${asset.id}`}.${extension}`, { type: blob.type });
+};
+
+/** ChatKeywordReplyTemplate 是快捷回复抽屉可一键导入的自动关键词回复文本模板。 */
+export type ChatKeywordReplyTemplate = {
+  /** id 是关键词规则稳定标识，用作列表键值。 */
+  id: string;
+  /** keyword 是触发该回复的首个表达式，仅用于向用户说明来源。 */
+  keyword: string;
+  /** content 是可写入账号快捷回复的文本正文；图片型关键词回复不参与导入。 */
+  content: string;
+};
+
+/**
+ * getChatKeywordReplies 读取当前账号的自动关键词回复，只保留可导入为文本快捷回复的模板。
+ * 图片型回复和空正文会被跳过，相同正文按首次出现去重，避免抽屉里出现重复话术。
+ */
+export const getChatKeywordReplies = async (accountId: string, options?: RequestControlOptions): Promise<ChatKeywordReplyTemplate[]> => {
+  // response 保存契约客户端返回的关键词规则集合，历史包裹响应按空集合降级。
+  const response = await runContractRequest(/* signal 是本次关键词回复读取的超时与取消控制信号。 */ signal => contractClient.GET('/api/v1/reply-rules/{cid}/typed', {
+    params: { path: { cid: accountId } },
+    signal,
+  }), options);
+  if (!Array.isArray(response)) return [];
+  // templates 保存按正文去重后的可导入模板。
+  const templates: ChatKeywordReplyTemplate[] = [];
+  for (const /* row 是当前待归一化的关键词规则 DTO。 */ row of response) {
+    // content 是当前规则去除首尾空白后的回复正文。
+    const content = typeof row.reply === 'string' ? row.reply.trim() : '';
+    if (row.type === 'image' || !content) continue;
+    if (templates.some(/* existing 是已收集的同正文模板。 */ existing => existing.content === content)) continue;
+    templates.push({ id: String(row.id), keyword: (row.expressions && row.expressions[0]) || row.keyword || '', content });
+  }
+  return templates;
+};

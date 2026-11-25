@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-// 契约客户端各 HTTP 方法替身，用于记录适配器构造的请求。
-const { getMock, postMock, putMock, deleteMock } = vi.hoisted(/* clientMocksFactory 创建 HTTP 方法替身。 */ () => ({ getMock: vi.fn(), postMock: vi.fn(), putMock: vi.fn(), deleteMock: vi.fn() }));
+// 契约客户端与共享 HTTP 客户端替身，用于记录适配器构造的请求。
+const { getMock, postMock, putMock, deleteMock, getBlobMock } = vi.hoisted(/* clientMocksFactory 创建 HTTP 方法替身。 */ () => ({ getMock: vi.fn(), postMock: vi.fn(), putMock: vi.fn(), deleteMock: vi.fn(), getBlobMock: vi.fn() }));
 
 vi.mock('../../../shared/api-contract/client', /* contractModuleFactory 提供聊天 API 适配所需的契约依赖。 */ () => ({
   // contractClient 暴露聊天适配器用到的方法。
@@ -14,6 +14,12 @@ vi.mock('../../../shared/api-contract/client', /* contractModuleFactory 提供�
     return (await execute(new AbortController().signal)).data;
   },
 }));
+
+vi.mock('../../../shared/http/client', /* httpClientModuleFactory 保留真实 ApiError 语义，只替换二进制读取。 */ async importOriginal => {
+  // actual 是共享 HTTP 客户端的真实导出集合。
+  const actual = await importOriginal<typeof import('../../../shared/http/client')>();
+  return { ...actual, getBlob: getBlobMock };
+});
 
 // lastOptions 记录最近一次请求收到的控制选项，供超时断言使用。
 const lastOptions: { /** value 是最近一次的请求控制选项。 */ value: unknown } = { value: undefined };
@@ -123,5 +129,38 @@ describe('聊天 API 适配器', /* 聊天 API 测试覆盖请求映射、响应
     expect(api.confirmedOutgoingMessageFromError(new Error('x'))).toBeUndefined();
     expect(api.confirmedOutgoingMessageFromError(build('chat_send_uncertain', validMessage))).toBeUndefined();
     expect(api.confirmedOutgoingMessageFromError(build('chat_send_status_save_failed', 5))).toBeUndefined();
+  });
+
+  test('关键词回复只导入文本模板并按正文去重', /* 当前回调验证图片型、空正文、重复正文与非数组响应的处理。 */ async () => {
+    // rows 是包含文本、空正文、重复正文和图片型规则的响应集合。
+    const rows = [
+      { id: 1, keyword: 'k1', expressions: ['k1', 'k2'], match_type: 'contains', reply: '  你好  ', item_id: '', item_ids: [], type: 'text', image_url: '' },
+      { id: 2, keyword: 'k3', expressions: ['k3'], match_type: 'contains', reply: '   ', item_id: '', item_ids: [], type: 'text', image_url: '' },
+      { id: 3, keyword: 'k4', expressions: ['k4'], match_type: 'contains', reply: '你好', item_id: '', item_ids: [], type: 'text', image_url: '' },
+      { id: 4, keyword: 'k5', expressions: ['k5'], match_type: 'contains', reply: '图片话术', item_id: '', item_ids: [], type: 'image', image_url: 'https://img.example/a.png' },
+    ];
+    getMock.mockResolvedValueOnce({ data: rows });
+    expect(await api.getChatKeywordReplies('acc')).toEqual([{ id: '1', keyword: 'k1', content: '你好' }]);
+    expect(getMock).toHaveBeenCalledWith('/api/v1/reply-rules/{cid}/typed', expect.objectContaining({ params: { path: { cid: 'acc' } } }));
+    getMock.mockResolvedValueOnce({ data: { data: rows } });
+    expect(await api.getChatKeywordReplies('acc')).toEqual([]);
+  });
+
+  test('资源中心图片读取转换为可发送文件并校验类型与体积', /* 当前回调验证资源中心图片读取的成功与三类失败分支。 */ async () => {
+    getBlobMock.mockResolvedValueOnce(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }));
+    // file 是由资源中心图片内容转换出的待发送文件。
+    const file = await api.loadChatLibraryImage({ id: 7, name: '话术图' });
+    expect(file.name).toBe('话术图.png');
+    expect(file.type).toBe('image/png');
+    expect(file.size).toBe(3);
+    expect(getBlobMock).toHaveBeenCalledWith('/api/v1/image-library/7/content', expect.objectContaining({ timeoutMs: 60_000 }));
+    getBlobMock.mockResolvedValueOnce(new Blob([new Uint8Array([1])], { type: 'image/gif' }));
+    expect((await api.loadChatLibraryImage({ id: 8, name: '' })).name).toBe('image-8.gif');
+    getBlobMock.mockResolvedValueOnce(new Blob(['x'], { type: 'text/plain' }));
+    await expect(api.loadChatLibraryImage({ id: 9, name: 'n' })).rejects.toThrow('资源中心图片内容不是图片');
+    getBlobMock.mockResolvedValueOnce(new Blob([], { type: 'image/png' }));
+    await expect(api.loadChatLibraryImage({ id: 10, name: 'n' })).rejects.toThrow('资源中心图片内容为空');
+    getBlobMock.mockResolvedValueOnce({ type: 'image/png', size: 10 * 1024 * 1024 + 1 } as Blob);
+    await expect(api.loadChatLibraryImage({ id: 11, name: 'n' })).rejects.toThrow('资源中心图片超过 10 MiB');
   });
 });

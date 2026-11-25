@@ -2,7 +2,7 @@
 import { act,renderHook,waitFor } from '@testing-library/react';
 import { beforeEach,describe,expect,test,vi } from 'vitest';
 import type { AccountDetail,ChatMessage,ChatSession } from './api';
-import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage,uncertainOutgoingMessageFromError } from './api';
+import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,loadChatLibraryImage,markChatRead,sendChatImage,sendChatMessage,uncertainOutgoingMessageFromError } from './api';
 import { useChat } from './hooks';
 import { publishChatConnectionState,publishChatLiveMessage } from './liveEvents';
 
@@ -14,6 +14,7 @@ vi.mock('./api', /* chatApiMockFactory 提供聊天 Hook 的确定性 API 替身
 	deleteChatSession: vi.fn(),
   markChatRead: vi.fn(),
   sendChatImage: vi.fn(),
+  loadChatLibraryImage: vi.fn(),
   sendChatMessage: vi.fn(),
 	confirmedOutgoingMessageFromError: vi.fn(),
 	uncertainOutgoingMessageFromError: vi.fn(),
@@ -39,6 +40,8 @@ const sendMessageMock = vi.mocked(sendChatMessage);
 const confirmedOutgoingMock = vi.mocked(confirmedOutgoingMessageFromError);
 // uncertainOutgoingMock 是未知发送结果状态的可控适配器替身。
 const uncertainOutgoingMock = vi.mocked(uncertainOutgoingMessageFromError);
+// loadLibraryImageMock 是资源中心图片内容读取的可控替身。
+const loadLibraryImageMock = vi.mocked(loadChatLibraryImage);
 
 // accountFixture 是聊天 Hook 使用的启用账号对象。
 const accountFixture: AccountDetail = { id: 'account-1', enabled: true, auto_confirm: false, nickname: '测试账号' };
@@ -71,6 +74,7 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     sendImageMock.mockResolvedValue({ message: sentMessageFixture });
 	confirmedOutgoingMock.mockReturnValue(undefined);
 	uncertainOutgoingMock.mockReturnValue(undefined);
+    loadLibraryImageMock.mockResolvedValue(new File(['image'], '话术图.png', { type: 'image/png' }));
     publishChatConnectionState('connecting');
     // localStorageStub 是聊天 Hook 记忆账号选择所需的浏览器存储替身。
     Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: vi.fn().mockReturnValue(''), setItem: vi.fn(), removeItem: vi.fn() } });
@@ -988,4 +992,47 @@ describe('useChat', /* 当前回调处理聊天加载、分页、发送和实时
     }
   });
 
+  test('从资源中心图片进入发送预览并在读取失败时提示', /* 当前回调验证图片库选图的成功与失败分支。 */ async () => {
+    // hook 是聊天 Hook 的渲染结果。
+    const hook = renderHook(
+      // chatHookFactory 创建聊天 Hook。
+      () => useChat(),
+    );
+    await waitFor(
+      // activeChatAssertion 等待默认会话被选中。
+      () => expect(hook.result.current.activeChatID).toBe('chat-1'),
+    );
+    await waitFor(
+      // messagesAssertion 等待当前会话消息加载完成。
+      () => expect(hook.result.current.messagesLoading).toBe(false),
+    );
+    await act(
+      // openAction 展开资源中心图片面板。
+      () => hook.result.current.setLibraryImageOpen(true),
+    );
+    expect(hook.result.current.libraryImageOpen).toBe(true);
+    await act(
+      // selectAction 选择一张资源中心图片并读取内容。
+      async () => hook.result.current.handleLibraryImage({ id: 7, name: '话术图' }),
+    );
+    expect(loadLibraryImageMock).toHaveBeenCalledWith({ id: 7, name: '话术图' });
+    expect(hook.result.current.pendingImage?.file.name).toBe('话术图.png');
+    expect(hook.result.current.pendingImage?.url).toBe('blob:话术图.png');
+    expect(hook.result.current.libraryImageOpen).toBe(false);
+    expect(hook.result.current.libraryImageLoadingID).toBeNull();
+    await act(
+      // confirmAction 确认发送资源中心图片，复用既有图片发送请求。
+      async () => hook.result.current.confirmSendImage(),
+    );
+    expect(sendImageMock).toHaveBeenCalledWith(expect.objectContaining({ chat_id: 'chat-1', image: expect.any(File) }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    loadLibraryImageMock.mockRejectedValueOnce(new Error('资源中心图片内容为空'));
+    await act(
+      // failureAction 触发一次失败的资源中心图片读取。
+      async () => hook.result.current.handleLibraryImage({ id: 8, name: '空图' }),
+    );
+    expect(hook.result.current.error).toBe('资源中心图片内容为空');
+    expect(hook.result.current.pendingImage).toBeNull();
+    expect(hook.result.current.libraryImageLoadingID).toBeNull();
+    hook.unmount();
+  });
 });

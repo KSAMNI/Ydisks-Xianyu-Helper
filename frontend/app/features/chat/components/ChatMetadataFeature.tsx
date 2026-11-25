@@ -1,4 +1,4 @@
-import { Clipboard,FilePenLine,Plus,Send,Trash2,X } from 'lucide-react';
+import { ChevronDown,ChevronUp,Clipboard,FilePenLine,Plus,Send,Sparkles,Trash2,X } from 'lucide-react';
 import React from 'react';
 import { useChatMetadata } from '../metadata';
 import type { ChatSession } from '../models';
@@ -31,6 +31,15 @@ const ChatMetadataFeature: React.FC<ChatMetadataFeatureProps> = ({ activeAccount
 	const canManageBuyerNote = selectedSession?.account_role === 'seller' && Boolean(selectedSession.buyer_user_id);
   // quickReplyPanelRef 指向快捷回复抽屉根节点，用于区分抽屉内交互与页面外点击。
   const quickReplyPanelRef = React.useRef<HTMLElement | null>(null);
+  // keywordPanelOpen 控制抽屉内“从关键词回复添加”区块的展开状态。
+  const [keywordPanelOpen, setKeywordPanelOpen] = React.useState(false);
+  /** toggleKeywordPanel 切换导入区块，首次展开时按需读取当前账号的关键词回复模板。 */
+  const toggleKeywordPanel = React.useCallback(/* 当前回调响应用户展开或收起导入区块。 */ (): void => {
+    // next 保存本次切换后的展开状态，只有展开时才需要读取模板。
+    const next = !keywordPanelOpen;
+    setKeywordPanelOpen(next);
+    if (next) void chatMetadata.loadKeywordReplies();
+  }, [chatMetadata.loadKeywordReplies, keywordPanelOpen]);
 
   React.useEffect(/* 当前副作用在抽屉展开期间监听页面级指针事件，点击抽屉外部时自动收起并在 cleanup 中移除监听。 */ () => {
     if (!quickReplyPanelOpen) return undefined;
@@ -61,6 +70,23 @@ const ChatMetadataFeature: React.FC<ChatMetadataFeatureProps> = ({ activeAccount
         <button type="button" onClick={/* 当前回调收起右侧快捷回复抽屉。 */ closeQuickReplyPanel} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700" aria-label="收起快捷回复"><X className="h-4 w-4" /></button>
       </div>
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+        <div className="rounded-xl border border-dashed border-slate-200 bg-white p-2.5">
+          <button type="button" onClick={/* 当前回调切换关键词回复导入区块。 */ toggleKeywordPanel} aria-expanded={keywordPanelOpen} className="flex w-full items-center justify-between gap-2 text-[11px] font-bold text-slate-500 transition hover:text-sky-700">
+            <span className="flex items-center gap-1"><Sparkles className="h-3.5 w-3.5" />从关键词回复添加</span>
+            {keywordPanelOpen ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+          </button>
+          {keywordPanelOpen && <div className="mt-2 space-y-2">
+            {chatMetadata.keywordRepliesLoading && <div className="px-1 py-2 text-[11px] text-slate-400">正在读取关键词回复…</div>}
+            {!chatMetadata.keywordRepliesLoading && chatMetadata.keywordReplies.length === 0 && <div className="px-1 py-2 text-[11px] leading-5 text-slate-400">当前账号还没有可导入的文本关键词回复。图片型关键词回复请用聊天窗口的“资源中心图片”发送。</div>}
+            {chatMetadata.keywordReplies.map(/* template 是当前可导入的关键词回复模板。 */ template => <div key={template.id} className="rounded-lg border border-slate-200 bg-slate-50/70 p-2">
+              <div className="truncate text-[10px] font-bold text-slate-400">关键词：{template.keyword || '未设置'}</div>
+              <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-5 text-slate-600">{template.content}</p>
+              <div className="mt-1 flex justify-end">
+                <button type="button" onClick={/* 当前回调把该关键词回复正文加入账号快捷回复。 */ () => void chatMetadata.importKeywordReply(template)} disabled={chatMetadata.quickReplyBusy || Boolean(chatMetadata.importingKeywordReplyID) || chatMetadata.quickReplies.length >= 50} className="rounded-lg bg-slate-900 px-2 py-1 text-[10px] font-bold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300">{chatMetadata.importingKeywordReplyID === template.id ? '添加中…' : '添加'}</button>
+              </div>
+            </div>)}
+          </div>}
+        </div>
         {chatMetadata.quickReplies.map(/* reply 保存当前待展示的账号级快捷回复。 */ reply => <article key={reply.id} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 transition hover:border-sky-200 hover:bg-sky-50/40">
           <p className="whitespace-pre-wrap break-words text-xs leading-5 text-slate-700">{reply.content}</p>
           <div className="mt-2 flex items-center justify-end gap-1">

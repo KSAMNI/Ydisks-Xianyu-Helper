@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 import { act,renderHook,waitFor } from '@testing-library/react';
 import { beforeEach,describe,expect,test,vi } from 'vitest';
-import { createChatQuickReply,deleteChatQuickReply,getChatBuyerNote,getChatQuickReplies,saveChatBuyerNote } from './api';
+import { createChatQuickReply,deleteChatQuickReply,getChatBuyerNote,getChatKeywordReplies,getChatQuickReplies,saveChatBuyerNote } from './api';
 import { useChatMetadata } from './metadata';
 import type { ChatSession } from './models';
 
-vi.mock('./api', /* chatMetadataApiMockFactory 提供快捷回复和买家备注 Hook 的确定性 API 替身。 */ () => ({
+vi.mock('./api', /* chatMetadataApiMockFactory 提供快捷回复、关键词回复和买家备注 Hook 的确定性 API 替身。 */ () => ({
   createChatQuickReply: vi.fn(),
   deleteChatQuickReply: vi.fn(),
   getChatBuyerNote: vi.fn(),
+  getChatKeywordReplies: vi.fn(),
   getChatQuickReplies: vi.fn(),
   saveChatBuyerNote: vi.fn(),
 }));
@@ -23,6 +24,8 @@ const getBuyerNoteMock = vi.mocked(getChatBuyerNote);
 const getQuickRepliesMock = vi.mocked(getChatQuickReplies);
 // saveBuyerNoteMock 是保存买家备注请求的可控替身。
 const saveBuyerNoteMock = vi.mocked(saveChatBuyerNote);
+// getKeywordRepliesMock 是读取自动关键词回复模板请求的可控替身。
+const getKeywordRepliesMock = vi.mocked(getChatKeywordReplies);
 
 // sessionFixture 是当前账号下供备注隔离测试使用的会话摘要。
 const sessionFixture: ChatSession = { account_id: 'account-1', chat_id: 'chat-1', peer_user_id: 'buyer-1', peer_name: '买家', account_role: 'seller', buyer_user_id: 'buyer-1', seller_user_id: 'self-1', last_message: '', last_message_at: 1, unread_count: 0 };
@@ -55,6 +58,7 @@ describe('useChatMetadata', /* 当前回调覆盖账号快捷回复与买家备�
     createQuickReplyMock.mockResolvedValue({ id: 2, account_id: 'account-1', content: '现货可拍', created_at: 2 });
     deleteQuickReplyMock.mockResolvedValue({ success: true });
     saveBuyerNoteMock.mockResolvedValue({ account_id: 'account-1', buyer_id: 'buyer-1', content: '重点客户', updated_at: 2 });
+    getKeywordRepliesMock.mockResolvedValue([{ id: 'k1', keyword: '现货', content: '现货可拍' }]);
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: vi.fn().mockResolvedValue(undefined) } });
   });
 
@@ -136,6 +140,73 @@ describe('useChatMetadata', /* 当前回调覆盖账号快捷回复与买家备�
       () => resolveOldReplies?.([{ id: 8, account_id: 'account-1', content: '旧账号回复', created_at: 1 }]),
     );
     expect(hook.result.current.quickReplies[0]?.id).toBe(9);
+    hook.unmount();
+  });
+
+  test('按需读取关键词回复模板并一键加入快捷回复', /* 当前回调验证模板读取缓存与导入动作。 */ async () => {
+    // hook 是聊天元数据 Hook 的渲染结果。
+    const hook = renderHook(
+      // metadataHookFactory 以稳定账号和会话创建元数据 Hook。
+      () => useChatMetadata('account-1', sessionFixture),
+    );
+    await waitFor(
+      // dataAssertion 等待账号快捷回复的初始请求完成。
+      () => expect(hook.result.current.quickReplies).toHaveLength(1),
+    );
+    await act(
+      // loadAction 首次展开导入区块时读取关键词回复模板。
+      async () => hook.result.current.loadKeywordReplies(),
+    );
+    expect(getKeywordRepliesMock).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.keywordReplies).toEqual([{ id: 'k1', keyword: '现货', content: '现货可拍' }]);
+    expect(hook.result.current.keywordRepliesLoaded).toBe(true);
+    await act(
+      // reloadAction 在已加载后再次展开，不应重复请求。
+      async () => hook.result.current.loadKeywordReplies(),
+    );
+    expect(getKeywordRepliesMock).toHaveBeenCalledTimes(1);
+    createQuickReplyMock.mockResolvedValueOnce({ id: 3, account_id: 'account-1', content: '现货可拍', created_at: 3 });
+    await act(
+      // importAction 把选中的关键词回复正文加入账号快捷回复。
+      async () => hook.result.current.importKeywordReply({ id: 'k1', keyword: '现货', content: '现货可拍' }),
+    );
+    expect(createQuickReplyMock).toHaveBeenCalledWith('account-1', '现货可拍');
+    expect(hook.result.current.quickReplies[0]?.id).toBe(3);
+    expect(hook.result.current.importingKeywordReplyID).toBeNull();
+    hook.unmount();
+  });
+
+  test('关键词回复读取失败提示错误并在账号切换后清空模板', /* 当前回调验证失败提示与账号隔离。 */ async () => {
+    getKeywordRepliesMock.mockRejectedValueOnce(new Error('关键词服务不可用'));
+    // hook 是可通过 rerender 切换账号的聊天元数据 Hook。
+    const hook = renderHook(
+      // metadataHookFactory 根据渲染参数创建元数据 Hook。
+      // props 保存当前账号和选中会话的测试输入。
+      ({ accountID, session }: MetadataHookProps) => useChatMetadata(accountID, session),
+      { initialProps: { accountID: 'account-1', session: sessionFixture } },
+    );
+    await waitFor(
+      // dataAssertion 等待账号快捷回复的初始请求完成。
+      () => expect(hook.result.current.quickReplies).toHaveLength(1),
+    );
+    await act(
+      // loadAction 触发一次失败的关键词回复读取。
+      async () => hook.result.current.loadKeywordReplies(),
+    );
+    expect(hook.result.current.metadataError).toBe('关键词服务不可用');
+    expect(hook.result.current.keywordRepliesLoaded).toBe(false);
+    getKeywordRepliesMock.mockResolvedValueOnce([{ id: 'k2', keyword: '新关键词', content: '新账号模板' }]);
+    await act(
+      // retryAction 在失败后允许再次读取并写入模板。
+      async () => hook.result.current.loadKeywordReplies(),
+    );
+    expect(hook.result.current.keywordReplies.map(/* template 是当前已加载的模板。 */ template => template.id)).toEqual(['k2']);
+    hook.rerender({ accountID: 'account-2', session: sessionFixture });
+    await waitFor(
+      // clearedAssertion 等待账号切换清空旧账号模板。
+      () => expect(hook.result.current.keywordReplies).toHaveLength(0),
+    );
+    expect(hook.result.current.keywordRepliesLoaded).toBe(false);
     hook.unmount();
   });
 });

@@ -2,8 +2,8 @@ import type React from 'react';
 import { useLocalSessionRefresh } from './useLocalSessionRefresh';
 import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from 'react';
 import { emojiURL,renderXianyuText,xianyuEmojis } from '../../../chatEmojis';
-import type { AccountDetail,ChatMessage,ChatSession } from './api';
-import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,markChatRead,sendChatImage,sendChatMessage,uncertainOutgoingMessageFromError } from './api';
+import type { AccountDetail,ChatLibraryImageAsset,ChatMessage,ChatSession } from './api';
+import { confirmedOutgoingMessageFromError,deleteChatSession,getAccountDetails,getAccountRuntimeStatuses,getChatMessagePage,getChatSessionPage,loadChatLibraryImage,markChatRead,sendChatImage,sendChatMessage,uncertainOutgoingMessageFromError } from './api';
 import { publishChatUnreadStatus,subscribeToChatLiveEvents } from './liveEvents';
 import { collectChatReadReceipts,filterChatSessions,formatClock,isChatAbortError,isCurrentChatRequest,markOutgoingMessagesReadByIncoming,mergeChatSessions,mergeLiveMessage,mergeOlderMessages,messageTime } from './state';
 import type { ChatFeatureState,ChatLiveState,SessionsByAccount } from './types';
@@ -60,6 +60,14 @@ export type UseChatResult = ChatFeatureState & {
   confirmSendImage: () => Promise<void>;
   /** 取消当前图片预览并释放临时地址。 */
   closeImagePreview: () => void;
+  /** 资源中心图片选择面板是否展开；只影响聊天输入区，不影响发送状态。 */
+  libraryImageOpen: boolean;
+  /** 更新资源中心图片选择面板展开状态。 */
+  setLibraryImageOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  /** 正在读取内容的资源中心图片标识；空值表示没有读取中的图片。 */
+  libraryImageLoadingID: number | null;
+  /** 读取选中的资源中心图片并进入既有发送预览，失败时写入聊天错误提示。 */
+  handleLibraryImage: (asset: ChatLibraryImageAsset) => Promise<void>;
   /** 重试最近一次失败发送。 */
   retrySend: () => Promise<void>;
   /** 是否存在可重试的发送动作。 */
@@ -108,6 +116,10 @@ export const useChat = (): UseChatResult => {
   const [draft, setDraft] = useState('');
   // pendingImage 保存等待用户确认的本地图片和临时预览地址。
   const [pendingImage, setPendingImage] = useState<PendingImagePreview | null>(null);
+  // libraryImageOpen 控制聊天输入区的资源中心图片选择面板。
+  const [libraryImageOpen, setLibraryImageOpen] = useState(false);
+  // libraryImageLoadingID 保存正在读取内容的资源中心图片标识，用于按钮加载反馈。
+  const [libraryImageLoadingID, setLibraryImageLoadingID] = useState<number | null>(null);
   // loading 表示聊天初始数据加载状态。
   const [loading, setLoading] = useState(true);
   // messagesLoading 表示当前会话消息加载状态。
@@ -162,6 +174,8 @@ export const useChat = (): UseChatResult => {
   const skipNextMessageScrollRef = useRef(false);
   // imageInputRef 指向图片文件输入框。
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  // libraryImageSequence 为资源中心图片读取分配代次，账号或会话切换后旧读取结果不得进入预览。
+  const libraryImageSequence = useRef(0);
   // refreshedAccountsRef 防止同一账号重复刷新联系人。
   const refreshedAccountsRef = useRef(new Set<string>());
   // sessionSequence 隔离联系人刷新请求。
@@ -447,9 +461,12 @@ export const useChat = (): UseChatResult => {
     sendSequence.current += 1;
   }, [activeAccountID, activeChatID]);
 
-  useEffect(/* 当前回调使会话切换前创建的图片预览失效。 */ () => {
-    // 会话或账号切换后不得把旧预览发送到新会话。
+  useEffect(/* 当前回调使会话切换前创建的图片预览和图片库读取失效。 */ () => {
+    // 会话或账号切换后不得把旧预览发送到新会话，旧图片库读取结果同样必须丢弃。
+    libraryImageSequence.current += 1;
     setPendingImage(null);
+    setLibraryImageOpen(false);
+    setLibraryImageLoadingID(null);
   }, [activeAccountID, activeChatID]);
 
   useEffect(/* 当前回调同步 React 副作用和资源生命周期。 */ () => {
@@ -757,6 +774,26 @@ export const useChat = (): UseChatResult => {
     if (image) await handleImage(image);
   }, [handleImage]);
 
+  /** 读取资源中心图片内容并进入既有图片预览流程，读取失败时保留聊天上下文供用户重试。 */
+  const handleLibraryImage = useCallback(/* 当前回调响应图片库面板中的单张图片选择。 */ async (asset: ChatLibraryImageAsset): Promise<void> => {
+    if (!selectedSession || !activeAccountID || sending) return;
+    // sequence 标识本次资源中心图片读取，账号或会话切换后结果必须丢弃。
+    const sequence = ++libraryImageSequence.current;
+    setLibraryImageLoadingID(asset.id);
+    setError('');
+    try {
+      // file 是由资源中心图片内容转换出的待发送文件。
+      const file = await loadChatLibraryImage({ id: asset.id, name: asset.name });
+      if (sequence !== libraryImageSequence.current) return;
+      setPendingImage({ file, url: URL.createObjectURL(file) });
+      setLibraryImageOpen(false);
+    } catch (/* loadError 保存资源中心图片读取失败原因；取消请求不显示错误。 */ loadError) {
+      if (sequence === libraryImageSequence.current && !isChatAbortError(loadError)) setError(loadError instanceof Error ? loadError.message : '读取资源中心图片失败');
+    } finally {
+      if (sequence === libraryImageSequence.current) setLibraryImageLoadingID(null);
+    }
+  }, [activeAccountID, selectedSession, sending]);
+
   /** 关闭图片预览并清空文件输入，使同一文件可以再次触发选择事件。 */
   const closeImagePreview = useCallback(/* 当前回调关闭预览并清理文件输入。 */ (): void => {
     setPendingImage(null);
@@ -878,9 +915,9 @@ export const useChat = (): UseChatResult => {
 	}, []);
 
   return {
-    accounts, activeAccountID, activeSessions, selectedSession, activeAccount, messages, search, unreadOnly, draft, loading, messagesLoading, olderLoading, hasOlder, contactsLoading, hasMoreContacts: platformHasMoreContacts[activeAccountID] === true || storedHasMoreContacts[activeAccountID] === true, emojiOpen, sending, error, sendNotice, liveState, pendingImage,
+    accounts, activeAccountID, activeSessions, selectedSession, activeAccount, messages, search, unreadOnly, draft, loading, messagesLoading, olderLoading, hasOlder, contactsLoading, hasMoreContacts: platformHasMoreContacts[activeAccountID] === true || storedHasMoreContacts[activeAccountID] === true, emojiOpen, sending, error, sendNotice, liveState, pendingImage, libraryImageOpen, setLibraryImageOpen, libraryImageLoadingID,
     activeChatID, filteredSessions, scrollRef, imageInputRef, setActiveAccountID, setActiveChatID, setSearch, setUnreadOnly, setDraft, setEmojiOpen,
-		reloadSessions, loadMoreContacts, loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, retrySend, retryAvailable: Boolean(retryText || retryImage), deletingChatID, deleteError, deleteConversation, clearDeleteError, acceptOutgoingMessage, unreadForAccount,
+		reloadSessions, loadMoreContacts, loadOlderMessages, handleMessageScroll, handleSend, handleQuickReply, handleImage, handlePastedImages, confirmSendImage, closeImagePreview, handleLibraryImage, retrySend, retryAvailable: Boolean(retryText || retryImage), deletingChatID, deleteError, deleteConversation, clearDeleteError, acceptOutgoingMessage, unreadForAccount,
     emojiURL, xianyuEmojis, renderXianyuText, formatClock, messageTime,
   };
 };

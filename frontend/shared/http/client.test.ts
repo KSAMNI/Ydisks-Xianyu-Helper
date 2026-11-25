@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { ApiError, del, get, post, postForm, put } from './client';
+import { ApiError, del, get, getBlob, post, postForm, put } from './client';
 
 afterEach(() => vi.unstubAllGlobals() /* 清理测试安装的全局网络替身，避免跨用例泄漏。 */);
 
@@ -294,4 +294,61 @@ describe('request helpers', () => {
     vi.stubGlobal('fetch', fetchMock);
     await expect(get('/pre-cancelled', undefined, { signal: controller.signal })).rejects.toThrow('请求已取消');
   } /* 测试回调验证：请求开始前已取消的外部信号返回取消错误。 */);
+  test('二进制读取保留响应内容类型并携带登录 Cookie', /* 当前回调验证 getBlob 成功分支的请求参数与返回类型。 */ async () => {
+    // fetchMock 是返回 PNG 二进制内容的网络替身。
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' }), {
+      status: 200,
+      headers: { 'content-type': 'image/png' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    // blob 是读取成功后的图片二进制内容。
+    const blob = await getBlob('/api/v1/image-library/1/content');
+    expect(blob.type).toBe('image/png');
+    expect(blob.size).toBe(3);
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/image-library/1/content', expect.objectContaining({ method: 'GET', credentials: 'include' }));
+  } /* 测试回调验证：二进制读取保留响应内容类型并携带登录 Cookie。 */);
+
+  test('二进制读取失败抛出统一错误 envelope', /* 当前回调验证 getBlob 失败分支复用 ApiError 语义。 */ async () => {
+    // payload 是服务端统一错误 DTO。
+    const payload = { code: 'image_not_found', message: '资源中心图片不存在' };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    })));
+    // failure 是二进制读取失败捕获到的异常。
+    const failure = await getBlob('/api/v1/image-library/9/content').catch(/* captureError 保存读取失败的原始异常。 */ (captureError: unknown) => captureError);
+    expect(failure).toBeInstanceOf(ApiError);
+    expect((failure as ApiError).status).toBe(404);
+    expect((failure as ApiError).message).toBe('资源中心图片不存在');
+  } /* 测试回调验证：二进制读取失败抛出统一错误 envelope。 */);
+
+  test('二进制读取认证失败触发登出事件', /* 当前回调验证 getBlob 的 401 通知行为。 */ async () => {
+    // events 是认证失效事件分发目标。
+    const events = new EventTarget();
+    // listener 是认证失效事件监听器。
+    const listener = vi.fn();
+    events.addEventListener('auth:logout', listener);
+    vi.stubGlobal('window', events);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } })));
+    await expect(getBlob('/api/v1/image-library/1/content')).rejects.toThrow();
+    expect(listener).toHaveBeenCalledOnce();
+  } /* 测试回调验证：二进制读取认证失败触发登出事件。 */);
+
+  test('二进制读取超时返回超时错误', /* 当前回调验证 getBlob 的超时分支。 */ async () => {
+    vi.useFakeTimers();
+    try {
+      // fetchMock 是等待超时信号的网络替身。
+      vi.stubGlobal('fetch', vi.fn(/* timeoutFactory 创建等待超时的网络替身。 */ (_url: string, init: RequestInit) => new Promise<Response>(/* timeoutExecutor 等待请求信号超时。 */ (_resolve, reject) => {
+        init.signal?.addEventListener('abort', /* abortCallback 将超时转换为网络异常。 */ () => reject(new DOMException('timeout', 'TimeoutError')), { once: true });
+      })));
+      // pending 是等待超时结果的二进制读取 Promise。
+      const pending = getBlob('/api/v1/image-library/1/content', { timeoutMs: 50 });
+      // rejection 是断言超时错误的异步结果。
+      const rejection = expect(pending).rejects.toThrow('请求超时');
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
+  } /* 测试回调验证：二进制读取超时返回超时错误。 */);
 } /* 测试套件回调汇总共享 HTTP 客户端的成功、失败与取消契约。 */);
